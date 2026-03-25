@@ -7,11 +7,13 @@ services:
     container_name: personal-assistant-claude
     restart: unless-stopped
     volumes:
-      # Mount Claude config dir for OAuth credentials and channel state
-      # Pre-authenticate on host first: claude login
-      - claude-config:/root/.claude
+      # Bind-mount host Claude credentials dir for OAuth tokens
+      # Homelab: default ~/.claude works (run `claude login` on host first)
+      # Windows: set CLAUDE_CONFIG_DIR=C:/Users/Dodo/.claude
+      - ${CLAUDE_CONFIG_DIR:-~/.claude}:/home/node/.claude
     environment:
       - NODE_OPTIONS=--max-old-space-size=4096
+      - HOME=/home/node
     networks:
       - assistant
     # No ports exposed — Remote Control uses outbound HTTPS only
@@ -24,10 +26,6 @@ services:
     networks:
       - assistant
     # Port 8000 exposed only within Docker network (not to host)
-
-volumes:
-  claude-config:
-    # Persist OAuth tokens and channel allowlists across restarts
 
 networks:
   assistant:

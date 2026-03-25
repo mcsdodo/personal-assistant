@@ -2,6 +2,7 @@
 
 import logging
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("mock-paperless")
@@ -57,4 +58,31 @@ def mock_match_invoices(month: str) -> dict:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
+    import os
+    import uvicorn
+
+    # Disable DNS rebinding protection for Docker internal networking
+    os.environ["MCP_DISABLE_DNS_REBINDING_PROTECTION"] = "1"
+
+    app = mcp.streamable_http_app()
+
+    # Wrap to strip the Host validation middleware if env var doesn't work
+    from starlette.middleware import Middleware
+    from starlette.applications import Starlette
+
+    async def passthrough(scope, receive, send):
+        # Override Host header to localhost to pass MCP validation
+        if scope["type"] == "http":
+            headers = list(scope.get("headers", []))
+            scope["headers"] = [
+                (k, b"localhost:8000") if k == b"host" else (k, v)
+                for k, v in headers
+            ]
+        await app(scope, receive, send)
+
+    uvicorn.run(
+        passthrough,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+    )

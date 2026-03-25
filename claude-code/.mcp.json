@@ -5,7 +5,7 @@
       "args": ["run", "/app/channels/email-watcher.ts"]
     },
     "mock-paperless": {
-      "type": "url",
+      "type": "http",
       "url": "http://mock-paperless-tool:8000/mcp"
     }
   }
