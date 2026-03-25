@@ -7,12 +7,12 @@
       "allowedTools": [],
       "mcpContextUris": [],
       "mcpServers": {},
-      "enabledMcpjsonServers": [],
+      "enabledMcpjsonServers": ["email-watcher", "mock-paperless"],
       "disabledMcpjsonServers": [],
       "hasTrustDialogAccepted": true,
       "hasCompletedProjectOnboarding": true,
-      "hasClaudeMdExternalIncludesApproved": false,
-      "hasClaudeMdExternalIncludesWarningShown": false
+      "hasClaudeMdExternalIncludesApproved": true,
+      "hasClaudeMdExternalIncludesWarningShown": true
     }
   }
 }

@@ -19,6 +19,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # Create workspace and config dirs owned by node
 RUN mkdir -p /workspace /home/node/.claude \
+  && echo '{"skipDangerousModePermissionPrompt": true}' > /home/node/.claude/settings.json \
   && chown -R node:node /workspace /home/node/.claude
 
 WORKDIR /workspace
