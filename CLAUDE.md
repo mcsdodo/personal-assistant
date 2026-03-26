@@ -46,21 +46,20 @@ Channels are stdio subprocesses of Claude Code — they MUST run inside the same
 
 | File | Purpose |
 |------|---------|
-| `docker-compose.yml` | Stack definition, volume mounts |
-| `.env` / `.env.example` | Secrets (PAPERLESS_API_TOKEN, PAPERLESS_URL) |
-| `claude-code/Dockerfile` | node:20 + bun + claude-code CLI, non-root user |
-| `claude-code/.mcp.json` | MCP server config (channels + HTTP tools) |
-| `claude-code/.claude.json` | Project trust settings (no Windows paths) |
-| `claude-code/CLAUDE.md` | Instructions for the Claude session |
-| `claude-code/entrypoint.sh` | tmux wrapper for persistent interactive session |
-| `claude-code/channels/email-watcher.ts` | Email-watcher channel (polls Gmail+Outlook, pushes events, SQLite audit) |
-| `claude-code/channels/db.ts` | Email-watcher SQLite module (schema, insert, update, query) |
-| `claude-code/channels/telegram/` | Official telegram plugin (cloned at build from GitHub) |
-| `claude-code/agents/email-classifier.md` | Haiku subagent: classify emails as invoice/not |
-| `claude-code/agents/invoice-processor.md` | Haiku subagent: download + upload to Paperless |
-| `checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
-| `checker-mcp/match_invoices.py` | Copied from checker source at build time |
-| `checker-mcp/build.sh` | Pre-build: copies match_invoices.py from checker |
+| `docker-compose.yml` | Production stack (Komodo deploys this) |
+| `local/docker-compose.yml` | Local dev overlay (build contexts + observability sidecar) |
+| `local/.env` / `local/.env.example` | Local dev secrets (Komodo manages prod secrets) |
+| `local/claude-code/Dockerfile` | node:20 + bun + claude-code CLI, non-root user |
+| `local/claude-code/.mcp.json` | MCP server config (channels + HTTP tools) |
+| `local/claude-code/CLAUDE.md` | Instructions for the Claude session |
+| `local/claude-code/entrypoint.sh` | tmux wrapper, first-run settings.json creation |
+| `local/claude-code/channels/email-watcher.ts` | Email-watcher channel (polls Gmail+Outlook, SQLite audit) |
+| `local/claude-code/channels/db.ts` | Email-watcher SQLite module |
+| `local/claude-code/agents/` | Haiku subagents (email-classifier, invoice-processor) |
+| `local/checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
+| `local/checker-mcp/match_invoices.py` | Invoice matching engine (copy from paperless checker) |
+| `local/outlook-mcp/server.py` | Outlook MCP (MSAL device code auth) |
+| `local/observability/` | Local dev Alloy, Prometheus, Loki, Grafana configs |
 
 ## Claude Code in Docker — Reference
 
@@ -182,13 +181,13 @@ Development runs locally on the Windows dev machine using Docker Desktop with th
 
 ```bash
 # Start the full stack (from compose.stacks/infra/personal-assistant/)
-docker compose -f docker-compose.yml -f docker-compose.local.yml up
+docker compose -f docker-compose.yml -f local/docker-compose.yml --env-file local/.env up
 
 # Rebuild after code changes
-docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+docker compose -f docker-compose.yml -f local/docker-compose.yml --env-file local/.env up --build
 
 # Check status
-docker compose -f docker-compose.yml -f docker-compose.local.yml ps
+docker compose -f docker-compose.yml -f local/docker-compose.yml --env-file local/.env ps
 
 # View Claude session
 docker exec personal-assistant-claude tmux capture-pane -t claude -p -S -30
@@ -209,7 +208,7 @@ The local observability stack also scrapes an `email-watcher` Prometheus endpoin
 ### Local Dev
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.local.yml up
+docker compose -f docker-compose.yml -f local/docker-compose.yml --env-file local/.env up
 ```
 
 This starts a local Alloy + Prometheus + Loki + Grafana alongside the main stack.
@@ -273,9 +272,9 @@ Notes:
 
 | File | Purpose |
 |------|---------|
-| `docker-compose.local.yml` | Local dev observability stack (Alloy + Prometheus + Loki + Grafana) |
-| `observability/alloy-config.alloy` | Alloy OTLP receiver config (used locally, merge into host config for prod) |
-| `compose.stacks/_shared-infra/alloy/config.alloy` | Shared host Alloy config with production OTLP receiver for Claude Code |
-| `observability/dashboards/claude-code.json` | Grafana dashboard focused on email backlog, source mix, invoice signals, plus Claude token/cost telemetry |
-| `observability/prometheus-config.yml` | Minimal Prometheus config for local dev |
-| `observability/loki-config.yml` | Minimal Loki config for local dev |
+| `local/docker-compose.yml` | Local dev overlay (build contexts + Alloy + Prometheus + Loki + Grafana) |
+| `local/observability/alloy-config.alloy` | Alloy OTLP receiver config (local dev) |
+| `compose.stacks/_shared-infra/alloy/config.alloy` | Shared host Alloy config with production OTLP + email-watcher scrape |
+| `local/observability/dashboards/claude-code.json` | Grafana dashboard |
+| `local/observability/prometheus-config.yml` | Minimal Prometheus config for local dev |
+| `local/observability/loki-config.yml` | Minimal Loki config for local dev |

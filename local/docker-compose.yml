@@ -1,13 +1,13 @@
-# Local dev observability stack for personal-assistant
-# Usage: docker compose -f docker-compose.yml -f docker-compose.local.yml up
+# Local dev overlay for personal-assistant
+# Usage: docker compose -f docker-compose.yml -f local/docker-compose.yml up --build
 #
-# Adds: Alloy (OTLP receiver) + Prometheus + Loki + Grafana
+# Adds: build contexts + Alloy (OTLP receiver) + Prometheus + Loki + Grafana
 # Claude Code sends OTel metrics/logs → Alloy → Prometheus + Loki → Grafana
 
 services:
   claude-code:
     build:
-      context: ./claude-code
+      context: ./local/claude-code
       args:
         CLAUDE_CODE_VERSION: latest
     # Local dev: OTEL to local Alloy sidecar
@@ -16,17 +16,17 @@ services:
 
   checker-mcp:
     build:
-      context: ./checker-mcp
+      context: ./local/checker-mcp
 
   outlook-mcp:
     build:
-      context: ./outlook-mcp
+      context: ./local/outlook-mcp
 
   gmail-mcp:
     # Local dev: mount client_secret.json from disk, restore original entrypoint
     volumes:
-      - ${GMAIL_CREDS_DIR:-./data/gmail}:/app/store_creds
-      - ${GMAIL_CLIENT_SECRET:-./data/gmail/client_secret.json}:/app/client_secret.json:ro
+      - ${GMAIL_CREDS_DIR:-./local/data/gmail}:/app/store_creds
+      - ${GMAIL_CLIENT_SECRET:-./local/data/gmail/client_secret.json}:/app/client_secret.json:ro
     entrypoint: ["uv", "run", "main.py"]
     command: ["--transport", "streamable-http", "--tools", "gmail", "--read-only"]
 
@@ -35,7 +35,7 @@ services:
     container_name: personal-assistant-alloy
     restart: unless-stopped
     volumes:
-      - ./observability/alloy-config.alloy:/etc/alloy/config.alloy:ro
+      - ./local/observability/alloy-config.alloy:/etc/alloy/config.alloy:ro
     ports:
       - "12345:12345"   # Alloy UI
     environment:
@@ -59,7 +59,7 @@ services:
       - '--storage.tsdb.retention.time=7d'
       - '--web.enable-remote-write-receiver'
     volumes:
-      - ./observability/prometheus-config.yml:/etc/prometheus/prometheus.yml:ro
+      - ./local/observability/prometheus-config.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
 
   loki:
@@ -71,7 +71,7 @@ services:
       - "3101:3100"     # 3101 to avoid conflict with host loki
     command: -config.file=/etc/loki/loki-config.yaml
     volumes:
-      - ./observability/loki-config.yml:/etc/loki/loki-config.yaml:ro
+      - ./local/observability/loki-config.yml:/etc/loki/loki-config.yaml:ro
       - loki-data:/loki
 
   grafana:
@@ -85,8 +85,8 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
     volumes:
-      - ./observability/dashboards:/var/lib/grafana/dashboards:ro
-      - ./observability/provisioning:/etc/grafana/provisioning:ro
+      - ./local/observability/dashboards:/var/lib/grafana/dashboards:ro
+      - ./local/observability/provisioning:/etc/grafana/provisioning:ro
 
 volumes:
   prometheus-data:
