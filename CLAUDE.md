@@ -204,6 +204,8 @@ docker exec personal-assistant-claude sh -c "env | grep -E 'OTEL|TELEMETRY'"
 
 Claude Code exports native OpenTelemetry metrics and events via OTLP to an Alloy instance, which forwards to Prometheus (metrics) and Loki (logs/events).
 
+The local observability stack also scrapes an `email-watcher` Prometheus endpoint from inside the `claude-code` container. This provides workflow metrics that are more useful for this project than generic Claude activity counters.
+
 ### Local Dev
 
 ```bash
@@ -236,6 +238,18 @@ On the deploy host, add the OTLP receiver blocks from `observability/alloy-confi
 | `claude_code_pull_request_count_total` | count | — |
 | `claude_code_code_edit_tool_decision_count_total` | count | `tool_name`, `decision`, `source` |
 
+### Email Workflow Metrics (Prometheus scrape from `claude-code:9465`)
+
+| Metric | Meaning |
+|--------|---------|
+| `email_watcher_emails_total` | Total tracked emails by `source` and `status` |
+| `email_watcher_backlog_total` | Emails still waiting for processing (`status="new"`) by `source` |
+| `email_watcher_attachments_total` | Emails with attachments by `source` and `status` |
+| `email_watcher_recent_discovered_total` | Emails discovered in the last 24h by `source` and `status` |
+| `email_watcher_actions_total` | Classified actions such as `download_and_upload`, `notify_user`, `ignore` |
+| `email_watcher_vendors_total` | Top detected vendors once classification starts recording them |
+| `email_watcher_processed_results_total` | Processed email counts grouped by final `status` |
+
 ### Events (Loki, via OTel logs)
 
 | Event | Key attributes |
@@ -252,6 +266,6 @@ On the deploy host, add the OTLP receiver blocks from `observability/alloy-confi
 |------|---------|
 | `docker-compose.local.yml` | Local dev observability stack (Alloy + Prometheus + Loki + Grafana) |
 | `observability/alloy-config.alloy` | Alloy OTLP receiver config (used locally, merge into host config for prod) |
-| `observability/dashboards/claude-code.json` | Grafana dashboard: token usage, cost, API latency, tool stats, errors |
+| `observability/dashboards/claude-code.json` | Grafana dashboard focused on email backlog, source mix, invoice signals, plus Claude token/cost telemetry |
 | `observability/prometheus-config.yml` | Minimal Prometheus config for local dev |
 | `observability/loki-config.yml` | Minimal Loki config for local dev |

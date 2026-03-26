@@ -51,6 +51,7 @@ const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS ?? "30000", 10);
 const DB_PATH = process.env.DB_PATH ?? "/data/email-watcher/emails.db";
 const STARTUP_DELAY_MS = parseInt(process.env.STARTUP_DELAY_MS ?? "15000", 10);
 const MAX_NEW_PER_CYCLE = parseInt(process.env.MAX_NEW_PER_CYCLE ?? "5", 10);
+const METRICS_PORT = parseInt(process.env.EMAIL_WATCHER_METRICS_PORT ?? "9465", 10);
 
 const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const GMAIL_EMAIL = process.env.GMAIL_EMAIL ?? "";
@@ -67,6 +68,198 @@ const gmailEnabled = GMAIL_EMAIL.length > 0;
 
 function log(msg: string): void {
   console.error(`[email-watcher] ${msg}`);
+}
+
+function esc(value: string | null | undefined): string {
+  return String(value ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/"/g, '\\"');
+}
+
+function metricLine(
+  name: string,
+  labels: Record<string, string | null | undefined>,
+  value: number,
+): string {
+  const parts = Object.entries(labels)
+    .filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .map(([k, v]) => `${k}="${esc(v)}"`);
+  return parts.length > 0
+    ? `${name}{${parts.join(",")}} ${value}`
+    : `${name} ${value}`;
+}
+
+function renderMetrics(db: Database): string {
+  const lines: string[] = [
+    "# HELP email_watcher_emails_total Emails tracked by source and status.",
+    "# TYPE email_watcher_emails_total gauge",
+  ];
+
+  const emailsBySourceStatus = db
+    .query(
+      `SELECT source, status, COUNT(*) AS count
+       FROM emails
+       GROUP BY source, status
+       ORDER BY source, status`
+    )
+    .all() as Array<{ source: string; status: string; count: number }>;
+
+  for (const row of emailsBySourceStatus) {
+    lines.push(
+      metricLine(
+        "email_watcher_emails_total",
+        { source: row.source, status: row.status },
+        row.count,
+      ),
+    );
+  }
+
+  lines.push(
+    "# HELP email_watcher_backlog_total Emails waiting for classification or processing.",
+    "# TYPE email_watcher_backlog_total gauge",
+  );
+
+  const backlog = db
+    .query(
+      `SELECT source, COUNT(*) AS count
+       FROM emails
+       WHERE status = 'new'
+       GROUP BY source
+       ORDER BY source`
+    )
+    .all() as Array<{ source: string; count: number }>;
+
+  for (const row of backlog) {
+    lines.push(metricLine("email_watcher_backlog_total", { source: row.source }, row.count));
+  }
+
+  lines.push(
+    "# HELP email_watcher_attachments_total Emails with attachments by source and status.",
+    "# TYPE email_watcher_attachments_total gauge",
+  );
+
+  const attachments = db
+    .query(
+      `SELECT source, status, COUNT(*) AS count
+       FROM emails
+       WHERE has_attachments = 1
+       GROUP BY source, status
+       ORDER BY source, status`
+    )
+    .all() as Array<{ source: string; status: string; count: number }>;
+
+  for (const row of attachments) {
+    lines.push(
+      metricLine(
+        "email_watcher_attachments_total",
+        { source: row.source, status: row.status },
+        row.count,
+      ),
+    );
+  }
+
+  lines.push(
+    "# HELP email_watcher_recent_discovered_total Emails discovered in the last 24 hours by source and status.",
+    "# TYPE email_watcher_recent_discovered_total gauge",
+  );
+
+  const recent = db
+    .query(
+      `SELECT source, status, COUNT(*) AS count
+       FROM emails
+       WHERE discovered_at >= datetime('now', '-1 day')
+       GROUP BY source, status
+       ORDER BY source, status`
+    )
+    .all() as Array<{ source: string; status: string; count: number }>;
+
+  for (const row of recent) {
+    lines.push(
+      metricLine(
+        "email_watcher_recent_discovered_total",
+        { source: row.source, status: row.status },
+        row.count,
+      ),
+    );
+  }
+
+  lines.push(
+    "# HELP email_watcher_actions_total Classified actions recorded by the workflow.",
+    "# TYPE email_watcher_actions_total gauge",
+  );
+
+  const actions = db
+    .query(
+      `SELECT action, COUNT(*) AS count
+       FROM emails
+       WHERE action IS NOT NULL
+       GROUP BY action
+       ORDER BY action`
+    )
+    .all() as Array<{ action: string; count: number }>;
+
+  for (const row of actions) {
+    lines.push(metricLine("email_watcher_actions_total", { action: row.action }, row.count));
+  }
+
+  lines.push(
+    "# HELP email_watcher_vendors_total Classified vendors recorded by the workflow.",
+    "# TYPE email_watcher_vendors_total gauge",
+  );
+
+  const vendors = db
+    .query(
+      `SELECT vendor, COUNT(*) AS count
+       FROM emails
+       WHERE vendor IS NOT NULL
+       GROUP BY vendor
+       ORDER BY count DESC, vendor
+       LIMIT 20`
+    )
+    .all() as Array<{ vendor: string; count: number }>;
+
+  for (const row of vendors) {
+    lines.push(metricLine("email_watcher_vendors_total", { vendor: row.vendor }, row.count));
+  }
+
+  lines.push(
+    "# HELP email_watcher_processed_results_total Processing outcomes by status.",
+    "# TYPE email_watcher_processed_results_total gauge",
+  );
+
+  const processed = db
+    .query(
+      `SELECT status, COUNT(*) AS count
+       FROM emails
+       WHERE processed_at IS NOT NULL
+       GROUP BY status
+       ORDER BY status`
+    )
+    .all() as Array<{ status: string; count: number }>;
+
+  for (const row of processed) {
+    lines.push(metricLine("email_watcher_processed_results_total", { status: row.status }, row.count));
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
+function startMetricsServer(db: Database): void {
+  Bun.serve({
+    port: METRICS_PORT,
+    fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname !== "/metrics") {
+        return new Response("not found", { status: 404 });
+      }
+      return new Response(renderMetrics(db), {
+        headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
+      });
+    },
+  });
+  log(`Metrics server listening on :${METRICS_PORT}/metrics`);
 }
 
 // ---------------------------------------------------------------------------
@@ -587,6 +780,7 @@ async function main(): Promise<void> {
   // 1. Open SQLite DB
   log(`Opening database at ${DB_PATH}`);
   db = openDb(DB_PATH);
+  startMetricsServer(db);
 
   // 2. Connect MCP server (stdio)
   await mcp.connect(new StdioServerTransport());

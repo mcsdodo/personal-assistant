@@ -7,7 +7,7 @@
   "graphTooltip": 1,
   "id": null,
   "links": [],
-  "tags": ["personal-assistant", "claude-code", "otel"],
+  "tags": ["personal-assistant", "email", "invoice", "observability"],
   "templating": {
     "list": [
       {
@@ -19,16 +19,6 @@
         "query": "prometheus",
         "refresh": 1,
         "type": "datasource"
-      },
-      {
-        "current": { "selected": false, "text": "Loki", "value": "Loki" },
-        "hide": 0,
-        "includeAll": false,
-        "name": "loki_ds",
-        "options": [],
-        "query": "loki",
-        "refresh": 1,
-        "type": "datasource"
       }
     ]
   },
@@ -37,7 +27,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "id": 100,
-      "title": "Session Overview",
+      "title": "Inbox Overview",
       "type": "row"
     },
     {
@@ -45,32 +35,19 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.5 },
-              { "color": "red", "value": 1 }
-            ]
-          },
+          "thresholds": { "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 10 },
+            { "color": "red", "value": 25 }
+          ] },
           "unit": "short"
         }
       },
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
       "id": 1,
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "auto",
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
-      },
-      "targets": [
-        {
-          "expr": "claude_code_session_count_total",
-          "legendFormat": "Sessions",
-          "refId": "A"
-        }
-      ],
-      "title": "Active Sessions",
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
+      "targets": [{ "expr": "sum(email_watcher_emails_total)", "legendFormat": "emails", "refId": "A" }],
+      "title": "Tracked Emails",
       "type": "stat"
     },
     {
@@ -78,508 +55,176 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 300 },
-              { "color": "red", "value": 600 }
-            ]
-          },
-          "unit": "s"
+          "thresholds": { "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 1 },
+            { "color": "red", "value": 5 }
+          ] },
+          "unit": "short"
         }
       },
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
       "id": 2,
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "auto"
-      },
-      "targets": [
-        {
-          "expr": "claude_code_active_time_seconds_total",
-          "legendFormat": "{{ type }}",
-          "refId": "A"
-        }
-      ],
-      "title": "Active Time",
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
+      "targets": [{ "expr": "sum(email_watcher_backlog_total)", "legendFormat": "new", "refId": "A" }],
+      "title": "Waiting To Process",
       "type": "stat"
     },
     {
       "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 100 },
-              { "color": "red", "value": 500 }
-            ]
-          },
-          "unit": "short"
-        }
-      },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [
+        { "color": "green", "value": null },
+        { "color": "blue", "value": 1 }
+      ] }, "unit": "short" } },
       "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
       "id": 3,
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "auto"
-      },
-      "targets": [
-        {
-          "expr": "claude_code_lines_of_code_count_total",
-          "legendFormat": "{{ type }}",
-          "refId": "A"
-        }
-      ],
-      "title": "Lines of Code",
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
+      "targets": [{ "expr": "sum(email_watcher_attachments_total)", "legendFormat": "with attachments", "refId": "A" }],
+      "title": "With Attachments",
       "type": "stat"
     },
     {
       "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "blue", "value": 1 }
-            ]
-          },
-          "unit": "short"
-        }
-      },
-      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [
+        { "color": "green", "value": null },
+        { "color": "blue", "value": 1 }
+      ] }, "unit": "short" } },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
       "id": 4,
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "auto"
-      },
-      "targets": [
-        {
-          "expr": "claude_code_commit_count_total",
-          "legendFormat": "Commits",
-          "refId": "A"
-        }
-      ],
-      "title": "Commits",
-      "type": "stat"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "blue", "value": 1 }
-            ]
-          },
-          "unit": "short"
-        }
-      },
-      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 1 },
-      "id": 5,
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "auto"
-      },
-      "targets": [
-        {
-          "expr": "claude_code_pull_request_count_total",
-          "legendFormat": "PRs",
-          "refId": "A"
-        }
-      ],
-      "title": "Pull Requests",
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
+      "targets": [{ "expr": "sum(email_watcher_recent_discovered_total)", "legendFormat": "last 24h", "refId": "A" }],
+      "title": "Discovered Last 24h",
       "type": "stat"
     },
     {
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
       "id": 101,
-      "title": "Token Usage & Cost",
+      "title": "Queue And Mix",
       "type": "row"
     },
     {
       "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 20,
-            "stacking": { "mode": "normal" }
-          },
-          "unit": "short"
-        }
-      },
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 6 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" } }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
       "id": 10,
-      "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum", "lastNotNull"] },
-        "tooltip": { "mode": "multi" }
-      },
-      "targets": [
-        {
-          "expr": "increase(claude_code_token_usage_tokens_total[5m])",
-          "legendFormat": "{{ type }} ({{ model }})",
-          "refId": "A"
-        }
-      ],
-      "title": "Token Usage Rate (per 5m)",
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "expr": "sum by (source) (email_watcher_backlog_total)", "legendFormat": "{{ source }}", "refId": "A" }],
+      "title": "Backlog by Source",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 10000 },
-              { "color": "orange", "value": 50000 },
-              { "color": "red", "value": 100000 }
-            ]
-          },
-          "unit": "short"
-        }
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" } }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "id": 11,
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "horizontal",
-        "displayMode": "gradient",
-        "valueMode": "color"
-      },
-      "targets": [
-        {
-          "expr": "claude_code_token_usage_tokens_total",
-          "legendFormat": "{{ type }}",
-          "refId": "A"
-        }
-      ],
-      "title": "Token Totals by Type",
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "expr": "sum by (source,status) (email_watcher_emails_total)", "legendFormat": "{{ source }} / {{ status }}", "refId": "A" }],
+      "title": "Inbox State by Source and Status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "id": 12,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
+      "targets": [{ "expr": "sum by (source) (email_watcher_emails_total)", "legendFormat": "{{ source }}", "refId": "A" }],
+      "title": "Emails by Source",
       "type": "bargauge"
     },
     {
       "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 2, "fillOpacity": 10 },
-          "unit": "currencyUSD"
-        }
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
-      "id": 12,
-      "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum", "lastNotNull"] },
-        "tooltip": { "mode": "multi" }
-      },
-      "targets": [
-        {
-          "expr": "increase(claude_code_cost_usage_USD_total[5m])",
-          "legendFormat": "{{ model }}",
-          "refId": "A"
-        }
-      ],
-      "title": "Cost over Time (USD)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 1 },
-              { "color": "red", "value": 5 }
-            ]
-          },
-          "unit": "currencyUSD"
-        }
-      },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
       "id": 13,
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "auto"
-      },
-      "targets": [
-        {
-          "expr": "claude_code_cost_usage_USD_total",
-          "legendFormat": "{{ model }}",
-          "refId": "A"
-        }
-      ],
-      "title": "Total Cost by Model",
-      "type": "stat"
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
+      "targets": [{ "expr": "sum by (status) (email_watcher_emails_total)", "legendFormat": "{{ status }}", "refId": "A" }],
+      "title": "Emails by Status",
+      "type": "bargauge"
     },
     {
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
       "id": 102,
-      "title": "API Requests & Errors",
+      "title": "Invoice Signals",
       "type": "row"
     },
     {
-      "datasource": { "type": "loki", "uid": "${loki_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 2, "fillOpacity": 15 },
-          "unit": "short"
-        }
-      },
+      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "unit": "short" } },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
       "id": 20,
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "${loki_ds}" },
-          "expr": "sum by (model) (count_over_time({service_name=\"claude-code\"} | json | event_name = `claude_code.api_request` [$__interval]))",
-          "legendFormat": "{{ model }}",
-          "refId": "A"
-        }
-      ],
-      "title": "API Requests over Time",
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "expr": "sum by (source,status) (email_watcher_attachments_total)", "legendFormat": "{{ source }} / {{ status }}", "refId": "A" }],
+      "title": "Attachment-bearing Emails",
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "loki", "uid": "${loki_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 2, "fillOpacity": 15 },
-          "unit": "ms"
-        }
-      },
+      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "unit": "short" } },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
       "id": 21,
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "${loki_ds}" },
-          "expr": "avg_over_time({service_name=\"claude-code\"} | json | event_name = `claude_code.api_request` | unwrap duration_ms [$__interval])",
-          "legendFormat": "avg latency",
-          "refId": "A"
-        }
-      ],
-      "title": "API Request Latency",
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "expr": "sum by (source,status) (email_watcher_recent_discovered_total)", "legendFormat": "{{ source }} / {{ status }}", "refId": "A" }],
+      "title": "Recent Email Discovery (24h)",
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "loki", "uid": "${loki_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "fixed", "fixedColor": "red" },
-          "custom": { "lineWidth": 2, "fillOpacity": 30 },
-          "unit": "short"
-        }
-      },
+      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
       "id": 22,
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "${loki_ds}" },
-          "expr": "sum by (error, status_code) (count_over_time({service_name=\"claude-code\"} | json | event_name = `claude_code.api_error` [$__interval]))",
-          "legendFormat": "{{ status_code }}: {{ error }}",
-          "refId": "A"
-        }
-      ],
-      "title": "API Errors",
-      "type": "timeseries"
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
+      "targets": [{ "expr": "sum by (action) (email_watcher_actions_total)", "legendFormat": "{{ action }}", "refId": "A" }],
+      "title": "Workflow Actions",
+      "type": "bargauge"
     },
     {
-      "datasource": { "type": "loki", "uid": "${loki_ds}" },
+      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
       "id": 23,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "${loki_ds}" },
-          "expr": "{service_name=\"claude-code\"} | json | event_name = `claude_code.api_error`",
-          "refId": "A"
-        }
-      ],
-      "title": "Error Log",
-      "type": "logs"
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
+      "targets": [{ "expr": "topk(10, email_watcher_vendors_total)", "legendFormat": "{{ vendor }}", "refId": "A" }],
+      "title": "Top Vendors",
+      "type": "bargauge"
     },
     {
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
       "id": 103,
-      "title": "Tool Execution",
+      "title": "Claude Cost",
       "type": "row"
     },
     {
-      "datasource": { "type": "loki", "uid": "${loki_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 2, "fillOpacity": 15 },
-          "unit": "short"
-        }
-      },
+      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "unit": "short" } },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
       "id": 30,
-      "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] },
-        "tooltip": { "mode": "multi" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "${loki_ds}" },
-          "expr": "sum by (tool_name) (count_over_time({service_name=\"claude-code\"} | json | event_name = `claude_code.tool_result` [$__interval]))",
-          "legendFormat": "{{ tool_name }}",
-          "refId": "A"
-        }
-      ],
-      "title": "Tool Calls over Time",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "loki", "uid": "${loki_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 2 },
-          "unit": "ms"
-        }
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
-      "id": 31,
-      "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] },
-        "tooltip": { "mode": "multi" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "${loki_ds}" },
-          "expr": "avg_over_time({service_name=\"claude-code\"} | json | event_name = `claude_code.tool_result` | unwrap duration_ms [$__interval])",
-          "legendFormat": "{{ tool_name }}",
-          "refId": "A"
-        }
-      ],
-      "title": "Tool Execution Latency",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "loki", "uid": "${loki_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "fixed", "fixedColor": "red" },
-          "custom": { "lineWidth": 2 },
-          "unit": "short"
-        }
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
-      "id": 32,
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "${loki_ds}" },
-          "expr": "sum by (tool_name) (count_over_time({service_name=\"claude-code\"} | json | event_name = `claude_code.tool_result` | success = `false` [$__interval]))",
-          "legendFormat": "{{ tool_name }}",
-          "refId": "A"
-        }
-      ],
-      "title": "Failed Tool Calls",
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "expr": "sum by (type,model) (increase(claude_code_token_usage_tokens_total[$__rate_interval]))", "legendFormat": "{{ type }} / {{ model }}", "refId": "A" }],
+      "title": "Claude Token Usage",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "unit": "short"
-        }
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 48 },
-      "id": 33,
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "horizontal",
-        "displayMode": "gradient",
-        "valueMode": "color"
-      },
-      "targets": [
-        {
-          "expr": "claude_code_code_edit_tool_decision_count_total",
-          "legendFormat": "{{ tool_name }}: {{ decision }}",
-          "refId": "A"
-        }
-      ],
-      "title": "Code Edit Decisions",
-      "type": "bargauge"
-    },
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 56 },
-      "id": 104,
-      "title": "Events & Activity",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "loki", "uid": "${loki_ds}" },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 57 },
-      "id": 40,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "${loki_ds}" },
-          "expr": "{service_name=\"claude-code\"} | json",
-          "refId": "A"
-        }
-      ],
-      "title": "All Claude Code Events",
-      "type": "logs"
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "unit": "currencyUSD" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "id": 31,
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "expr": "sum by (model) (increase(claude_code_cost_usage_USD_total[$__rate_interval]))", "legendFormat": "{{ model }}", "refId": "A" }],
+      "title": "Claude Cost",
+      "type": "timeseries"
     }
   ],
   "refresh": "10s",
   "schemaVersion": 39,
   "style": "dark",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": { "from": "now-24h", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Personal Assistant — Claude Code",
-  "uid": "personal-assistant-claude",
+  "title": "Personal Assistant - Email Workflow",
+  "uid": "personal-assistant-email-workflow",
   "version": 1
 }

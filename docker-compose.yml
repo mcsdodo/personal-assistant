@@ -41,6 +41,7 @@ services:
       - DB_PATH=/data/email-watcher/emails.db
       - STARTUP_DELAY_MS=${STARTUP_DELAY_MS:-15000}
       - MAX_NEW_PER_CYCLE=${MAX_NEW_PER_CYCLE:-5}
+      - EMAIL_WATCHER_METRICS_PORT=${EMAIL_WATCHER_METRICS_PORT:-9465}
 
   paperless-mcp:
     image: ghcr.io/baruchiro/paperless-mcp:latest
