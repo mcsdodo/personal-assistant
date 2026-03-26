@@ -39,32 +39,40 @@ You will receive:
 
 ## Steps
 
-1. **Download the invoice**
+1. **Check for duplicates**
+   - If `order_id` is available: call `search_documents` with the order ID as query, filtered by the vendor's correspondent
+   - For each match, check the `order_id` custom field value
+   - If an exact `order_id` + correspondent match exists:
+     - Same `total_amount` → **definite duplicate**, return: `DUPLICATE: "{title}" already exists in Paperless (doc #{id})`
+     - Different `total_amount` or amount unknown → **likely duplicate**, return: `DUPLICATE_LIKELY: "{title}" matches doc #{id} but amount differs ({existing} vs {new})` — the main session will notify the user via Telegram
+   - If no `order_id` in classification, skip this step (no reliable dedup key)
+
+2. **Download the invoice**
    - For Gmail: use gmail MCP tools to get attachments
    - For Outlook with attachments: `get_attachments` → `download_attachment`
    - For Outlook with invoice links: `extract_invoice_links` → `download_invoice_link`
    - If download fails (409 = expired link), return FAILED immediately
 
-2. **Extract total amount from the downloaded document**
+3. **Extract total amount from the downloaded document**
    - If the downloaded content is a PDF, examine the filename and any available metadata
    - Use the email subject/body to infer the total amount (e.g., "Vrátili sme vám 156,68 €" → 156.68)
    - If the classifier provided an amount in the classification, use that
    - If you cannot determine the amount, set `total_amount` to null
 
-3. **Resolve correspondent**
+4. **Resolve correspondent**
    - Call `list_correspondents` to check if vendor exists
    - If not found, call `create_correspondent` with vendor name
    - Note the correspondent name for upload
 
-4. **Upload to Paperless-ngx**
+5. **Upload to Paperless-ngx**
    - Use the paperless MCP `post_document` tool
    - **Title**: "{vendor} - {invoice number or order ID}" (e.g., "Alza - Obj. 583481365")
    - **Document type**: `invoice` (for invoices and credit notes)
    - **Tags**: `invoicing` + the YYYY-MM month tag matching the email date + `fuel` if classifier set `is_fuel: true`
    - **Correspondent**: the resolved vendor correspondent
-   - **Custom fields**: set `total_amount` if determined
+   - **Custom fields**: set `total_amount` if determined, set `order_id` if available
 
-5. **Return result**
+6. **Return result**
    ```
    Uploaded "{title}" to Paperless | correspondent: {name} | tags: [{tags}] | total_amount: {amount}
    ```

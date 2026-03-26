@@ -42,9 +42,12 @@ When the real email-watcher is active, process emails using the Haiku subagents:
 1. **Classify** — dispatch to `email-classifier` agent with the email metadata (sender, subject, body excerpt). It returns a JSON classification.
 
 2. **Act on classification:**
-   - `action: download_and_upload` — dispatch to `invoice-processor` agent with the email source, message ID, and classification JSON. It handles download + Paperless upload.
+   - `action: download_and_upload` — dispatch to `invoice-processor` agent with the email source, message ID, and classification JSON. It handles duplicate detection, download, and Paperless upload. Handle its return value:
+     - `Uploaded ...` → success, notify via Telegram
+     - `DUPLICATE: ...` → silently skip, no notification
+     - `DUPLICATE_LIKELY: ...` → notify user via Telegram with details, ask whether to proceed
+     - `FAILED: ...` → notify user via Telegram with error
    - `action: notify_user` — report the email to the user with the classification details and ask what to do.
-   - `action: ignore_duplicate` — log that this is a duplicate (e.g., Alza "Už to chystáme" before "Pripravené"), skip processing.
    - `action: ignore` — log silently, do nothing.
 
 3. **Report** — after processing, briefly summarize what happened (e.g., "Uploaded Alza invoice FA2026030123 to Paperless with tags [invoicing, 2026-03, alza]").
@@ -68,7 +71,6 @@ Use the telegram `reply` tool to notify the user. The chat_id is available via t
 
 **When NOT to notify:**
 - `action: ignore` emails — silent, no notification
-- `action: ignore_duplicate` — silent, no notification
 - Mock email-watcher events — never notify about mock data
 
 **Message format:** Keep Telegram messages short (1-2 lines). No markdown formatting — Telegram uses its own markup. Use emoji sparingly for status: ✓ success, ⚠ warning, ❌ error.
