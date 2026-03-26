@@ -27,17 +27,30 @@ Outlook email access via Microsoft Graph:
 - `extract_invoice_links(message_id)` — find invoice download links in email body
 - `download_invoice_link(url)` — download file from invoice link (base64)
 
+### email-watcher (channel + tools)
+
+The email-watcher is both a channel (pushes events) and a tool server:
+- `update_email_status(id, status, classification?, action?, vendor?, confidence?, process_result?)` — record classification/processing results
+- `get_recent_emails(limit?, status?, source?)` — query the email audit trail
+- `get_email_stats()` — processing statistics (counts by status, last 24h)
+
+Use these for debugging ("show me recent emails"), status checks ("how many processed today?"), and always after processing an email event.
+
 ## When you receive an email-watcher channel event
 
-**The email-watcher is currently a MOCK** — it sends fake metadata, not real emails.
-Do NOT create correspondents, tags, or upload documents based on mock events.
-Instead: log what you received and describe what you *would* do with a real email.
+The email-watcher polls Gmail and Outlook every 30 seconds for new emails and pushes events here.
 
-When the real email-watcher is deployed (sends actual file data), this section will be updated.
+Each event has these meta fields:
+- `email_source`: `gmail` or `outlook` — which MCP server to use for downloads
+- `message_id`: the email ID — pass to the relevant MCP tools
+- `sender`, `subject`, `has_attachments`: email metadata
+- `received_at`: when the email was received
 
-## Email Processing Pipeline (for real events)
+On first startup, existing emails are seeded into the database without processing. Only emails that arrive after the channel starts are pushed.
 
-When the real email-watcher is active, process emails using the Haiku subagents:
+## Email Processing Pipeline
+
+Process emails using the Haiku subagents:
 
 1. **Classify** — dispatch to `email-classifier` agent with the email metadata (sender, subject, body excerpt). It returns a JSON classification.
 
@@ -51,6 +64,12 @@ When the real email-watcher is active, process emails using the Haiku subagents:
    - `action: ignore` — log silently, do nothing.
 
 3. **Report** — after processing, briefly summarize what happened (e.g., "Uploaded Alza invoice FA2026030123 to Paperless with tags [invoicing, 2026-03, alza]").
+
+4. **Record** — after each step, call `update_email_status` on the email-watcher:
+   - After classification: `update_email_status(id, status="classified", classification=<json>, action=..., vendor=..., confidence=...)`
+   - After processing: `update_email_status(id, status="processed", process_result="Uploaded X to Paperless")`
+   - On failure: `update_email_status(id, status="failed", process_result="error details")`
+   - On ignore: `update_email_status(id, status="ignored")`
 
 This pipeline keeps routine classification on Haiku (fast, cheap) and only escalates edge cases to you (Sonnet).
 
