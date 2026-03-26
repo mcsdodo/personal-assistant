@@ -12,129 +12,117 @@ Event-driven personal assistant: Claude Code (Sonnet) + Haiku subagents + MCP to
 | gmail-mcp | ghcr.io/taylorwilsdon/google_workspace_mcp | 8000 | Gmail read-only |
 | outlook-mcp | local build | 8002 | Outlook read-only (device code auth) |
 
-## Prerequisites
-
-- Docker + Docker Compose
-- Claude MAX subscription
-- Google Cloud project with Gmail API enabled
-- Azure AD app registration with `Mail.Read` permission
-- Telegram bot (create via @BotFather)
-
 ## Deployment (new environment)
 
-### Automated (handled by docker compose build)
+This stack is designed to be deployed by an agent (Claude Code). The agent handles all file operations, docker commands, and configuration. The user only needs to complete browser-based OAuth flows and Telegram pairing.
 
-- Claude Code CLI installation
-- Bun runtime installation
-- Telegram plugin cloned from `anthropics/claude-plugins-official`
-- Channel and MCP server wiring
-- Subagent definitions copied to `.claude/agents/`
+### Prerequisites (user provides these)
 
-### Manual steps (one-time per environment)
+- Docker + Docker Compose on the target host
+- Claude MAX subscription (logged in: `claude login` on host)
+- Google Cloud project with Gmail API + OAuth Desktop Client ID
+- Azure AD app registration with delegated `Mail.Read` permission
+- Telegram bot token from @BotFather
+- Paperless-ngx instance URL + API token
 
-#### 1. Configure secrets
+### Step 1: Configure .env (agent)
 
 ```bash
 cp .env.example .env
-# Fill in all credentials (see .env.example for descriptions)
 ```
 
-#### 2. Claude Code login
+Agent fills in credentials provided by user. See `.env.example` for all required values.
 
-```bash
-npm install -g @anthropic-ai/claude-code
-claude login
-```
-
-Tokens saved to `~/.claude/`, volume-mounted into container.
-
-#### 3. Gmail OAuth setup
-
-1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) → OAuth Client ID → Desktop App → Download JSON
-2. Save as `data/gmail/client_secret.json`
-3. OAuth consent screen → Add scope `gmail.readonly` → Add your email as test user
-4. Set `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` in `.env`
-
-#### 4. Outlook Azure app
-
-1. [Azure Portal](https://portal.azure.com) → App registrations → New → Add delegated `Mail.Read` permission
-2. Set `AZURE_CLIENT_ID` in `.env`
-
-#### 5. Telegram bot
-
-1. DM `@BotFather` in Telegram → `/newbot` → get token
-2. Set `TELEGRAM_BOT_TOKEN` in `.env`
-3. Set `TELEGRAM_CHAT_ID` to your personal Telegram user ID
-
-#### 6. Start the stack
+### Step 2: Build and start (agent)
 
 ```bash
 docker compose up -d --build
 ```
 
-#### 7. Complete interactive auth (one-time per environment)
+The build handles everything: Claude Code CLI, Bun, Telegram plugin (cloned from GitHub), channel wiring, subagent definitions.
 
-**Outlook** — device code flow, check logs:
+### Step 3: Outlook auth (user action required)
+
+Agent reads the device code from logs and tells the user what to do.
+
 ```bash
-docker compose logs outlook-mcp
-# Shows: Open https://www.microsoft.com/link → Enter: XXXXXXXX
+docker compose logs outlook-mcp | grep -A2 "OUTLOOK AUTH"
+# Output:
+#   1. Open:  https://www.microsoft.com/link
+#   2. Enter: XXXXXXXX
 ```
 
-**Gmail** — ask Claude to authenticate (via tmux):
+User opens the URL in a browser, enters the code, signs in. Token is cached automatically.
+
+### Step 4: Gmail auth (user action required)
+
+Agent triggers auth via the Claude session, then tells the user to open the URL.
+
 ```bash
-docker exec -it personal-assistant-claude tmux attach -t claude
-# Type: use gmail start_google_auth with service_name gmail and user_google_email you@gmail.com
+# Agent attaches to Claude session and triggers:
+docker exec personal-assistant-claude bash -c "tmux send-keys -t claude \
+  'use gmail start_google_auth with service_name gmail and user_google_email USER@gmail.com' Enter"
 ```
 
-**Telegram** — pair your account:
-1. DM your bot in Telegram (send any message, e.g., "hello")
-2. Bot replies: `Pairing required — run in Claude Code: /telegram:access pair XXXXXX`
-3. Read your Telegram user ID from the pending entry:
+Claude calls `start_google_auth` → returns a URL. User opens it in browser, approves Gmail access. Callback hits `localhost:8000` on the host → token saved.
+
+### Step 5: Telegram pairing (user action required)
+
+1. User sends any message to the bot in Telegram (e.g., "hello")
+2. Bot replies with a pairing code
+3. Agent reads the pending pairing and writes the allowlist:
+
 ```bash
-docker exec personal-assistant-claude bash -c "cat /home/node/.claude/channels/telegram/access.json"
-# Look for "senderId" in the "pending" section — that's your user ID
-```
-4. Write the allowlist (replace `YOUR_ID` with the senderId from step 3):
-```bash
+# Agent reads the pending entry to get the user's Telegram ID:
+docker exec personal-assistant-claude bash -c \
+  "cat /home/node/.claude/channels/telegram/access.json"
+# Look for "senderId" in the "pending" section
+
+# Agent writes the allowlist with the user's ID:
 docker exec personal-assistant-claude bash -c 'cat > /home/node/.claude/channels/telegram/access.json << EOF
 {
   "dmPolicy": "allowlist",
-  "allowFrom": ["YOUR_ID"],
+  "allowFrom": ["USER_TELEGRAM_ID"],
   "groups": {},
   "pending": {}
 }
 EOF'
 ```
-5. The file persists via the `~/.claude` volume mount — survives container restarts.
 
-Your Telegram user ID is a numeric string (e.g., `"7628063924"`). You can also get it by DMing `@userinfobot` on Telegram.
+The user's Telegram ID is a numeric string (e.g., `"7628063924"`). Also available via `@userinfobot` in Telegram.
 
-#### 8. Verify
+### Step 6: Verify (agent)
 
 ```bash
-docker compose ps                    # all containers up
-docker compose logs outlook-mcp      # "authenticated successfully"
-docker compose logs gmail-mcp        # "Stored credentials for..."
+# All containers running
+docker compose ps
 
-# Check Claude session:
+# Auth successful
+docker compose logs outlook-mcp | grep "authenticated"
+docker compose logs gmail-mcp | grep "Stored credentials"
+
+# Claude session listening on both channels
 docker exec personal-assistant-claude bash -c "tmux capture-pane -t claude -p -S -10"
-# Should show: Listening for channel messages from: server:email-watcher, server:telegram
+# Expected: "Listening for channel messages from: server:email-watcher, server:telegram"
+
+# Telegram two-way test
+docker exec personal-assistant-claude bash -c "tmux send-keys -t claude \
+  'Send a Telegram message to chat_id CHAT_ID saying: Deployment complete, assistant is online.' Enter"
 ```
 
-### What persists across restarts (via volume mounts)
+## Volume mounts (persist across restarts)
 
-| Path | Content | Volume |
-|------|---------|--------|
-| `~/.claude/` | Claude OAuth tokens, plugin data | `CLAUDE_CONFIG_DIR` |
-| `~/.claude/channels/telegram/access.json` | Telegram allowlist (survives rebuild) | same volume |
-| `data/gmail/` | Gmail OAuth tokens + client_secret.json | `GMAIL_CREDS_DIR` |
-| `data/outlook/token_cache.json` | Outlook MSAL token cache | `OUTLOOK_DATA_DIR` |
-| `data/downloads/` | Downloaded invoices (for inspection) | `DOWNLOADS_DIR` |
+| Path (container) | Content | .env override |
+|------------------|---------|---------------|
+| `/home/node/.claude/` | Claude OAuth, Telegram access.json | `CLAUDE_CONFIG_DIR` |
+| `/app/store_creds/` (gmail) | Gmail OAuth tokens | `GMAIL_CREDS_DIR` |
+| `/data/` (outlook) | Outlook MSAL token cache | `OUTLOOK_DATA_DIR` |
+| `/workspace/downloads/` | Downloaded invoices | `DOWNLOADS_DIR` |
 
 ## Windows local dev
 
 ```bash
-# Set Claude config path in .env:
+# Add to .env:
 CLAUDE_CONFIG_DIR=C:/Users/YourUser/.claude
 
 docker compose up -d --build
