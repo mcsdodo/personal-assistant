@@ -233,11 +233,31 @@ def extract_invoice_links(message_id: str) -> list[dict]:
 def download_invoice_link(url: str) -> dict:
     """Download a file from an invoice link URL. Returns base64-encoded content.
 
+    Tries plain requests first, then with browser-like headers. Returns an error
+    dict with details if both fail (e.g., expired link).
+
     Args:
         url: Direct download URL from extract_invoice_links.
     """
     import base64
+
+    # Attempt 1: plain request (works for fresh links)
     resp = requests.get(url, timeout=30, allow_redirects=True)
+
+    # Attempt 2: browser-like headers if plain request got blocked
+    if resp.status_code in (403, 409, 429):
+        resp = requests.get(url, timeout=30, allow_redirects=True, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,*/*;q=0.8",
+        })
+
+    if resp.status_code in (403, 409, 429):
+        return {
+            "error": f"Download failed: HTTP {resp.status_code}. Link may have expired.",
+            "url": url,
+            "status_code": resp.status_code,
+        }
+
     resp.raise_for_status()
 
     filename = None

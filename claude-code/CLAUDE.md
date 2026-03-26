@@ -44,6 +44,7 @@ When the real email-watcher is active, process emails using the Haiku subagents:
 2. **Act on classification:**
    - `action: download_and_upload` — dispatch to `invoice-processor` agent with the email source, message ID, and classification JSON. It handles download + Paperless upload.
    - `action: notify_user` — report the email to the user with the classification details and ask what to do.
+   - `action: ignore_duplicate` — log that this is a duplicate (e.g., Alza "Už to chystáme" before "Pripravené"), skip processing.
    - `action: ignore` — log silently, do nothing.
 
 3. **Report** — after processing, briefly summarize what happened (e.g., "Uploaded Alza invoice FA2026030123 to Paperless with tags [invoicing, 2026-03, alza]").

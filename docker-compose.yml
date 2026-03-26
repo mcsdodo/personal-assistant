@@ -11,6 +11,8 @@ services:
       # Homelab: default ~/.claude works (run `claude login` on host first)
       # Windows: set CLAUDE_CONFIG_DIR=C:/Users/Dodo/.claude in .env
       - ${CLAUDE_CONFIG_DIR:-~/.claude}:/home/node/.claude
+      # Downloaded invoices — check from host via ./data/downloads/
+      - ${DOWNLOADS_DIR:-./data/downloads}:/workspace/downloads
     environment:
       - NODE_OPTIONS=--max-old-space-size=4096
       - HOME=/home/node
