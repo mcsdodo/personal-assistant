@@ -1,4 +1,4 @@
-# Personal Assistant Stack
+# Personal Assistant Stack — Local Dev
 
 Event-driven personal assistant: Claude Code (Sonnet) + Haiku subagents + MCP tool servers + channels (email-watcher, Telegram).
 
@@ -6,138 +6,101 @@ Event-driven personal assistant: Claude Code (Sonnet) + Haiku subagents + MCP to
 
 | Service | Image | Port | Purpose |
 |---------|-------|------|---------|
-| claude-code | local build | — | Claude Code + channels + subagents + remote control |
+| claude-code | local build | 9465 (metrics) | Claude Code + channels + subagents + remote control |
 | paperless-mcp | ghcr.io/baruchiro/paperless-mcp | 3000 | Paperless-ngx CRUD (20 tools) |
 | checker-mcp | local build | 8001 | Invoice matching + P&L (4 tools) |
-| gmail-mcp | ghcr.io/taylorwilsdon/google_workspace_mcp | 8000 | Gmail read-only |
-| outlook-mcp | local build | 8002 | Outlook read-only (device code auth) |
+| gmail-mcp | ghcr.io/taylorwilsdon/google_workspace_mcp | 8000 | Gmail read-only (OAuth via `gmail-mcp.lacny.me`) |
+| outlook-mcp | local build | 8002 | Outlook read-only (MSAL device code auth) |
 
-## Deployment (new environment)
+## Folder Structure
 
-This stack is designed to be deployed by an agent (Claude Code). The agent handles all file operations, docker commands, and configuration. The user only needs to complete browser-based OAuth flows and Telegram pairing.
-
-### Prerequisites (user provides these)
-
-- Docker + Docker Compose on the target host
-- Claude MAX subscription (logged in: `claude login` on host)
-- Google Cloud project with Gmail API + OAuth Desktop Client ID
-- Azure AD app registration with delegated `Mail.Read` permission
-- Telegram bot token from @BotFather
-- Paperless-ngx instance URL + API token
-
-### Step 1: Configure .env (agent)
-
-```bash
-cp .env.example .env
+```
+personal-assistant/
+  CLAUDE.md                    # Stack docs (always read this first)
+  docker-compose.yml           # Production compose (Komodo deploys this)
+  local/
+    docker-compose.yml         # Local dev overlay (build contexts + observability)
+    .env / .env.example        # Local dev secrets
+    claude-code/               # Dockerfile + channels + agents
+    checker-mcp/               # Dockerfile + match_invoices.py
+    outlook-mcp/               # Dockerfile + MSAL server
+    observability/             # Alloy, Prometheus, Loki, Grafana configs
+    data/                      # Gitignored: auth tokens, SQLite DB, downloads
 ```
 
-Agent fills in credentials provided by user. See `.env.example` for all required values.
+## Production Deployment (Komodo)
 
-### Step 2: Build and start (agent)
+Everything is managed by Komodo. No manual host setup needed.
 
-```bash
-docker compose up -d --build
+```powershell
+cd compose.stacks/_komodo
+.\komodo.ps1 -Stack personal-assistant   # builds 3 images + deploys
 ```
 
-The build handles everything: Claude Code CLI, Bun, Telegram plugin (cloned from GitHub), channel wiring, subagent definitions.
+Komodo handles: secrets (core.config.toml), builds (3 Dockerfiles), deploy (procedure), env vars.
+Docker auto-creates bind mount dirs on `/mnt/shared_configs/personal-assistant/`.
+Entrypoint creates `settings.json` on first boot. Gmail `client_secret.json` generated from env var.
 
-### Step 3: Outlook auth (user action required)
+### Post-deploy auth (one-time, per service)
 
-Agent reads the device code from logs and tells the user what to do.
-
+**Claude Code:**
 ```bash
-docker compose logs outlook-mcp | grep -A2 "OUTLOOK AUTH"
-# Output:
-#   1. Open:  https://www.microsoft.com/link
-#   2. Enter: XXXXXXXX
+docker exec -it personal-assistant-claude claude login
 ```
 
-User opens the URL in a browser, enters the code, signs in. Token is cached automatically.
-
-### Step 4: Gmail auth (user action required)
-
-Agent triggers auth via the Claude session, then tells the user to open the URL.
-
+**Outlook** (device code expires in 15 min — restart container for fresh code):
 ```bash
-# Agent attaches to Claude session and triggers:
-docker exec personal-assistant-claude bash -c "tmux send-keys -t claude \
-  'use gmail start_google_auth with service_name gmail and user_google_email USER@gmail.com' Enter"
+docker restart personal-assistant-outlook-mcp
+docker logs personal-assistant-outlook-mcp 2>&1 | grep -A3 "OUTLOOK AUTH"
+# Open URL, enter code, sign in. Token cached automatically.
 ```
 
-Claude calls `start_google_auth` → returns a URL. User opens it in browser, approves Gmail access. Callback hits `localhost:8000` on the host → token saved.
+**Gmail** (permanent OAuth via `gmail-mcp.lacny.me`):
+Trigger from Claude session (Remote Control or tmux):
+```
+call start_google_auth with service_name gmail and user_google_email lacny.jozef@gmail.com
+```
+Open the returned URL, approve. Callback goes to `https://gmail-mcp.lacny.me/oauth2callback`.
+Requires: `https://gmail-mcp.lacny.me/oauth2callback` in Google Cloud Console authorized redirect URIs.
 
-### Step 5: Telegram pairing (user action required)
+**Telegram:**
+1. DM the bot in Telegram
+2. Pre-seeded access.json in `claude-config/channels/telegram/` handles pairing
+3. If new pairing needed: read `access.json` for pending entry, add user ID to allowlist
 
-1. User sends any message to the bot in Telegram (e.g., "hello")
-2. Bot replies with a pairing code
-3. Agent reads the pending pairing and writes the allowlist:
-
+### After auth, restart Claude to reconnect all MCPs:
 ```bash
-# Agent reads the pending entry to get the user's Telegram ID:
-docker exec personal-assistant-claude bash -c \
-  "cat /home/node/.claude/channels/telegram/access.json"
-# Look for "senderId" in the "pending" section
-
-# Agent writes the allowlist with the user's ID:
-docker exec personal-assistant-claude bash -c 'cat > /home/node/.claude/channels/telegram/access.json << EOF
-{
-  "dmPolicy": "allowlist",
-  "allowFrom": ["USER_TELEGRAM_ID"],
-  "groups": {},
-  "pending": {}
-}
-EOF'
+docker restart personal-assistant-claude
 ```
 
-The user's Telegram ID is a numeric string (e.g., `"7628063924"`). Also available via `@userinfobot` in Telegram.
-
-### Step 6: Verify (agent)
+## Local Dev
 
 ```bash
-# All containers running
-docker compose ps
+# From compose.stacks/infra/personal-assistant/
+docker compose -f docker-compose.yml -f local/docker-compose.yml --env-file local/.env up --build
 
-# Auth successful
-docker compose logs outlook-mcp | grep "authenticated"
-docker compose logs gmail-mcp | grep "Stored credentials"
-
-# Claude session listening on both channels
-docker exec personal-assistant-claude bash -c "tmux capture-pane -t claude -p -S -10"
-# Expected: "Listening for channel messages from: server:email-watcher, server:telegram"
-
-# Telegram two-way test
-docker exec personal-assistant-claude bash -c "tmux send-keys -t claude \
-  'Send a Telegram message to chat_id CHAT_ID saying: Deployment complete, assistant is online.' Enter"
-```
-
-## Volume mounts (persist across restarts)
-
-| Path (container) | Content | .env override |
-|------------------|---------|---------------|
-| `/home/node/.claude/` | Claude OAuth, Telegram access.json | `CLAUDE_CONFIG_DIR` |
-| `/app/store_creds/` (gmail) | Gmail OAuth tokens | `GMAIL_CREDS_DIR` |
-| `/data/` (outlook) | Outlook MSAL token cache | `OUTLOOK_DATA_DIR` |
-| `/workspace/downloads/` | Downloaded invoices | `DOWNLOADS_DIR` |
-
-## Windows local dev
-
-```bash
-# Add to .env:
-CLAUDE_CONFIG_DIR=C:/Users/YourUser/.claude
-
-docker compose up -d --build
-```
-
-## Monitoring
-
-```bash
-# View Claude session live
+# View Claude session
 docker exec -it personal-assistant-claude tmux attach -t claude
 
-# Capture last 30 lines without attaching
-docker exec personal-assistant-claude bash -c "tmux capture-pane -t claude -p -S -30"
-
-# Check MCP server health
-docker exec personal-assistant-claude bash -c "curl -s http://checker-mcp:8001/mcp"
-docker exec personal-assistant-claude bash -c "curl -s http://paperless-mcp:3000/mcp"
+# Capture without attaching
+docker exec personal-assistant-claude tmux capture-pane -t claude -p -S -30
 ```
+
+Local dev adds build contexts for the 3 custom images + observability sidecar (Alloy + Prometheus + Loki + Grafana).
+
+| Service | Local URL |
+|---------|-----------|
+| Grafana | http://localhost:3001 |
+| Prometheus | http://localhost:9091 |
+| Loki | http://localhost:3101 |
+| Alloy UI | http://localhost:12345 |
+
+## Persistent Data (NAS-backed)
+
+| Host path | Container path | Content |
+|-----------|---------------|---------|
+| `/mnt/shared_configs/personal-assistant/claude-config` | `/home/node/.claude` | Claude OAuth, settings, Telegram access |
+| `/mnt/shared_configs/personal-assistant/gmail` | `/app/store_creds` | Gmail OAuth tokens |
+| `/mnt/shared_configs/personal-assistant/outlook` | `/data` | Outlook MSAL token cache |
+| `/mnt/shared_configs/personal-assistant/email-watcher` | `/data/email-watcher` | SQLite audit trail |
+| `/mnt/shared_configs/personal-assistant/downloads` | `/workspace/downloads` | Downloaded invoices |
