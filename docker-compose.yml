@@ -3,6 +3,8 @@ services:
     image: personal-assistant-claude-code:latest
     container_name: personal-assistant-claude
     restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.monitor: "false"
     ports:
       - "9465:9465"
     volumes:
@@ -52,6 +54,8 @@ services:
     image: personal-assistant-checker-mcp:latest
     container_name: personal-assistant-checker-mcp
     restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.monitor: "false"
     environment:
       - PAPERLESS_URL=${PAPERLESS_URL}
       - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}
@@ -80,6 +84,8 @@ services:
     image: personal-assistant-outlook-mcp:latest
     container_name: personal-assistant-outlook-mcp
     restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.monitor: "false"
     volumes:
       # Token cache persists here — device code auth runs at startup if needed
       - /mnt/shared_configs/personal-assistant/outlook:/data
