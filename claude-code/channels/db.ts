@@ -139,6 +139,18 @@ export function hasAnyEmails(db: Database): boolean {
 }
 
 /**
+ * Returns true if the emails table has any rows for a specific source.
+ * Used for per-source seeding: each source (gmail, outlook) seeds
+ * independently on its first successful poll.
+ */
+export function hasAnyEmailsForSource(db: Database, source: string): boolean {
+  const row = db
+    .prepare("SELECT 1 FROM emails WHERE source = ? LIMIT 1")
+    .get(source);
+  return row !== null;
+}
+
+/**
  * Updates allowed fields on an email row. Disallowed fields (e.g. `id`,
  * `source`) are silently ignored.
  *

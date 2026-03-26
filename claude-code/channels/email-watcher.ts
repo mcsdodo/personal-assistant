@@ -22,7 +22,7 @@ import {
   openDb,
   insertEmail,
   emailExists,
-  hasAnyEmails,
+  hasAnyEmailsForSource,
   updateEmail,
   getRecentEmails,
   getEmailStats,
@@ -107,8 +107,12 @@ function resetOutlookClient(): void {
 }
 
 /**
- * Extract text from MCP tool result content blocks.
- * Tries JSON.parse on text content, falls back to raw text.
+ * Extract data from MCP tool result content blocks.
+ *
+ * FastMCP (Python) serialises list[dict] as separate text content blocks —
+ * one JSON object per block. If there are multiple text blocks, try to parse
+ * each individually and return an array. Single block: try JSON.parse, fall
+ * back to raw text.
  */
 function parseToolResult(result: any): any {
   if (!result?.content) return null;
@@ -119,11 +123,21 @@ function parseToolResult(result: any): any {
       texts.push(block.text);
     }
   }
-  const joined = texts.join("\n");
+  if (texts.length === 0) return null;
+
+  // Multiple text blocks → likely one JSON object per block (FastMCP list)
+  if (texts.length > 1) {
+    const items = texts.map((t) => {
+      try { return JSON.parse(t); } catch { return t; }
+    });
+    return items;
+  }
+
+  // Single block → try JSON.parse, fall back to raw text
   try {
-    return JSON.parse(joined);
+    return JSON.parse(texts[0]);
   } catch {
-    return joined;
+    return texts[0];
   }
 }
 
@@ -185,6 +199,30 @@ function parseGmailEmails(data: any, ids: string[]): EmailInfo[] {
           receivedAt: item.receivedAt ?? item.received_at ?? item.date ?? item.internalDate ?? undefined,
         });
       }
+    }
+    if (emails.length > 0) return emails;
+  }
+
+  // Formatted text from google_workspace_mcp — parse Subject/From/Date
+  if (typeof data === "string" && data.includes("Message ID:")) {
+    const blocks = data.split(/(?=Message ID:)/);
+    for (const block of blocks) {
+      const idMatch = block.match(/Message ID:\s*(\S+)/);
+      if (!idMatch) continue;
+      const fromMatch = block.match(/From:\s*(.+)/);
+      const subjectMatch = block.match(/Subject:\s*(.+)/);
+      const dateMatch = block.match(/Date:\s*(.+)/);
+      // Extract email from "Display Name" <email> format
+      const rawFrom = fromMatch?.[1]?.trim() ?? "";
+      const emailMatch = rawFrom.match(/<([^>]+)>/);
+      emails.push({
+        id: idMatch[1],
+        source: "gmail",
+        sender: emailMatch ? emailMatch[1] : rawFrom,
+        subject: subjectMatch?.[1]?.trim(),
+        hasAttachments: false,
+        receivedAt: dateMatch?.[1]?.trim(),
+      });
     }
     if (emails.length > 0) return emails;
   }
@@ -305,33 +343,46 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
     pollOutlook(),
   ]);
 
-  const allEmails = [...gmailEmails, ...outlookEmails];
-
-  if (allEmails.length === 0) {
-    return;
+  // Per-source seeding: each source seeds independently on its first
+  // successful poll. This prevents the bug where Gmail seeds first, then
+  // Outlook emails on the next cycle are treated as "new" (not seeded)
+  // because the global hasAnyEmails() already returns true.
+  const emailsBySource: Map<string, EmailInfo[]> = new Map();
+  for (const email of gmailEmails) {
+    const list = emailsBySource.get(email.source) ?? [];
+    list.push(email);
+    emailsBySource.set(email.source, list);
+  }
+  for (const email of outlookEmails) {
+    const list = emailsBySource.get(email.source) ?? [];
+    list.push(email);
+    emailsBySource.set(email.source, list);
   }
 
-  // First scan: seed all emails, don't notify
-  const isFirstScan = !hasAnyEmails(db);
-  if (isFirstScan) {
-    log(`First scan: seeding ${allEmails.length} emails`);
-    for (const email of allEmails) {
-      insertEmail(db, {
-        id: email.id,
-        source: email.source,
-        sender: email.sender ?? null,
-        subject: email.subject ?? null,
-        preview: email.preview ?? null,
-        hasAttachments: email.hasAttachments ?? false,
-        receivedAt: email.receivedAt ?? null,
-        status: "seed",
-      });
+  // Seed any source that has never been seen before
+  const emailsToProcess: EmailInfo[] = [];
+  for (const [source, emails] of emailsBySource) {
+    if (!hasAnyEmailsForSource(db, source)) {
+      log(`First scan for ${source}: seeding ${emails.length} emails`);
+      for (const email of emails) {
+        insertEmail(db, {
+          id: email.id,
+          source: email.source,
+          sender: email.sender ?? null,
+          subject: email.subject ?? null,
+          preview: email.preview ?? null,
+          hasAttachments: email.hasAttachments ?? false,
+          receivedAt: email.receivedAt ?? null,
+          status: "seed",
+        });
+      }
+    } else {
+      emailsToProcess.push(...emails);
     }
-    return;
   }
 
   // Filter to emails not already in DB
-  const newEmails = allEmails.filter((e) => !emailExists(db, e.id));
+  const newEmails = emailsToProcess.filter((e) => !emailExists(db, e.id));
 
   if (newEmails.length === 0) {
     return;

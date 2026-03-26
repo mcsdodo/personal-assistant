@@ -7,6 +7,7 @@ import {
   insertEmail,
   emailExists,
   hasAnyEmails,
+  hasAnyEmailsForSource,
   updateEmail,
   getRecentEmails,
   getEmailStats,
@@ -145,6 +146,35 @@ describe("hasAnyEmails", () => {
   test("returns true after insert", () => {
     insertEmail(db, { id: "msg-any", source: "gmail", status: "new" });
     expect(hasAnyEmails(db)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasAnyEmailsForSource
+// ---------------------------------------------------------------------------
+describe("hasAnyEmailsForSource", () => {
+  test("returns false on empty database for any source", () => {
+    expect(hasAnyEmailsForSource(db, "gmail")).toBe(false);
+    expect(hasAnyEmailsForSource(db, "outlook")).toBe(false);
+  });
+
+  test("returns true only for the source that has emails", () => {
+    insertEmail(db, { id: "msg-gmail-1", source: "gmail", status: "seed" });
+    expect(hasAnyEmailsForSource(db, "gmail")).toBe(true);
+    expect(hasAnyEmailsForSource(db, "outlook")).toBe(false);
+  });
+
+  test("returns true for both sources after both are seeded", () => {
+    insertEmail(db, { id: "msg-gmail-2", source: "gmail", status: "seed" });
+    insertEmail(db, { id: "msg-outlook-1", source: "outlook", status: "seed" });
+    expect(hasAnyEmailsForSource(db, "gmail")).toBe(true);
+    expect(hasAnyEmailsForSource(db, "outlook")).toBe(true);
+  });
+
+  test("works with different statuses (seed, new, classified)", () => {
+    insertEmail(db, { id: "msg-ol-new", source: "outlook", status: "new" });
+    expect(hasAnyEmailsForSource(db, "outlook")).toBe(true);
+    expect(hasAnyEmailsForSource(db, "gmail")).toBe(false);
   });
 });
 
