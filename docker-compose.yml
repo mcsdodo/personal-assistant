@@ -64,18 +64,19 @@ services:
     image: ghcr.io/taylorwilsdon/google_workspace_mcp:latest
     container_name: personal-assistant-gmail-mcp
     restart: unless-stopped
-    ports:
-      # OAuth callback — needed for initial auth, can remove after
-      - "8000:8000"
     volumes:
       # OAuth tokens persist here
       - /mnt/shared_configs/personal-assistant/gmail:/app/store_creds
     environment:
       - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}
       - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET}
+      - GOOGLE_OAUTH_REDIRECT_URI=https://gmail-mcp.lacny.me/oauth2callback
       - GOOGLE_MCP_CREDENTIALS_DIR=/app/store_creds
       - GOOGLE_CLIENT_SECRET_JSON=${GOOGLE_CLIENT_SECRET_JSON}
       - TOOLS=gmail
+    labels:
+      caddy: gmail-mcp.lacny.me
+      caddy.reverse_proxy: "{{upstreams 8000}}"
     # Write client_secret.json from env var at startup (no manual file copy needed)
     entrypoint: ["/bin/sh", "-c"]
     command:
