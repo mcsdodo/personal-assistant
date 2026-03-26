@@ -64,6 +64,8 @@ services:
     image: ghcr.io/taylorwilsdon/google_workspace_mcp:latest
     container_name: personal-assistant-gmail-mcp
     restart: unless-stopped
+    ports:
+      - "8000:8000"
     volumes:
       # OAuth tokens persist here
       - /mnt/shared_configs/personal-assistant/gmail:/app/store_creds
