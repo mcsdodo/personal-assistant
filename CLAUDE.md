@@ -223,7 +223,14 @@ This starts a local Alloy + Prometheus + Loki + Grafana alongside the main stack
 
 ### Production
 
-On the deploy host, add the OTLP receiver blocks from `observability/alloy-config.alloy` to the host's shared Alloy config. Set `OTEL_ENDPOINT` in `.env` if the host Alloy isn't reachable at `http://alloy:4317`.
+Production OTLP support now belongs in the shared host Alloy config at `compose.stacks/_shared-infra/alloy/config.alloy`.
+
+Set `OTEL_ENDPOINT` in `.env` if the host Alloy isn't reachable at `http://alloy:4317` from the `claude-code` container.
+
+Notes:
+- local dev still uses `observability/alloy-config.alloy` via `docker-compose.local.yml`
+- production host config reuses the existing shared `prometheus.remote_write.prometheus_endpoint` and `loki.write.loki_endpoint` outputs
+- after syncing the shared config to `/mnt/shared_configs/grafana/config.alloy`, restart the host Alloy container
 
 ### Metrics (Prometheus, meter: `com.anthropic.claude_code`)
 
@@ -247,8 +254,10 @@ On the deploy host, add the OTLP receiver blocks from `observability/alloy-confi
 | `email_watcher_attachments_total` | Emails with attachments by `source` and `status` |
 | `email_watcher_recent_discovered_total` | Emails discovered in the last 24h by `source` and `status` |
 | `email_watcher_actions_total` | Classified actions such as `download_and_upload`, `notify_user`, `ignore` |
+| `email_watcher_confidence_total` | Classified emails grouped by confidence (`high`, `medium`, `low`) |
 | `email_watcher_vendors_total` | Top detected vendors once classification starts recording them |
 | `email_watcher_processed_results_total` | Processed email counts grouped by final `status` |
+| `email_watcher_latency_seconds` | Average workflow latency from discovery to classification / processing |
 
 ### Events (Loki, via OTel logs)
 
@@ -266,6 +275,7 @@ On the deploy host, add the OTLP receiver blocks from `observability/alloy-confi
 |------|---------|
 | `docker-compose.local.yml` | Local dev observability stack (Alloy + Prometheus + Loki + Grafana) |
 | `observability/alloy-config.alloy` | Alloy OTLP receiver config (used locally, merge into host config for prod) |
+| `compose.stacks/_shared-infra/alloy/config.alloy` | Shared host Alloy config with production OTLP receiver for Claude Code |
 | `observability/dashboards/claude-code.json` | Grafana dashboard focused on email backlog, source mix, invoice signals, plus Claude token/cost telemetry |
 | `observability/prometheus-config.yml` | Minimal Prometheus config for local dev |
 | `observability/loki-config.yml` | Minimal Loki config for local dev |

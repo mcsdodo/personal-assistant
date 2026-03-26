@@ -191,8 +191,28 @@
       "type": "bargauge"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 39 },
+      "id": 24,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
+      "targets": [{ "expr": "sum by (confidence) (email_watcher_confidence_total)", "legendFormat": "{{ confidence }}", "refId": "A" }],
+      "title": "Classification Confidence",
+      "type": "bargauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 39 },
+      "id": 25,
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "expr": "email_watcher_latency_seconds", "legendFormat": "{{ stage }}", "refId": "A" }],
+      "title": "Workflow Latency",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 47 },
       "id": 103,
       "title": "Claude Cost",
       "type": "row"
@@ -200,7 +220,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "unit": "short" } },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
       "id": 30,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
       "targets": [{ "expr": "sum by (type,model) (increase(claude_code_token_usage_tokens_total[$__rate_interval]))", "legendFormat": "{{ type }} / {{ model }}", "refId": "A" }],
@@ -210,7 +230,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "unit": "currencyUSD" } },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 48 },
       "id": 31,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
       "targets": [{ "expr": "sum by (model) (increase(claude_code_cost_usage_USD_total[$__rate_interval]))", "legendFormat": "{{ model }}", "refId": "A" }],

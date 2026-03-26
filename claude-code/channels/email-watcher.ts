@@ -204,6 +204,27 @@ function renderMetrics(db: Database): string {
   }
 
   lines.push(
+    "# HELP email_watcher_confidence_total Classified emails by confidence level.",
+    "# TYPE email_watcher_confidence_total gauge",
+  );
+
+  const confidences = db
+    .query(
+      `SELECT confidence, COUNT(*) AS count
+       FROM emails
+       WHERE confidence IS NOT NULL
+       GROUP BY confidence
+       ORDER BY confidence`
+    )
+    .all() as Array<{ confidence: string; count: number }>;
+
+  for (const row of confidences) {
+    lines.push(
+      metricLine("email_watcher_confidence_total", { confidence: row.confidence }, row.count),
+    );
+  }
+
+  lines.push(
     "# HELP email_watcher_vendors_total Classified vendors recorded by the workflow.",
     "# TYPE email_watcher_vendors_total gauge",
   );
@@ -240,6 +261,39 @@ function renderMetrics(db: Database): string {
 
   for (const row of processed) {
     lines.push(metricLine("email_watcher_processed_results_total", { status: row.status }, row.count));
+  }
+
+  lines.push(
+    "# HELP email_watcher_latency_seconds Workflow latency derived from the email audit trail.",
+    "# TYPE email_watcher_latency_seconds gauge",
+  );
+
+  const latencies = db
+    .query(
+      `SELECT
+         'classification' AS stage,
+         AVG((julianday(classified_at) - julianday(discovered_at)) * 86400.0) AS avg_seconds
+       FROM emails
+       WHERE classified_at IS NOT NULL
+       UNION ALL
+       SELECT
+         'processing' AS stage,
+         AVG((julianday(processed_at) - julianday(discovered_at)) * 86400.0) AS avg_seconds
+       FROM emails
+       WHERE processed_at IS NOT NULL`
+    )
+    .all() as Array<{ stage: string; avg_seconds: number | null }>;
+
+  for (const row of latencies) {
+    if (row.avg_seconds !== null) {
+      lines.push(
+        metricLine(
+          "email_watcher_latency_seconds",
+          { stage: row.stage },
+          row.avg_seconds,
+        ),
+      );
+    }
   }
 
   lines.push("");
