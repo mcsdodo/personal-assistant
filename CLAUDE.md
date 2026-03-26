@@ -2,9 +2,20 @@
 
 Event-driven personal assistant using Claude Code Channels + MCP tool servers.
 
+**Use-case index**: `_tasks/10-personal-assistant/USE-CASES.md` — **keep this up to date** (see below)
 **Design doc**: `_tasks/10-personal-assistant/02-design.md`
 **Implementation plan**: `_tasks/10-personal-assistant/03-plan.md`
 **Channels research**: `_tasks/10-personal-assistant/04-channels-research.md`
+
+## Use-Case Index
+
+`_tasks/10-personal-assistant/USE-CASES.md` is the single source of truth for what this project delivers.
+
+**After any implementation work in this stack:**
+1. Update the status column (`--` -> `POC` -> `WIP` -> `DONE`) for affected use cases
+2. Add new use cases if scope expands
+3. Update the Infrastructure table if components change
+4. Keep Notes column current (blockers, decisions, references)
 
 ## Architecture
 
