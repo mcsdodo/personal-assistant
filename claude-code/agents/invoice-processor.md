@@ -23,6 +23,7 @@ You will receive:
 - `invoicing` — apply to ALL invoices and credit notes
 - `documents` — apply to non-invoice documents (statements, receipts)
 - `techlab` — apply to Techlab s.r.o. business expenses only
+- `fuel` — apply when classifier sets `is_fuel: true` (gas station receipts/invoices)
 
 **Document types** (use by name):
 - `invoice` — for invoices and credit notes
@@ -59,7 +60,7 @@ You will receive:
    - Use the paperless MCP `post_document` tool
    - **Title**: "{vendor} - {invoice number or order ID}" (e.g., "Alza - Obj. 583481365")
    - **Document type**: `invoice` (for invoices and credit notes)
-   - **Tags**: `invoicing` + the YYYY-MM month tag matching the email date
+   - **Tags**: `invoicing` + the YYYY-MM month tag matching the email date + `fuel` if classifier set `is_fuel: true`
    - **Correspondent**: the resolved vendor correspondent
    - **Custom fields**: set `total_amount` if determined
 
