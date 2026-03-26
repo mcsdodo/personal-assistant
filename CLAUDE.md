@@ -42,6 +42,45 @@ outlook-mcp container (python:3.12-slim)
 
 Channels are stdio subprocesses of Claude Code — they MUST run inside the same container. MCP tool servers CAN be separate containers via Streamable HTTP (`"type": "http"` in `.mcp.json`).
 
+## Robustness & Health
+
+### Health Checks
+
+All 5 services have Docker health checks. `claude-code` depends on all MCPs via `depends_on: service_healthy` — it won't start until all MCPs are ready.
+
+| Service | Health check | Interval | Start period |
+|---------|-------------|----------|--------------|
+| `claude-code` | tmux session alive + email-watcher `/health` (port 9465) | 30s | 90s |
+| `checker-mcp` | `/health` endpoint (port 8001) | 30s | 15s |
+| `outlook-mcp` | `/health` endpoint (port 8002) | 30s | 30s |
+| `paperless-mcp` | TCP port 3000 check via Node | 30s | 15s |
+| `gmail-mcp` | TCP port 8000 check via Python | 30s | 15s |
+
+The email-watcher `/health` also tracks poll staleness — returns 503 if no successful poll in `POLL_INTERVAL_MS * 5` (default: 2.5 minutes). This detects both MCP connectivity loss and email-watcher hangs.
+
+When the tmux session dies, the entrypoint exits with code 1, triggering Docker's `restart: unless-stopped` policy.
+
+### Stateless MCP Sessions
+
+Custom MCP servers (`checker-mcp`, `outlook-mcp`) run with `FASTMCP_STATELESS_HTTP=true`. This means:
+- No MCP session IDs are assigned
+- Server restarts are transparent to Claude Code (no session to lose)
+- Works around Claude Code bug [#27142](https://github.com/anthropics/claude-code/issues/27142) where cached session IDs cause permanent tool failures after server restart
+
+Community servers (`paperless-mcp`, `gmail-mcp`) may still use stateful sessions. If they restart and Claude's tool calls fail, restart the `claude-code` container.
+
+### Watchtower
+
+All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-session auto-updates. Update community images intentionally via Komodo procedure.
+
+### Version Pinning
+
+| Image | Pin strategy |
+|-------|-------------|
+| `checker-mcp`, `outlook-mcp`, `claude-code` | Local builds via Komodo, tagged by git commit |
+| `gmail-mcp` | Pinned to `1.14.3` (semver available on GHCR) |
+| `paperless-mcp` | `:latest` (no semver tags; Watchtower excluded, `auto_pull=false`) |
+
 ## Key Files
 
 | File | Purpose |
@@ -52,7 +91,7 @@ Channels are stdio subprocesses of Claude Code — they MUST run inside the same
 | `local/claude-code/Dockerfile` | node:20 + bun + claude-code CLI, non-root user |
 | `local/claude-code/.mcp.json` | MCP server config (channels + HTTP tools) |
 | `local/claude-code/CLAUDE.md` | Instructions for the Claude session |
-| `local/claude-code/entrypoint.sh` | tmux wrapper, first-run settings.json creation |
+| `local/claude-code/entrypoint.sh` | tmux wrapper, prompt detection, health monitor |
 | `local/claude-code/channels/email-watcher.ts` | Email-watcher channel (polls Gmail+Outlook, SQLite audit) |
 | `local/claude-code/channels/db.ts` | Email-watcher SQLite module |
 | `local/claude-code/agents/` | Haiku subagents (email-classifier, invoice-processor) |
@@ -90,7 +129,7 @@ claude \
 ```
 
 - `--dangerously-skip-permissions`: can't run as root (use non-root user)
-- `--dangerously-load-development-channels`: has unskippable TUI prompt — must package as proper plugin for production
+- `--dangerously-load-development-channels`: has unskippable TUI prompt — entrypoint polls for it and sends Enter (replaces old blind `sleep 5`)
 - `--channels plugin:name@marketplace`: loads approved channel plugins without prompt
 - `--mcp-config`: needed because `-p` mode doesn't auto-discover workspace `.mcp.json`
 - `--remote-control`: flag (not subcommand) for remote access, composable with `--channels`

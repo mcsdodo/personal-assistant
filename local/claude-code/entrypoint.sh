@@ -43,4 +43,10 @@ fi
 echo "Claude Code session started in tmux."
 echo "Use 'docker exec -it <container> tmux attach -t claude' to view."
 
-exec sleep infinity
+# Monitor tmux session — exit if it dies so Docker's restart policy kicks in
+# (Docker only restarts on container exit, not on unhealthy status alone)
+while tmux has-session -t claude 2>/dev/null; do
+  sleep 10
+done
+echo "Claude session exited, stopping container for restart..."
+exit 1
