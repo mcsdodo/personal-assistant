@@ -56,9 +56,11 @@ Always respond with ONLY this JSON (no markdown, no explanation):
   "vendor": "Alza",
   "doc_type": "invoice",
   "category": "electronics",
-  "suggested_tags": ["invoicing", "2026-03", "alza"],
+  "suggested_tags": ["invoicing", "2026-03"],
   "action": "download_and_upload",
-  "order_id": "583481365"
+  "order_id": "583481365",
+  "total_amount": 156.68,
+  "currency": "EUR"
 }
 ```
 
@@ -68,9 +70,11 @@ Fields:
 - `vendor`: vendor name or "unknown"
 - `doc_type`: "invoice" | "credit_note" | "receipt" | "statement" | "other"
 - `category`: "electronics" | "telecom" | "hosting" | "banking" | "government" | "saas" | "utility" | "other"
-- `suggested_tags`: array of Paperless tags (always include year-month and vendor slug)
+- `suggested_tags`: array of EXISTING Paperless tags only. Use: `invoicing` (for all invoices/credit notes), `documents` (for non-invoice docs), `techlab` (for Techlab business expenses), and the YYYY-MM month tag. Never invent new tags like vendor names — vendors are tracked as correspondents, not tags.
 - `action`: "download_and_upload" | "notify_user" | "ignore" | "ignore_duplicate"
 - `order_id`: extracted order/reference/invoice number if present, null otherwise
+- `total_amount`: float amount if visible in subject/body (e.g., "156,68 €" → 156.68), null if unknown
+- `currency`: "EUR", "USD", "CZK", etc. if amount found, null otherwise
 
 ## Action Rules
 
