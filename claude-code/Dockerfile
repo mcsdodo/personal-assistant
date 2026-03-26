@@ -33,7 +33,7 @@ RUN cd /app/channels && bun install --no-summary
 USER root
 COPY --chown=node:node .mcp.json /workspace/.mcp.json
 COPY --chown=node:node CLAUDE.md /workspace/CLAUDE.md
-COPY --chown=node:node .claude/ /workspace/.claude/
+COPY --chown=node:node agents/ /workspace/.claude/agents/
 COPY --chown=node:node .claude.json /home/node/.claude.json
 COPY --chown=node:node entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
