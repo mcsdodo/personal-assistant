@@ -5,6 +5,31 @@
 # Claude Code sends OTel metrics/logs → Alloy → Prometheus + Loki → Grafana
 
 services:
+  claude-code:
+    build:
+      context: ./claude-code
+      args:
+        CLAUDE_CODE_VERSION: latest
+    # Local dev: OTEL to local Alloy sidecar
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4317
+
+  checker-mcp:
+    build:
+      context: ./checker-mcp
+
+  outlook-mcp:
+    build:
+      context: ./outlook-mcp
+
+  gmail-mcp:
+    # Local dev: mount client_secret.json from disk, restore original entrypoint
+    volumes:
+      - ${GMAIL_CREDS_DIR:-./data/gmail}:/app/store_creds
+      - ${GMAIL_CLIENT_SECRET:-./data/gmail/client_secret.json}:/app/client_secret.json:ro
+    entrypoint: ["uv", "run", "main.py"]
+    command: ["--transport", "streamable-http", "--tools", "gmail", "--read-only"]
+
   alloy:
     image: grafana/alloy:latest
     container_name: personal-assistant-alloy

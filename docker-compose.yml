@@ -1,19 +1,16 @@
 services:
   claude-code:
-    build:
-      context: ./claude-code
-      args:
-        CLAUDE_CODE_VERSION: latest
+    image: personal-assistant-claude-code:latest
     container_name: personal-assistant-claude
     restart: unless-stopped
+    ports:
+      - "9465:9465"
     volumes:
       # Bind-mount host Claude credentials dir for OAuth tokens
-      # Homelab: default ~/.claude works (run `claude login` on host first)
-      # Windows: set CLAUDE_CONFIG_DIR=C:/Users/Dodo/.claude in .env
-      - ${CLAUDE_CONFIG_DIR:-~/.claude}:/home/node/.claude
-      # Downloaded invoices — check from host via ./data/downloads/
-      - ${DOWNLOADS_DIR:-./data/downloads}:/workspace/downloads
-      - ${EMAIL_WATCHER_DATA:-./data/email-watcher}:/data/email-watcher
+      - /mnt/shared_configs/personal-assistant/claude-config:/home/node/.claude
+      # Downloaded invoices
+      - /mnt/shared_configs/personal-assistant/downloads:/workspace/downloads
+      - /mnt/shared_configs/personal-assistant/email-watcher:/data/email-watcher
     environment:
       - NODE_OPTIONS=--max-old-space-size=4096
       - HOME=/home/node
@@ -22,7 +19,7 @@ services:
       - OTEL_METRICS_EXPORTER=otlp
       - OTEL_LOGS_EXPORTER=otlp
       - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_ENDPOINT:-http://alloy:4317}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_ENDPOINT}
       - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
       - OTEL_METRIC_EXPORT_INTERVAL=${OTEL_METRIC_INTERVAL:-10000}
       - OTEL_LOGS_EXPORT_INTERVAL=5000
@@ -52,8 +49,7 @@ services:
       - PAPERLESS_API_KEY=${PAPERLESS_API_TOKEN}
 
   checker-mcp:
-    build:
-      context: ./checker-mcp
+    image: personal-assistant-checker-mcp:latest
     container_name: personal-assistant-checker-mcp
     restart: unless-stopped
     environment:
@@ -64,30 +60,29 @@ services:
     image: ghcr.io/taylorwilsdon/google_workspace_mcp:latest
     container_name: personal-assistant-gmail-mcp
     restart: unless-stopped
-    ports:
-      # OAuth callback — Google redirects to localhost:8000/oauth2callback
-      - "8000:8000"
     volumes:
-      # OAuth tokens persist here — first call triggers auth flow
-      - ${GMAIL_CREDS_DIR:-./data/gmail}:/app/store_creds
-      # Mount Google OAuth client credentials (Desktop App type)
-      - ${GMAIL_CLIENT_SECRET:-./data/gmail/client_secret.json}:/app/client_secret.json:ro
+      # OAuth tokens persist here
+      - /mnt/shared_configs/personal-assistant/gmail:/app/store_creds
     environment:
       - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}
       - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET}
       - GOOGLE_MCP_CREDENTIALS_DIR=/app/store_creds
+      - GOOGLE_CLIENT_SECRET_JSON=${GOOGLE_CLIENT_SECRET_JSON}
       - TOOLS=gmail
-    entrypoint: ["uv", "run", "main.py"]
-    command: ["--transport", "streamable-http", "--tools", "gmail", "--read-only"]
+    # Write client_secret.json from env var at startup (no manual file copy needed)
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "$$GOOGLE_CLIENT_SECRET_JSON" > /app/client_secret.json
+        exec uv run main.py --transport streamable-http --tools gmail --read-only
 
   outlook-mcp:
-    build:
-      context: ./outlook-mcp
+    image: personal-assistant-outlook-mcp:latest
     container_name: personal-assistant-outlook-mcp
     restart: unless-stopped
     volumes:
       # Token cache persists here — device code auth runs at startup if needed
-      - ${OUTLOOK_DATA_DIR:-./data/outlook}:/data
+      - /mnt/shared_configs/personal-assistant/outlook:/data
     environment:
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID:-consumers}

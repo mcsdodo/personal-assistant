@@ -1,6 +1,18 @@
 #!/bin/bash
 set -e
 
+# First-run: create settings.json if missing (volume mount overlays Dockerfile version)
+if [ ! -f /home/node/.claude/settings.json ]; then
+  echo '{"skipDangerousModePermissionPrompt": true}' > /home/node/.claude/settings.json
+  echo "Created settings.json (first run)"
+fi
+
+# First-run: check for Claude credentials
+if [ ! -f /home/node/.claude/.credentials.json ]; then
+  echo "WARNING: No Claude credentials found."
+  echo "Run: docker exec -it personal-assistant-claude claude login"
+fi
+
 # Run Claude Code in interactive mode inside tmux
 tmux new-session -d -s claude \
   "claude --model sonnet --remote-control \
