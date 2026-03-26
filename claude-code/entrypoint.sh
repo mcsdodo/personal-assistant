@@ -2,16 +2,18 @@
 set -e
 
 # Run Claude Code in interactive mode inside tmux
-# Settings: skipDangerousModePermissionPrompt baked into settings.json
-# MCP servers: pre-approved via enabledMcpjsonServers in .claude.json
 tmux new-session -d -s claude \
   "claude \
     --dangerously-load-development-channels server:email-watcher \
     --dangerously-skip-permissions \
     --mcp-config /workspace/.mcp.json"
 
+# Auto-accept the development channels prompt (no settings key exists to skip it)
+# The prompt defaults to option 1 "I am using this for local development" — just press Enter
+sleep 5
+tmux send-keys -t claude Enter
+
 echo "Claude Code session started in tmux."
 echo "Use 'docker exec -it <container> tmux attach -t claude' to view."
 
-# Keep container alive
 exec sleep infinity
