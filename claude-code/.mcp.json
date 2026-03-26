@@ -4,9 +4,13 @@
       "command": "bun",
       "args": ["run", "/app/channels/email-watcher.ts"]
     },
-    "mock-paperless": {
+    "paperless": {
       "type": "http",
-      "url": "http://mock-paperless-tool:8000/mcp"
+      "url": "http://paperless-mcp:3000/mcp"
+    },
+    "checker": {
+      "type": "http",
+      "url": "http://checker-mcp:8001/mcp"
     }
   }
 }

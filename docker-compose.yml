@@ -9,24 +9,25 @@ services:
     volumes:
       # Bind-mount host Claude credentials dir for OAuth tokens
       # Homelab: default ~/.claude works (run `claude login` on host first)
-      # Windows: set CLAUDE_CONFIG_DIR=C:/Users/Dodo/.claude
+      # Windows: set CLAUDE_CONFIG_DIR=C:/Users/Dodo/.claude in .env
       - ${CLAUDE_CONFIG_DIR:-~/.claude}:/home/node/.claude
     environment:
       - NODE_OPTIONS=--max-old-space-size=4096
       - HOME=/home/node
-    networks:
-      - assistant
-    # No ports exposed — Remote Control uses outbound HTTPS only
 
-  mock-paperless-tool:
-    build:
-      context: ./mock-tool
-    container_name: personal-assistant-mock-paperless
+  paperless-mcp:
+    image: ghcr.io/baruchiro/paperless-mcp:latest
+    container_name: personal-assistant-paperless-mcp
     restart: unless-stopped
-    networks:
-      - assistant
-    # Port 8000 exposed only within Docker network (not to host)
+    environment:
+      - PAPERLESS_URL=${PAPERLESS_URL}
+      - PAPERLESS_API_KEY=${PAPERLESS_API_TOKEN}
 
-networks:
-  assistant:
-    driver: bridge
+  checker-mcp:
+    build:
+      context: ./checker-mcp
+    container_name: personal-assistant-checker-mcp
+    restart: unless-stopped
+    environment:
+      - PAPERLESS_URL=${PAPERLESS_URL}
+      - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}

@@ -21,12 +21,15 @@ Event-driven personal assistant using Claude Code Channels + MCP tool servers.
 
 ```
 claude-code container (node:20-slim, user: node)
-├── Claude Code interactive session in tmux
+├── Claude Code interactive session in tmux (--remote-control)
 ├── email-watcher channel (stdio subprocess via MCP)
-└── connects to remote MCP tool servers via Streamable HTTP
+└── connects to MCP tool servers via Streamable HTTP
 
-mock-paperless-tool container (python:3.12-slim)
-└── FastMCP server on :8000/mcp
+paperless-mcp container (ghcr.io/baruchiro/paperless-mcp:latest)
+└── 20 Paperless-ngx CRUD tools on :3000/mcp
+
+checker-mcp container (python:3.12-slim)
+└── 4 invoice matching/P&L tools on :8001/mcp (wraps match_invoices.py)
 ```
 
 Channels are stdio subprocesses of Claude Code — they MUST run inside the same container. MCP tool servers CAN be separate containers via Streamable HTTP (`"type": "http"` in `.mcp.json`).
@@ -36,13 +39,16 @@ Channels are stdio subprocesses of Claude Code — they MUST run inside the same
 | File | Purpose |
 |------|---------|
 | `docker-compose.yml` | Stack definition, volume mounts |
+| `.env` / `.env.example` | Secrets (PAPERLESS_API_TOKEN, PAPERLESS_URL) |
 | `claude-code/Dockerfile` | node:20 + bun + claude-code CLI, non-root user |
 | `claude-code/.mcp.json` | MCP server config (channels + HTTP tools) |
 | `claude-code/.claude.json` | Project trust settings (no Windows paths) |
 | `claude-code/CLAUDE.md` | Instructions for the Claude session |
 | `claude-code/entrypoint.sh` | tmux wrapper for persistent interactive session |
 | `claude-code/channels/email-watcher.ts` | Mock channel (TypeScript, MCP SDK) |
-| `mock-tool/server.py` | Mock Paperless MCP tool server (FastMCP) |
+| `checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
+| `checker-mcp/match_invoices.py` | Copied from checker source at build time |
+| `checker-mcp/build.sh` | Pre-build: copies match_invoices.py from checker |
 
 ## Claude Code in Docker — Reference
 
