@@ -58,7 +58,7 @@ services:
       - EMAIL_WATCHER_METRICS_PORT=${EMAIL_WATCHER_METRICS_PORT:-9465}
 
   paperless-mcp:
-    image: ghcr.io/baruchiro/paperless-mcp:sha-75ce652  # pinned 2026-03
+    image: ghcr.io/baruchiro/paperless-mcp:latest  # no semver tags; Watchtower excluded, auto_pull=false
     container_name: personal-assistant-paperless-mcp
     restart: unless-stopped
     labels:
