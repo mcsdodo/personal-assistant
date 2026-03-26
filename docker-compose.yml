@@ -64,6 +64,9 @@ services:
     image: ghcr.io/taylorwilsdon/google_workspace_mcp:latest
     container_name: personal-assistant-gmail-mcp
     restart: unless-stopped
+    ports:
+      # OAuth callback — needed for initial auth, can remove after
+      - "8000:8000"
     volumes:
       # OAuth tokens persist here
       - /mnt/shared_configs/personal-assistant/gmail:/app/store_creds
