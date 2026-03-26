@@ -176,20 +176,82 @@ if __name__ == "__main__":
     uvicorn.run(passthrough, host="0.0.0.0", port=8000)
 ```
 
-## Test Hosts
+## Development
 
-POC is deployed to test host1 at `192.168.0.96` (`/opt/personal-assistant/`).
+Development runs locally on the Windows dev machine using Docker Desktop with the local compose override:
 
 ```bash
+# Start the full stack (from compose.stacks/infra/personal-assistant/)
+docker compose -f docker-compose.yml -f docker-compose.local.yml up
+
+# Rebuild after code changes
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+
 # Check status
-ssh root@192.168.0.96 "cd /opt/personal-assistant && docker compose ps"
+docker compose -f docker-compose.yml -f docker-compose.local.yml ps
 
 # View Claude session
-ssh root@192.168.0.96 "docker exec personal-assistant-claude tmux capture-pane -t claude -p -S -30"
+docker exec personal-assistant-claude tmux capture-pane -t claude -p -S -30
 
 # Attach interactively
-ssh -t root@192.168.0.96 "docker exec -it personal-assistant-claude tmux attach -t claude"
+docker exec -it personal-assistant-claude tmux attach -t claude
 
-# Rebuild and deploy
-ssh root@192.168.0.96 "cd /opt/personal-assistant && docker compose build && docker compose up -d"
+# Check Claude env vars
+docker exec personal-assistant-claude sh -c "env | grep -E 'OTEL|TELEMETRY'"
 ```
+
+## Observability
+
+Claude Code exports native OpenTelemetry metrics and events via OTLP to an Alloy instance, which forwards to Prometheus (metrics) and Loki (logs/events).
+
+### Local Dev
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up
+```
+
+This starts a local Alloy + Prometheus + Loki + Grafana alongside the main stack.
+
+| Service | Local URL |
+|---------|-----------|
+| Grafana | http://localhost:3001 |
+| Prometheus | http://localhost:9091 |
+| Loki | http://localhost:3101 |
+| Alloy UI | http://localhost:12345 |
+
+### Production
+
+On the deploy host, add the OTLP receiver blocks from `observability/alloy-config.alloy` to the host's shared Alloy config. Set `OTEL_ENDPOINT` in `.env` if the host Alloy isn't reachable at `http://alloy:4317`.
+
+### Metrics (Prometheus, meter: `com.anthropic.claude_code`)
+
+| Metric | Unit | Attributes |
+|--------|------|------------|
+| `claude_code_token_usage_tokens_total` | tokens | `type` (input/output/cacheRead/cacheCreation), `model` |
+| `claude_code_cost_usage_USD_total` | USD | `model` |
+| `claude_code_session_count_total` | count | — |
+| `claude_code_lines_of_code_count_total` | count | `type` (added/removed) |
+| `claude_code_active_time_seconds_total` | seconds | `type` (user/cli) |
+| `claude_code_commit_count_total` | count | — |
+| `claude_code_pull_request_count_total` | count | — |
+| `claude_code_code_edit_tool_decision_count_total` | count | `tool_name`, `decision`, `source` |
+
+### Events (Loki, via OTel logs)
+
+| Event | Key attributes |
+|-------|---------------|
+| `claude_code.api_request` | model, cost_usd, duration_ms, input/output/cache tokens |
+| `claude_code.api_error` | model, error, status_code, attempt |
+| `claude_code.tool_result` | tool_name, success, duration_ms, mcp_server_scope |
+| `claude_code.tool_decision` | tool_name, decision, source |
+| `claude_code.user_prompt` | prompt length |
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `docker-compose.local.yml` | Local dev observability stack (Alloy + Prometheus + Loki + Grafana) |
+| `observability/alloy-config.alloy` | Alloy OTLP receiver config (used locally, merge into host config for prod) |
+| `observability/dashboards/claude-code.json` | Grafana dashboard: token usage, cost, API latency, tool stats, errors |
+| `observability/prometheus-config.yml` | Minimal Prometheus config for local dev |
+| `observability/loki-config.yml` | Minimal Loki config for local dev |

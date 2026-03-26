@@ -1,0 +1,87 @@
+// Alloy config for personal-assistant observability
+// Receives OTLP from Claude Code and forwards to Prometheus + Loki
+//
+// Production: merge these blocks into the host's shared config.alloy
+// Local dev:  used as standalone config in docker-compose.local.yml
+
+// ============================================================================
+// OTLP Receiver — Claude Code sends metrics + logs here
+// ============================================================================
+
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+    logs    = [otelcol.processor.attributes.default.input]
+  }
+}
+
+// ============================================================================
+// Batch processor — reduce write pressure on Prometheus/Loki
+// ============================================================================
+
+otelcol.processor.batch "default" {
+  timeout = "5s"
+  send_batch_size = 1000
+
+  output {
+    metrics = [otelcol.exporter.prometheus.default.input]
+    logs    = [otelcol.exporter.loki.default.input]
+  }
+}
+
+// ============================================================================
+// Attributes processor — promote OTLP attributes to Loki labels
+// ============================================================================
+
+otelcol.processor.attributes "default" {
+  action {
+    key   = "loki.resource.labels"
+    value = "service.name,service.version"
+    action = "insert"
+  }
+
+  action {
+    key    = "loki.attribute.labels"
+    value  = "event.name,tool_name,model,error,status_code"
+    action = "insert"
+  }
+
+  output {
+    logs = [otelcol.processor.batch.default.input]
+  }
+}
+
+// ============================================================================
+// Metrics: OTLP → Prometheus format → remote_write
+// ============================================================================
+
+otelcol.exporter.prometheus "default" {
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = sys.env("PROMETHEUS_URL")
+  }
+}
+
+// ============================================================================
+// Logs: OTLP → Loki format → loki.write
+// ============================================================================
+
+otelcol.exporter.loki "default" {
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = sys.env("LOKI_URL")
+  }
+}

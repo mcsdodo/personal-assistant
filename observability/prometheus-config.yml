@@ -1,0 +1,5 @@
+# Minimal Prometheus config for local dev
+# Only receives remote_write from Alloy — no scrape targets needed
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
