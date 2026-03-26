@@ -55,7 +55,7 @@ Always respond with ONLY this JSON (no markdown, no explanation):
   "confidence": "high",
   "vendor": "Alza",
   "doc_type": "invoice",
-  "category": "electronics",
+  "is_fuel": false,
   "suggested_tags": ["invoicing", "2026-03"],
   "action": "download_and_upload",
   "order_id": "583481365",
@@ -69,7 +69,7 @@ Fields:
 - `confidence`: "high" (clear invoice signals) | "medium" (likely but unsure) | "low" (probably not)
 - `vendor`: vendor name or "unknown"
 - `doc_type`: "invoice" | "credit_note" | "receipt" | "statement" | "other"
-- `category`: "electronics" | "telecom" | "hosting" | "banking" | "government" | "saas" | "utility" | "other"
+- `is_fuel`: boolean — true if this is a fuel/gas station receipt or invoice (for kniha-jazd integration later)
 - `suggested_tags`: array of EXISTING Paperless tags only. Use: `invoicing` (for all invoices/credit notes), `documents` (for non-invoice docs), `techlab` (for Techlab business expenses), and the YYYY-MM month tag. Never invent new tags like vendor names — vendors are tracked as correspondents, not tags.
 - `action`: "download_and_upload" | "notify_user" | "ignore" | "ignore_duplicate"
 - `order_id`: extracted order/reference/invoice number if present, null otherwise
