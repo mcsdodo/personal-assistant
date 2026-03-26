@@ -3,7 +3,7 @@ set -e
 
 # Run Claude Code in interactive mode inside tmux
 tmux new-session -d -s claude \
-  "claude --remote-control \
+  "claude --model sonnet --remote-control \
     --dangerously-load-development-channels server:email-watcher \
     --dangerously-skip-permissions \
     --mcp-config /workspace/.mcp.json"

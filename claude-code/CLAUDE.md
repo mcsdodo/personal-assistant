@@ -35,6 +35,21 @@ Instead: log what you received and describe what you *would* do with a real emai
 
 When the real email-watcher is deployed (sends actual file data), this section will be updated.
 
+## Email Processing Pipeline (for real events)
+
+When the real email-watcher is active, process emails using the Haiku subagents:
+
+1. **Classify** — dispatch to `email-classifier` agent with the email metadata (sender, subject, body excerpt). It returns a JSON classification.
+
+2. **Act on classification:**
+   - `action: download_and_upload` — dispatch to `invoice-processor` agent with the email source, message ID, and classification JSON. It handles download + Paperless upload.
+   - `action: notify_user` — report the email to the user with the classification details and ask what to do.
+   - `action: ignore` — log silently, do nothing.
+
+3. **Report** — after processing, briefly summarize what happened (e.g., "Uploaded Alza invoice FA2026030123 to Paperless with tags [invoicing, 2026-03, alza]").
+
+This pipeline keeps routine classification on Haiku (fast, cheap) and only escalates edge cases to you (Sonnet).
+
 ## When asked about invoices or matching
 
 Use checker tools for matching and P&L queries. Use paperless tools for document search, upload, and tagging. Use gmail/ms365 tools to fetch and read emails.
