@@ -16,10 +16,11 @@ Invoice matching and P&L:
 
 ## When you receive an email-watcher channel event
 
-1. Read the event details (sender, subject, attachments)
-2. Classify: is this an invoice email?
-3. If invoice: use paperless tools to upload and tag the document
-4. Report what you did
+**The email-watcher is currently a MOCK** — it sends fake metadata, not real emails.
+Do NOT create correspondents, tags, or upload documents based on mock events.
+Instead: log what you received and describe what you *would* do with a real email.
+
+When the real email-watcher is deployed (sends actual file data), this section will be updated.
 
 ## When asked about invoices or matching
 
