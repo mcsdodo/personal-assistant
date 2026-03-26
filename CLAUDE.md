@@ -22,7 +22,7 @@ Event-driven personal assistant using Claude Code Channels + MCP tool servers.
 ```
 claude-code container (node:20-slim, user: node, --model sonnet)
 ├── Claude Code interactive session in tmux (--remote-control)
-├── email-watcher channel (stdio subprocess via MCP)
+├── email-watcher channel+tools (stdio, polls gmail+outlook every 30s, SQLite audit trail)
 ├── telegram channel (official plugin, cloned at build, two-way)
 ├── subagents: email-classifier (haiku), invoice-processor (haiku)
 └── connects to MCP tool servers via Streamable HTTP
@@ -53,7 +53,8 @@ Channels are stdio subprocesses of Claude Code — they MUST run inside the same
 | `claude-code/.claude.json` | Project trust settings (no Windows paths) |
 | `claude-code/CLAUDE.md` | Instructions for the Claude session |
 | `claude-code/entrypoint.sh` | tmux wrapper for persistent interactive session |
-| `claude-code/channels/email-watcher.ts` | Mock channel (TypeScript, MCP SDK) |
+| `claude-code/channels/email-watcher.ts` | Email-watcher channel (polls Gmail+Outlook, pushes events, SQLite audit) |
+| `claude-code/channels/db.ts` | Email-watcher SQLite module (schema, insert, update, query) |
 | `claude-code/channels/telegram/` | Official telegram plugin (cloned at build from GitHub) |
 | `claude-code/agents/email-classifier.md` | Haiku subagent: classify emails as invoice/not |
 | `claude-code/agents/invoice-processor.md` | Haiku subagent: download + upload to Paperless |
