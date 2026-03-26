@@ -16,6 +16,10 @@ services:
     environment:
       - NODE_OPTIONS=--max-old-space-size=4096
       - HOME=/home/node
+      # Telegram channel
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TELEGRAM_STATE_DIR=/home/node/.claude/channels/telegram
 
   paperless-mcp:
     image: ghcr.io/baruchiro/paperless-mcp:latest

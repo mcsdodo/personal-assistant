@@ -5,6 +5,7 @@ set -e
 tmux new-session -d -s claude \
   "claude --model sonnet --remote-control \
     --dangerously-load-development-channels server:email-watcher \
+    --dangerously-load-development-channels server:telegram \
     --dangerously-skip-permissions \
     --mcp-config /workspace/.mcp.json"
 

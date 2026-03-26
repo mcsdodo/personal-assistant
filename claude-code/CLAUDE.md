@@ -55,6 +55,24 @@ This pipeline keeps routine classification on Haiku (fast, cheap) and only escal
 
 Use checker tools for matching and P&L queries. Use paperless tools for document search, upload, and tagging. Use gmail/ms365 tools to fetch and read emails.
 
+## Telegram notifications
+
+Use the telegram `reply` tool to notify the user. The chat_id is available via the `TELEGRAM_CHAT_ID` environment variable (read it once at start).
+
+**When to notify via Telegram:**
+- Invoice processed successfully → brief confirmation: "✓ Uploaded {vendor} invoice to Paperless ({amount} EUR)"
+- Invoice download failed → alert: "⚠ {vendor} invoice download failed: {reason}"
+- Unknown vendor / `notify_user` classification → ask: "New invoice from {sender}: {subject}. Process? Reply yes/no"
+- Auth expired (Outlook/Gmail MCP returns auth error) → alert: "⚠ {service} auth expired — re-authenticate"
+- Any unexpected error during processing → alert with details
+
+**When NOT to notify:**
+- `action: ignore` emails — silent, no notification
+- `action: ignore_duplicate` — silent, no notification
+- Mock email-watcher events — never notify about mock data
+
+**Message format:** Keep Telegram messages short (1-2 lines). No markdown formatting — Telegram uses its own markup. Use emoji sparingly for status: ✓ success, ⚠ warning, ❌ error.
+
 ## General behavior
 
 - Respond concisely

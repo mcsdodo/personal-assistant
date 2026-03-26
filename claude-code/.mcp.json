@@ -4,6 +4,10 @@
       "command": "bun",
       "args": ["run", "/app/channels/email-watcher.ts"]
     },
+    "telegram": {
+      "command": "bun",
+      "args": ["run", "/app/channels/telegram/server.ts"]
+    },
     "paperless": {
       "type": "http",
       "url": "http://paperless-mcp:3000/mcp"

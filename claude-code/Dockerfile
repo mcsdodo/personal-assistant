@@ -29,6 +29,12 @@ USER node
 COPY --chown=node:node channels/ /app/channels/
 RUN cd /app/channels && bun install --no-summary
 
+# Clone official Telegram channel plugin and install its deps
+RUN git clone --depth 1 https://github.com/anthropics/claude-plugins-official.git /tmp/claude-plugins \
+  && cp -r /tmp/claude-plugins/external_plugins/telegram /app/channels/telegram \
+  && cd /app/channels/telegram && bun install --no-summary \
+  && rm -rf /tmp/claude-plugins
+
 # Copy MCP and project config
 USER root
 COPY --chown=node:node .mcp.json /workspace/.mcp.json
