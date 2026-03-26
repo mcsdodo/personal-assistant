@@ -1,24 +1,45 @@
 # Personal Assistant Stack
 
-Event-driven personal assistant: Claude Code + MCP tool servers + channels.
+Event-driven personal assistant: Claude Code (Sonnet) + Haiku subagents + MCP tool servers + channels (email-watcher, Telegram).
+
+## Services
+
+| Service | Image | Port | Purpose |
+|---------|-------|------|---------|
+| claude-code | local build | — | Claude Code + channels + subagents + remote control |
+| paperless-mcp | ghcr.io/baruchiro/paperless-mcp | 3000 | Paperless-ngx CRUD (20 tools) |
+| checker-mcp | local build | 8001 | Invoice matching + P&L (4 tools) |
+| gmail-mcp | ghcr.io/taylorwilsdon/google_workspace_mcp | 8000 | Gmail read-only |
+| outlook-mcp | local build | 8002 | Outlook read-only (device code auth) |
 
 ## Prerequisites
 
 - Docker + Docker Compose
-- Claude MAX subscription (`claude login` on host)
-- Google Cloud project with Gmail API enabled (for Gmail)
-- Azure AD app registration with `Mail.Read` permission (for Outlook)
+- Claude MAX subscription
+- Google Cloud project with Gmail API enabled
+- Azure AD app registration with `Mail.Read` permission
+- Telegram bot (create via @BotFather)
 
-## Setup
+## Deployment (new environment)
 
-### 1. Configure
+### Automated (handled by docker compose build)
+
+- Claude Code CLI installation
+- Bun runtime installation
+- Telegram plugin cloned from `anthropics/claude-plugins-official`
+- Channel and MCP server wiring
+- Subagent definitions copied to `.claude/agents/`
+
+### Manual steps (one-time per environment)
+
+#### 1. Configure secrets
 
 ```bash
 cp .env.example .env
-# Fill in your credentials
+# Fill in all credentials (see .env.example for descriptions)
 ```
 
-### 2. Claude Code auth (one-time)
+#### 2. Claude Code login
 
 ```bash
 npm install -g @anthropic-ai/claude-code
@@ -27,55 +48,89 @@ claude login
 
 Tokens saved to `~/.claude/`, volume-mounted into container.
 
-### 3. Gmail auth
+#### 3. Gmail OAuth setup
 
 1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) → OAuth Client ID → Desktop App → Download JSON
 2. Save as `data/gmail/client_secret.json`
 3. OAuth consent screen → Add scope `gmail.readonly` → Add your email as test user
 4. Set `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` in `.env`
 
-### 4. Outlook auth
+#### 4. Outlook Azure app
 
 1. [Azure Portal](https://portal.azure.com) → App registrations → New → Add delegated `Mail.Read` permission
 2. Set `AZURE_CLIENT_ID` in `.env`
 
-### 5. Start
+#### 5. Telegram bot
+
+1. DM `@BotFather` in Telegram → `/newbot` → get token
+2. Set `TELEGRAM_BOT_TOKEN` in `.env`
+3. Set `TELEGRAM_CHAT_ID` to your personal Telegram user ID
+
+#### 6. Start the stack
 
 ```bash
 docker compose up -d --build
 ```
 
-### 6. Complete auth
+#### 7. Complete interactive auth (one-time per environment)
 
-**Outlook** — check logs, enter the code at the URL shown:
+**Outlook** — device code flow, check logs:
 ```bash
 docker compose logs outlook-mcp
 # Shows: Open https://www.microsoft.com/link → Enter: XXXXXXXX
 ```
 
-**Gmail** — ask Claude to authenticate (via remote control session or tmux):
+**Gmail** — ask Claude to authenticate (via tmux):
+```bash
+docker exec -it personal-assistant-claude tmux attach -t claude
+# Type: use gmail start_google_auth with service_name gmail and user_google_email you@gmail.com
 ```
-use gmail start_google_auth with service_name gmail and user_google_email you@gmail.com
-```
-Opens auth URL → approve in browser → callback hits `localhost:8000` → done.
 
-### 7. Verify
+**Telegram** — pair your account:
+1. DM your bot in Telegram (send any message, e.g., "/start")
+2. Bot replies with a pairing code
+3. In Claude session (tmux): type the pairing command shown in the bot's message
+4. Or manually write `access.json` (see below)
+
+#### 8. Verify
 
 ```bash
 docker compose ps                    # all containers up
 docker compose logs outlook-mcp      # "authenticated successfully"
 docker compose logs gmail-mcp        # "Stored credentials for..."
+
+# Check Claude session:
+docker exec personal-assistant-claude bash -c "tmux capture-pane -t claude -p -S -10"
+# Should show: Listening for channel messages from: server:email-watcher, server:telegram
 ```
 
-## Services
+### What persists across restarts (via volume mounts)
 
-| Service | Image | Port | Purpose |
-|---------|-------|------|---------|
-| claude-code | local build | — | Claude Code + channels + remote control |
-| paperless-mcp | ghcr.io/baruchiro/paperless-mcp | 3000 | Paperless-ngx CRUD (20 tools) |
-| checker-mcp | local build | 8001 | Invoice matching + P&L (4 tools) |
-| gmail-mcp | ghcr.io/taylorwilsdon/google_workspace_mcp | 8000 | Gmail read-only |
-| outlook-mcp | local build | 8002 | Outlook read-only (device code auth) |
+| Path | Content | Volume |
+|------|---------|--------|
+| `~/.claude/` | Claude OAuth tokens, plugin data | `CLAUDE_CONFIG_DIR` |
+| `~/.claude/channels/telegram/access.json` | Telegram allowlist (survives rebuild) | same volume |
+| `data/gmail/` | Gmail OAuth tokens + client_secret.json | `GMAIL_CREDS_DIR` |
+| `data/outlook/token_cache.json` | Outlook MSAL token cache | `OUTLOOK_DATA_DIR` |
+| `data/downloads/` | Downloaded invoices (for inspection) | `DOWNLOADS_DIR` |
+
+### Manual Telegram access.json (alternative to pairing)
+
+If you can't pair interactively, write the file directly on the host:
+
+```bash
+mkdir -p ~/.claude/channels/telegram
+cat > ~/.claude/channels/telegram/access.json << 'EOF'
+{
+  "dmPolicy": "allowlist",
+  "allowFrom": ["YOUR_TELEGRAM_USER_ID"],
+  "groups": {},
+  "pending": {}
+}
+EOF
+```
+
+Your Telegram user ID is a numeric string (e.g., `"7628063924"`). Get it by DMing `@userinfobot` on Telegram.
 
 ## Windows local dev
 
@@ -84,4 +139,18 @@ docker compose logs gmail-mcp        # "Stored credentials for..."
 CLAUDE_CONFIG_DIR=C:/Users/YourUser/.claude
 
 docker compose up -d --build
+```
+
+## Monitoring
+
+```bash
+# View Claude session live
+docker exec -it personal-assistant-claude tmux attach -t claude
+
+# Capture last 30 lines without attaching
+docker exec personal-assistant-claude bash -c "tmux capture-pane -t claude -p -S -30"
+
+# Check MCP server health
+docker exec personal-assistant-claude bash -c "curl -s http://checker-mcp:8001/mcp"
+docker exec personal-assistant-claude bash -c "curl -s http://paperless-mcp:3000/mcp"
 ```
