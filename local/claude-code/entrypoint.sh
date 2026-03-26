@@ -21,10 +21,24 @@ tmux new-session -d -s claude \
     --dangerously-skip-permissions \
     --mcp-config /workspace/.mcp.json"
 
-# Auto-accept the development channels prompt (no settings key exists to skip it)
-# The prompt defaults to option 1 "I am using this for local development" — just press Enter
-sleep 5
-tmux send-keys -t claude Enter
+# Wait for the development channels TUI prompt, then accept it
+# Polls every second instead of blind sleep — handles slow startups reliably
+echo "Waiting for development channels prompt..."
+accepted=false
+for i in $(seq 1 60); do
+  if tmux capture-pane -t claude -p 2>/dev/null | grep -q "local development"; then
+    tmux send-keys -t claude Enter
+    echo "Accepted development channels prompt (after ${i}s)"
+    accepted=true
+    break
+  fi
+  sleep 1
+done
+
+if [ "$accepted" = false ]; then
+  echo "WARNING: Development channels prompt not detected after 60s"
+  echo "Claude may have started without channels, or the prompt text changed"
+fi
 
 echo "Claude Code session started in tmux."
 echo "Use 'docker exec -it <container> tmux attach -t claude' to view."

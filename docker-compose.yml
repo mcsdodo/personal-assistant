@@ -5,6 +5,21 @@ services:
     restart: unless-stopped
     labels:
       com.centurylinklabs.watchtower.monitor: "false"
+    depends_on:
+      paperless-mcp:
+        condition: service_healthy
+      checker-mcp:
+        condition: service_healthy
+      gmail-mcp:
+        condition: service_healthy
+      outlook-mcp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "tmux has-session -t claude 2>/dev/null && curl -sf http://localhost:9465/health > /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
     ports:
       - "9465:9465"
     volumes:
@@ -43,9 +58,17 @@ services:
       - EMAIL_WATCHER_METRICS_PORT=${EMAIL_WATCHER_METRICS_PORT:-9465}
 
   paperless-mcp:
-    image: ghcr.io/baruchiro/paperless-mcp:latest
+    image: ghcr.io/baruchiro/paperless-mcp:sha-75ce652  # pinned 2026-03
     container_name: personal-assistant-paperless-mcp
     restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.monitor: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('net').createConnection(3000,'localhost').on('connect',function(){process.exit(0)}).on('error',function(){process.exit(1)})\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     environment:
       - PAPERLESS_URL=${PAPERLESS_URL}
       - PAPERLESS_API_KEY=${PAPERLESS_API_TOKEN}
@@ -56,14 +79,32 @@ services:
     restart: unless-stopped
     labels:
       com.centurylinklabs.watchtower.monitor: "false"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     environment:
       - PAPERLESS_URL=${PAPERLESS_URL}
       - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}
+      # Stateless HTTP: no session IDs, server restarts are transparent to Claude
+      - FASTMCP_STATELESS_HTTP=true
 
   gmail-mcp:
-    image: ghcr.io/taylorwilsdon/google_workspace_mcp:latest
+    image: ghcr.io/taylorwilsdon/google_workspace_mcp:1.14.3  # pinned 2026-03
     container_name: personal-assistant-gmail-mcp
     restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.monitor: "false"
+      caddy: gmail-mcp.lacny.me
+      caddy.reverse_proxy: "{{upstreams 8000}}"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),5); s.close()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     ports:
       - "8000:8000"
     volumes:
@@ -76,9 +117,6 @@ services:
       - GOOGLE_MCP_CREDENTIALS_DIR=/app/store_creds
       - GOOGLE_CLIENT_SECRET_JSON=${GOOGLE_CLIENT_SECRET_JSON}
       - TOOLS=gmail
-    labels:
-      caddy: gmail-mcp.lacny.me
-      caddy.reverse_proxy: "{{upstreams 8000}}"
     # Write client_secret.json from env var at startup (no manual file copy needed)
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -92,6 +130,12 @@ services:
     restart: unless-stopped
     labels:
       com.centurylinklabs.watchtower.monitor: "false"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     volumes:
       # Token cache persists here — device code auth runs at startup if needed
       - /mnt/shared_configs/personal-assistant/outlook:/data
@@ -99,3 +143,5 @@ services:
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID:-consumers}
       - TOKEN_CACHE_PATH=/data/token_cache.json
+      # Stateless HTTP: no session IDs, server restarts are transparent to Claude
+      - FASTMCP_STATELESS_HTTP=true

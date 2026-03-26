@@ -52,6 +52,7 @@ const DB_PATH = process.env.DB_PATH ?? "/data/email-watcher/emails.db";
 const STARTUP_DELAY_MS = parseInt(process.env.STARTUP_DELAY_MS ?? "15000", 10);
 const MAX_NEW_PER_CYCLE = parseInt(process.env.MAX_NEW_PER_CYCLE ?? "5", 10);
 const METRICS_PORT = parseInt(process.env.EMAIL_WATCHER_METRICS_PORT ?? "9465", 10);
+const HEALTH_STALE_MULTIPLIER = 5; // unhealthy after N missed poll cycles
 
 const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const GMAIL_EMAIL = process.env.GMAIL_EMAIL ?? "";
@@ -305,15 +306,29 @@ function startMetricsServer(db: Database): void {
     port: METRICS_PORT,
     fetch(req) {
       const url = new URL(req.url);
-      if (url.pathname !== "/metrics") {
-        return new Response("not found", { status: 404 });
+      if (url.pathname === "/health") {
+        // Check DB is accessible and polls aren't stale
+        try {
+          db.query("SELECT 1").get();
+          const staleMs = Date.now() - lastSuccessfulPollAt;
+          const maxStaleMs = POLL_INTERVAL_MS * HEALTH_STALE_MULTIPLIER;
+          if (staleMs > maxStaleMs) {
+            return new Response(`stale: last poll ${Math.round(staleMs / 1000)}s ago`, { status: 503 });
+          }
+          return new Response("ok", { status: 200 });
+        } catch {
+          return new Response("db error", { status: 503 });
+        }
       }
-      return new Response(renderMetrics(db), {
-        headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
-      });
+      if (url.pathname === "/metrics") {
+        return new Response(renderMetrics(db), {
+          headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
+        });
+      }
+      return new Response("not found", { status: 404 });
     },
   });
-  log(`Metrics server listening on :${METRICS_PORT}/metrics`);
+  log(`Metrics server listening on :${METRICS_PORT} (/health, /metrics)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +337,7 @@ function startMetricsServer(db: Database): void {
 
 let gmailClient: Client | null = null;
 let outlookClient: Client | null = null;
+let lastSuccessfulPollAt: number = Date.now();
 
 async function getGmailClient(): Promise<Client> {
   if (gmailClient) return gmailClient;
@@ -630,6 +646,9 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
 
   // Filter to emails not already in DB
   const newEmails = emailsToProcess.filter((e) => !emailExists(db, e.id));
+
+  // Poll completed successfully (reached MCP servers, no errors)
+  lastSuccessfulPollAt = Date.now();
 
   if (newEmails.length === 0) {
     return;

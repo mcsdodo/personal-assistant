@@ -184,9 +184,14 @@ def _clean_result(result: dict) -> dict:
 if __name__ == "__main__":
     app = mcp.streamable_http_app()
 
-    # Docker networking: rewrite Host header to bypass FastMCP DNS rebinding check
+    # ASGI wrapper: health endpoint + Host header rewrite for FastMCP DNS rebinding
     async def passthrough(scope, receive, send):
         if scope["type"] == "http":
+            path = scope.get("path", "")
+            if path == "/health":
+                await send({"type": "http.response.start", "status": 200, "headers": [[b"content-type", b"text/plain"]]})
+                await send({"type": "http.response.body", "body": b"ok"})
+                return
             headers = list(scope.get("headers", []))
             scope["headers"] = [
                 (k, b"localhost:8001") if k == b"host" else (k, v)

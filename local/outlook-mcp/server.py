@@ -338,8 +338,14 @@ if __name__ == "__main__":
 
     app = mcp_server.streamable_http_app()
 
+    # ASGI wrapper: health endpoint + Host header rewrite for FastMCP DNS rebinding
     async def passthrough(scope, receive, send):
         if scope["type"] == "http":
+            path = scope.get("path", "")
+            if path == "/health":
+                await send({"type": "http.response.start", "status": 200, "headers": [[b"content-type", b"text/plain"]]})
+                await send({"type": "http.response.body", "body": b"ok"})
+                return
             headers = list(scope.get("headers", []))
             scope["headers"] = [
                 (k, b"localhost:8002") if k == b"host" else (k, v)
