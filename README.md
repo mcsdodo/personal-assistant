@@ -87,10 +87,26 @@ docker exec -it personal-assistant-claude tmux attach -t claude
 ```
 
 **Telegram** — pair your account:
-1. DM your bot in Telegram (send any message, e.g., "/start")
-2. Bot replies with a pairing code
-3. In Claude session (tmux): type the pairing command shown in the bot's message
-4. Or manually write `access.json` (see below)
+1. DM your bot in Telegram (send any message, e.g., "hello")
+2. Bot replies: `Pairing required — run in Claude Code: /telegram:access pair XXXXXX`
+3. Note the 6-character code (e.g., `ee78fa`)
+4. Write `access.json` directly — this is easier than using the skill command (which doesn't work with development channels):
+```bash
+# Get your Telegram user ID from the container logs:
+docker exec personal-assistant-claude bash -c "cat /home/node/.claude/channels/telegram/access.json"
+# Look for your ID in the "pending" section, then write the allowlist:
+
+mkdir -p data/telegram  # or wherever your CLAUDE_CONFIG_DIR points
+cat > ~/.claude/channels/telegram/access.json << 'EOF'
+{
+  "dmPolicy": "allowlist",
+  "allowFrom": ["YOUR_TELEGRAM_USER_ID"],
+  "groups": {},
+  "pending": {}
+}
+EOF
+```
+Your Telegram user ID is a numeric string (e.g., `"7628063924"`). You can also get it by DMing `@userinfobot` on Telegram.
 
 #### 8. Verify
 
@@ -113,24 +129,6 @@ docker exec personal-assistant-claude bash -c "tmux capture-pane -t claude -p -S
 | `data/gmail/` | Gmail OAuth tokens + client_secret.json | `GMAIL_CREDS_DIR` |
 | `data/outlook/token_cache.json` | Outlook MSAL token cache | `OUTLOOK_DATA_DIR` |
 | `data/downloads/` | Downloaded invoices (for inspection) | `DOWNLOADS_DIR` |
-
-### Manual Telegram access.json (alternative to pairing)
-
-If you can't pair interactively, write the file directly on the host:
-
-```bash
-mkdir -p ~/.claude/channels/telegram
-cat > ~/.claude/channels/telegram/access.json << 'EOF'
-{
-  "dmPolicy": "allowlist",
-  "allowFrom": ["YOUR_TELEGRAM_USER_ID"],
-  "groups": {},
-  "pending": {}
-}
-EOF
-```
-
-Your Telegram user ID is a numeric string (e.g., `"7628063924"`). Get it by DMing `@userinfobot` on Telegram.
 
 ## Windows local dev
 
