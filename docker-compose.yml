@@ -31,3 +31,36 @@ services:
     environment:
       - PAPERLESS_URL=${PAPERLESS_URL}
       - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}
+
+  gmail-mcp:
+    image: ghcr.io/taylorwilsdon/google_workspace_mcp:latest
+    container_name: personal-assistant-gmail-mcp
+    restart: unless-stopped
+    ports:
+      # OAuth callback — Google redirects to localhost:8000/oauth2callback
+      - "8000:8000"
+    volumes:
+      # OAuth tokens persist here — first call triggers auth flow
+      - ${GMAIL_CREDS_DIR:-./data/gmail}:/app/store_creds
+      # Mount Google OAuth client credentials (Desktop App type)
+      - ${GMAIL_CLIENT_SECRET:-./data/gmail/client_secret.json}:/app/client_secret.json:ro
+    environment:
+      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}
+      - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET}
+      - GOOGLE_MCP_CREDENTIALS_DIR=/app/store_creds
+      - TOOLS=gmail
+    entrypoint: ["uv", "run", "main.py"]
+    command: ["--transport", "streamable-http", "--tools", "gmail", "--read-only"]
+
+  outlook-mcp:
+    build:
+      context: ./outlook-mcp
+    container_name: personal-assistant-outlook-mcp
+    restart: unless-stopped
+    volumes:
+      # Token cache persists here — device code auth runs at startup if needed
+      - ${OUTLOOK_DATA_DIR:-./data/outlook}:/data
+    environment:
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID:-consumers}
+      - TOKEN_CACHE_PATH=/data/token_cache.json

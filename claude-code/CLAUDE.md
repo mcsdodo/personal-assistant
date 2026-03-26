@@ -14,6 +14,19 @@ Invoice matching and P&L:
 - `get_pl_summary(year)` — annual profit & loss summary
 - `get_month_status(month?)` — quick overview (how many matched/missing/pending)
 
+### gmail (google_workspace_mcp — read-only)
+Gmail access via Google Workspace MCP. Search emails, read content, download attachments.
+Read-only mode — cannot send or modify emails.
+
+### outlook (outlook-mcp — read-only)
+Outlook email access via Microsoft Graph:
+- `list_emails(top?, sender?, folder?)` — list recent emails
+- `get_email(message_id)` — full email with body
+- `get_attachments(message_id)` — list attachments
+- `download_attachment(message_id, attachment_id)` — download attachment (base64)
+- `extract_invoice_links(message_id)` — find invoice download links in email body
+- `download_invoice_link(url)` — download file from invoice link (base64)
+
 ## When you receive an email-watcher channel event
 
 **The email-watcher is currently a MOCK** — it sends fake metadata, not real emails.
@@ -24,7 +37,7 @@ When the real email-watcher is deployed (sends actual file data), this section w
 
 ## When asked about invoices or matching
 
-Use checker tools for matching and P&L queries. Use paperless tools for document search, upload, and tagging.
+Use checker tools for matching and P&L queries. Use paperless tools for document search, upload, and tagging. Use gmail/ms365 tools to fetch and read emails.
 
 ## General behavior
 

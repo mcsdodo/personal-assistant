@@ -1,127 +1,87 @@
-# Personal Assistant POC
+# Personal Assistant Stack
 
-Validates Claude Code Channels pattern: event-driven processing via MCP channels + tool servers.
-
-## Architecture
-
-```
-claude-code container:
-  ├── Claude Code (with --dangerously-load-development-channels)
-  ├── email-watcher channel (stdio subprocess, mock emails every 60s)
-  └── .mcp.json (connects to mock-paperless via HTTP)
-
-mock-paperless-tool container:
-  └── FastMCP server (Streamable HTTP on :8000)
-```
+Event-driven personal assistant: Claude Code + MCP tool servers + channels.
 
 ## Prerequisites
 
-- Docker + Docker Compose on the target host
-- Claude MAX subscription (claude.ai account)
-- npm installed on the host (for `claude login` — one-time setup)
+- Docker + Docker Compose
+- Claude MAX subscription (`claude login` on host)
+- Google Cloud project with Gmail API enabled (for Gmail)
+- Azure AD app registration with `Mail.Read` permission (for Outlook)
 
-## Setup — Homelab
+## Setup
 
-### 1. Install Claude Code CLI on the host (one-time)
-
-SSH into the LXC/host where you'll run the stack:
+### 1. Configure
 
 ```bash
-ssh root@192.168.0.212  # or whichever LXC
+cp .env.example .env
+# Fill in your credentials
+```
+
+### 2. Claude Code auth (one-time)
+
+```bash
 npm install -g @anthropic-ai/claude-code
-```
-
-### 2. Authenticate Claude Code (one-time)
-
-```bash
 claude login
 ```
 
-This opens an OAuth flow. On a headless server it prints a URL — open it in any browser (phone, laptop), complete the login, and the CLI receives the tokens.
+Tokens saved to `~/.claude/`, volume-mounted into container.
 
-Tokens are saved to `~/.claude/.credentials.json` and auto-refresh. You only need to do this once.
+### 3. Gmail auth
 
-### 3. Verify auth works
+1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) → OAuth Client ID → Desktop App → Download JSON
+2. Save as `data/gmail/client_secret.json`
+3. OAuth consent screen → Add scope `gmail.readonly` → Add your email as test user
+4. Set `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` in `.env`
 
-```bash
-claude -p "hello"
-```
+### 4. Outlook auth
 
-If you get a response, auth is working.
+1. [Azure Portal](https://portal.azure.com) → App registrations → New → Add delegated `Mail.Read` permission
+2. Set `AZURE_CLIENT_ID` in `.env`
 
-### 4. Start the stack
-
-```bash
-cd /path/to/compose.stacks/infra/personal-assistant
-docker compose up -d
-```
-
-The docker-compose mounts `~/.claude/` from the host into the container, so the container reuses the host's OAuth tokens.
-
-### 5. Verify
+### 5. Start
 
 ```bash
-# Check both containers are running
-docker compose ps
-
-# Check mock-paperless is serving
-docker compose logs mock-paperless-tool
-
-# Test Claude + MCP tools inside the container
-docker compose exec claude-code claude \
-  --dangerously-load-development-channels server:email-watcher \
-  --dangerously-skip-permissions \
-  --mcp-config /workspace/.mcp.json \
-  -p "Call mock_upload with document_name='test.pdf' and tags=['test']"
+docker compose up -d --build
 ```
 
-## Setup — Local Development (Windows)
+### 6. Complete auth
 
-### 1. Authenticate (if not already)
+**Outlook** — check logs, enter the code at the URL shown:
+```bash
+docker compose logs outlook-mcp
+# Shows: Open https://www.microsoft.com/link → Enter: XXXXXXXX
+```
+
+**Gmail** — ask Claude to authenticate (via remote control session or tmux):
+```
+use gmail start_google_auth with service_name gmail and user_google_email you@gmail.com
+```
+Opens auth URL → approve in browser → callback hits `localhost:8000` → done.
+
+### 7. Verify
 
 ```bash
-claude login
+docker compose ps                    # all containers up
+docker compose logs outlook-mcp      # "authenticated successfully"
+docker compose logs gmail-mcp        # "Stored credentials for..."
 ```
 
-### 2. Start the stack
+## Services
+
+| Service | Image | Port | Purpose |
+|---------|-------|------|---------|
+| claude-code | local build | — | Claude Code + channels + remote control |
+| paperless-mcp | ghcr.io/baruchiro/paperless-mcp | 3000 | Paperless-ngx CRUD (20 tools) |
+| checker-mcp | local build | 8001 | Invoice matching + P&L (4 tools) |
+| gmail-mcp | ghcr.io/taylorwilsdon/google_workspace_mcp | 8000 | Gmail read-only |
+| outlook-mcp | local build | 8002 | Outlook read-only (device code auth) |
+
+## Windows local dev
 
 ```bash
-cd compose.stacks/infra/personal-assistant
-CLAUDE_CONFIG_DIR="C:/Users/Dodo/.claude" docker compose up -d
+# Set Claude config path in .env:
+CLAUDE_CONFIG_DIR=C:/Users/YourUser/.claude
+
+docker compose up -d --build
 ```
-
-### 3. Test
-
-```bash
-docker compose exec claude-code claude \
-  --dangerously-load-development-channels server:email-watcher \
-  --dangerously-skip-permissions \
-  --mcp-config /workspace/.mcp.json \
-  -p "Call mock_upload with document_name='test.pdf' and tags=['test']"
-```
-
-## How auth works
-
-```
-Host: ~/.claude/.credentials.json (OAuth refresh token from `claude login`)
-  ↓ volume mount
-Container: /home/node/.claude/.credentials.json
-  ↓ Claude Code reads on startup
-Claude API (api.anthropic.com) ← outbound HTTPS
-```
-
-- Tokens auto-refresh — no manual intervention needed after initial `claude login`
-- Channels require claude.ai OAuth (API keys don't work for channels)
-- The container also has a baked-in `.claude.json` with project trust settings (no Windows paths)
-
-## docker-compose environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | Path to host's Claude config dir (contains `.credentials.json`) |
-
-## Known issues
-
-- `--channels` flag doesn't work with `claude remote-control` subcommand — use `claude --remote-control` flag on interactive mode instead (not yet validated in Docker)
-- FastMCP DNS rebinding protection blocks Docker hostnames — ASGI wrapper rewrites Host header (see `mock-tool/server.py`)
-- No headless remote-control daemon yet ([#30447](https://github.com/anthropics/claude-code/issues/30447))

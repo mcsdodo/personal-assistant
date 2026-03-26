@@ -30,6 +30,12 @@ paperless-mcp container (ghcr.io/baruchiro/paperless-mcp:latest)
 
 checker-mcp container (python:3.12-slim)
 └── 4 invoice matching/P&L tools on :8001/mcp (wraps match_invoices.py)
+
+gmail-mcp container (ghcr.io/taylorwilsdon/google_workspace_mcp)
+└── Gmail read-only tools on :8000/mcp (community, OAuth via start_google_auth)
+
+outlook-mcp container (python:3.12-slim)
+└── 6 Outlook read-only tools on :8002/mcp (custom, MSAL device code auth)
 ```
 
 Channels are stdio subprocesses of Claude Code — they MUST run inside the same container. MCP tool servers CAN be separate containers via Streamable HTTP (`"type": "http"` in `.mcp.json`).

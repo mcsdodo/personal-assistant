@@ -11,6 +11,14 @@
     "checker": {
       "type": "http",
       "url": "http://checker-mcp:8001/mcp"
+    },
+    "gmail": {
+      "type": "http",
+      "url": "http://gmail-mcp:8000/mcp"
+    },
+    "outlook": {
+      "type": "http",
+      "url": "http://outlook-mcp:8002/mcp"
     }
   }
 }

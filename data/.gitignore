@@ -1,0 +1,3 @@
+# Auth tokens and credentials — never commit
+*
+!.gitignore
