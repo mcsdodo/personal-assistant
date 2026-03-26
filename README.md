@@ -89,23 +89,24 @@ docker exec -it personal-assistant-claude tmux attach -t claude
 **Telegram** — pair your account:
 1. DM your bot in Telegram (send any message, e.g., "hello")
 2. Bot replies: `Pairing required — run in Claude Code: /telegram:access pair XXXXXX`
-3. Note the 6-character code (e.g., `ee78fa`)
-4. Write `access.json` directly — this is easier than using the skill command (which doesn't work with development channels):
+3. Read your Telegram user ID from the pending entry:
 ```bash
-# Get your Telegram user ID from the container logs:
 docker exec personal-assistant-claude bash -c "cat /home/node/.claude/channels/telegram/access.json"
-# Look for your ID in the "pending" section, then write the allowlist:
-
-mkdir -p data/telegram  # or wherever your CLAUDE_CONFIG_DIR points
-cat > ~/.claude/channels/telegram/access.json << 'EOF'
+# Look for "senderId" in the "pending" section — that's your user ID
+```
+4. Write the allowlist (replace `YOUR_ID` with the senderId from step 3):
+```bash
+docker exec personal-assistant-claude bash -c 'cat > /home/node/.claude/channels/telegram/access.json << EOF
 {
   "dmPolicy": "allowlist",
-  "allowFrom": ["YOUR_TELEGRAM_USER_ID"],
+  "allowFrom": ["YOUR_ID"],
   "groups": {},
   "pending": {}
 }
-EOF
+EOF'
 ```
+5. The file persists via the `~/.claude` volume mount — survives container restarts.
+
 Your Telegram user ID is a numeric string (e.g., `"7628063924"`). You can also get it by DMing `@userinfobot` on Telegram.
 
 #### 8. Verify
