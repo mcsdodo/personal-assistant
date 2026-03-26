@@ -64,15 +64,17 @@ Channels are stdio subprocesses of Claude Code — they MUST run inside the same
 ## Claude Code in Docker — Reference
 
 ### Authentication
-- Run `claude login` on the host (one-time, interactive OAuth flow)
-- Tokens saved to `~/.claude/.credentials.json`, auto-refresh
-- Volume mount: `~/.claude:/home/node/.claude`
-- Channels require claude.ai OAuth — API keys don't work
+- **Claude**: `docker exec -it personal-assistant-claude claude login` (one-time)
+- **Gmail**: trigger `start_google_auth` from Claude session → callback via `https://gmail-mcp.lacny.me/oauth2callback`
+- **Outlook**: restart container, get device code from `docker logs personal-assistant-outlook-mcp 2>&1 | grep -A3 "OUTLOOK AUTH"`
+- **Telegram**: DM the bot, access.json in volume handles pairing
+- Tokens persist in `/mnt/shared_configs/personal-assistant/` (NAS-backed)
+- After auth, restart Claude to reconnect MCPs: `docker restart personal-assistant-claude`
 
 ### Settings
-Host `~/.claude/settings.json` is volume-mounted into container and overrides baked-in settings.
+`entrypoint.sh` creates `settings.json` on first boot if missing (no manual setup needed).
 
-Required settings for headless operation:
+Required settings (auto-created):
 ```json
 {
   "skipDangerousModePermissionPrompt": true
