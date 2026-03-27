@@ -490,11 +490,9 @@ function parseGmailEmails(data: any, ids: string[]): EmailInfo[] {
     if (emails.length > 0) return emails;
   }
 
-  // Fallback: use the IDs we extracted, minimal info
-  for (const id of ids) {
-    emails.push({ id, source: "gmail" });
-  }
-  return emails;
+  // No fallback — IDs without metadata are useless (can't classify).
+  // The same IDs will appear on the next poll when the MCP is healthy.
+  return [];
 }
 
 async function pollGmail(): Promise<EmailInfo[]> {
@@ -547,11 +545,13 @@ async function pollGmail(): Promise<EmailInfo[]> {
         if (fromContent.length > 0) return fromContent;
       }
     } catch (e: any) {
-      log(`Gmail batch-fetch failed, using IDs only: ${e.message}`);
+      log(`Gmail batch-fetch failed, skipping until next poll: ${e.message}`);
+      return [];
     }
 
-    // Fallback: return IDs with minimal info
-    return parseGmailEmails(null, ids);
+    // No fallback — IDs without metadata can't be classified.
+    // They'll reappear on the next poll when the MCP is healthy.
+    return [];
   } catch (e: any) {
     log(`Gmail poll error: ${e.message}`);
     resetGmailClient();
@@ -846,6 +846,84 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // ---------------------------------------------------------------------------
+// Retry stuck emails
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-push emails stuck in non-terminal states (new, classified) as channel
+ * notifications. These got stuck because Claude restarted mid-processing.
+ * The DB is the source of truth — if status isn't terminal, re-push it.
+ */
+async function retryStuckEmails(db: Database, channel: Server): Promise<void> {
+  const stuck = db
+    .prepare(
+      `SELECT * FROM emails
+       WHERE status IN ('new', 'classified')
+       ORDER BY discovered_at ASC`
+    )
+    .all() as import("./db").EmailRow[];
+
+  if (stuck.length === 0) return;
+
+  // Skip emails with no metadata — they can never be classified.
+  // Mark them as failed so they don't get retried forever.
+  const retryable = stuck.filter((e) => e.sender || e.subject);
+  const unretryable = stuck.length - retryable.length;
+  if (unretryable > 0) {
+    log(`Marking ${unretryable} stuck email(s) as failed (no metadata)`);
+    for (const email of stuck) {
+      if (!email.sender && !email.subject) {
+        updateEmail(db, email.id, {
+          status: "failed",
+          process_result: "No metadata (batch-fetch failed during discovery)",
+        });
+      }
+    }
+  }
+
+  if (retryable.length === 0) return;
+
+  log(`Retrying ${retryable.length} stuck email(s) (new/classified)`);
+
+  const capped = retryable.slice(0, MAX_NEW_PER_CYCLE);
+  if (retryable.length > MAX_NEW_PER_CYCLE) {
+    log(`Capped retry from ${retryable.length} to ${MAX_NEW_PER_CYCLE}`);
+  }
+
+  for (const email of capped) {
+    const contentLines = [
+      "Retry: email stuck from previous session:",
+      `Source: ${email.source}`,
+    ];
+    if (email.sender) contentLines.push(`From: ${email.sender}`);
+    if (email.subject) contentLines.push(`Subject: ${email.subject}`);
+    contentLines.push(`Has attachments: ${email.has_attachments ? "yes" : "no"}`);
+    if (email.preview) contentLines.push(`Preview: ${email.preview}`);
+    contentLines.push(`Message ID: ${email.id}`);
+    contentLines.push(`Current status: ${email.status}`);
+
+    await channel.notification({
+      method: "notifications/claude/channel",
+      params: {
+        content: contentLines.join("\n"),
+        meta: {
+          email_source: email.source,
+          sender: email.sender ?? "",
+          subject: email.subject ?? "",
+          has_attachments: String(email.has_attachments === 1),
+          message_id: email.id,
+          received_at: email.received_at ?? "",
+          timestamp: new Date().toISOString(),
+          retry: "true",
+        },
+      },
+    });
+  }
+
+  log(`Re-pushed ${capped.length} stuck email(s)`);
+}
+
+// ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
 
@@ -879,7 +957,14 @@ async function main(): Promise<void> {
     log(`First poll cycle error: ${e.message}`);
   }
 
-  // 7. Start interval timer
+  // 7. Retry emails stuck from previous session (new/classified)
+  try {
+    await retryStuckEmails(db, mcp);
+  } catch (e: any) {
+    log(`Retry stuck emails error: ${e.message}`);
+  }
+
+  // 8. Start interval timer
   setInterval(async () => {
     try {
       await pollCycle(db, mcp);
