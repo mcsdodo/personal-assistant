@@ -10,6 +10,10 @@ services:
       context: ./local/claude-code
       args:
         CLAUDE_CODE_VERSION: latest
+    volumes:
+      - ${CLAUDE_CONFIG_DIR:-./local/data/claude-config}:/home/node/.claude
+      - ${DOWNLOADS_DIR:-./local/data/downloads}:/workspace/downloads
+      - ${EMAIL_WATCHER_DATA_DIR:-./local/data/email-watcher}:/data/email-watcher
     # Local dev: OTEL to local Alloy sidecar
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4317
@@ -21,6 +25,8 @@ services:
   outlook-mcp:
     build:
       context: ./local/outlook-mcp
+    volumes:
+      - ${OUTLOOK_DATA_DIR:-./local/data/outlook}:/data
 
   gmail-mcp:
     # Local dev: mount client_secret.json from disk, restore original entrypoint

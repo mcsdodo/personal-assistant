@@ -1,18 +1,20 @@
 {
-  "hasCompletedOnboarding": true,
-  "hasSeenTasksHint": true,
   "respectGitignore": false,
+  "hasCompletedOnboarding": true,
   "projects": {
     "/workspace": {
       "allowedTools": [],
       "mcpContextUris": [],
       "mcpServers": {},
-      "enabledMcpjsonServers": ["email-watcher", "mock-paperless"],
-      "disabledMcpjsonServers": [],
       "hasTrustDialogAccepted": true,
       "hasCompletedProjectOnboarding": true,
       "hasClaudeMdExternalIncludesApproved": true,
       "hasClaudeMdExternalIncludesWarningShown": true
     }
-  }
+  },
+  "firstStartTime": "2026-03-27T11:31:35.404Z",
+  "opusProMigrationComplete": true,
+  "sonnet1m45MigrationComplete": true,
+  "officialMarketplaceAutoInstallAttempted": true,
+  "officialMarketplaceAutoInstalled": true
 }

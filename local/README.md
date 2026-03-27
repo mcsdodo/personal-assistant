@@ -86,6 +86,15 @@ docker exec -it personal-assistant-claude tmux attach -t claude
 docker exec personal-assistant-claude tmux capture-pane -t claude -p -S -30
 ```
 
+Local dev overrides the production NAS mounts with local bind mounts by default:
+
+- `./local/data/claude-config` -> `/home/node/.claude`
+- `./local/data/downloads` -> `/workspace/downloads`
+- `./local/data/email-watcher` -> `/data/email-watcher`
+- `./local/data/outlook` -> `/data`
+
+If you want to reuse your desktop Claude login temporarily for debugging, set `CLAUDE_CONFIG_DIR` in `local/.env` to a writable local path that contains your `.claude` files. The intended local setup is app-owned state in `./local/data/claude-config`.
+
 Local dev adds build contexts for the 3 custom images + observability sidecar (Alloy + Prometheus + Loki + Grafana).
 
 | Service | Local URL |
