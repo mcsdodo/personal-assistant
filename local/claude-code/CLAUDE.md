@@ -98,6 +98,7 @@ Each event has these meta fields:
    - `state: awaiting_approval` → notify user via Telegram, wait for response
    - `state: failed` → notify user via Telegram with error
 5. **Record** — call `update_gdrive_scan_status` with the outcome
+6. **Cleanup** — delete the local file from `/workspace/downloads/` after processing is complete (success or failure)
 
 The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `Processed/`. On failure, it moves to `Errors/`.
 
