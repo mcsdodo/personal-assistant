@@ -33,7 +33,7 @@ Emails waiting for processing, broken down by source (gmail/outlook).
 
 **Metric:** `email_watcher_backlog_total{source}` — count of emails with `status="new"`.
 
-**Code:** [`email-watcher.ts:119-136`](../local/claude-code/channels/email-watcher.ts) — SQL query groups `status='new'` by source.
+**Code:** [`email-watcher.ts:119-136`](../local/claude-code/channels/email-watcher.ts#L119) — SQL query groups `status='new'` by source.
 
 ## UC-1A.2: Attachment Tracking
 
@@ -41,7 +41,7 @@ Emails with attachments, by source and processing status.
 
 **Metric:** `email_watcher_attachments_total{source, status}` — count of `has_attachments=1` emails.
 
-**Code:** [`email-watcher.ts:138-161`](../local/claude-code/channels/email-watcher.ts) — SQL groups by source + status where `has_attachments = 1`.
+**Code:** [`email-watcher.ts:138-161`](../local/claude-code/channels/email-watcher.ts#L138) — SQL groups by source + status where `has_attachments = 1`.
 
 ## UC-1A.3: Workflow Actions
 
@@ -49,7 +49,7 @@ Distribution of classifier decisions across the pipeline.
 
 **Metric:** `email_watcher_actions_total{action}` — count by action (download_and_upload, notify_user, ignore).
 
-**Code:** [`email-watcher.ts:188-205`](../local/claude-code/channels/email-watcher.ts) — SQL groups non-null actions.
+**Code:** [`email-watcher.ts:188-205`](../local/claude-code/channels/email-watcher.ts#L188) — SQL groups non-null actions.
 
 ## UC-1A.4: Vendor Mix
 
@@ -57,7 +57,7 @@ Top vendors detected by the classifier (top 20).
 
 **Metric:** `email_watcher_vendors_total{vendor}` — count by vendor, descending.
 
-**Code:** [`email-watcher.ts:228-246`](../local/claude-code/channels/email-watcher.ts) — SQL groups by vendor, ordered by count DESC, limit 20.
+**Code:** [`email-watcher.ts:228-246`](../local/claude-code/channels/email-watcher.ts#L228) — SQL groups by vendor, ordered by count DESC, limit 20.
 
 ## UC-1A.5: Confidence and Latency
 
@@ -68,8 +68,8 @@ Classification confidence distribution and end-to-end workflow latency.
 - `email_watcher_latency_seconds{stage}` — average seconds from discovery to classification/processing
 
 **Code:**
-- [`email-watcher.ts:207-226`](../local/claude-code/channels/email-watcher.ts) — confidence grouping
-- [`email-watcher.ts:267-298`](../local/claude-code/channels/email-watcher.ts) — latency calculation using `julianday()` diff
+- [`email-watcher.ts:207-226`](../local/claude-code/channels/email-watcher.ts#L207) — confidence grouping
+- [`email-watcher.ts:267-298`](../local/claude-code/channels/email-watcher.ts#L267) — latency calculation using `julianday()` diff
 
 Additional metrics:
 - `email_watcher_emails_total{source, status}` — total emails tracked
@@ -80,7 +80,7 @@ Additional metrics:
 
 Claude Code exports native OpenTelemetry data (meter: `com.anthropic.claude_code`).
 
-**Env vars** on claude-code container ([`docker-compose.yml:34-43`](../docker-compose.yml)):
+**Env vars** on claude-code container ([`docker-compose.yml:34-43`](../docker-compose.yml#L34)):
 ```
 CLAUDE_CODE_ENABLE_TELEMETRY=1
 OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_ENDPOINT}
@@ -112,7 +112,7 @@ The email-watcher runs a Bun HTTP server on port 9465 with two endpoints:
 - `/health` — returns 200 if DB accessible and last poll < 2.5 minutes ago, 503 otherwise
 - `/metrics` — Prometheus text format with all `email_watcher_*` metrics
 
-**Code:** [`email-watcher.ts:304-332`](../local/claude-code/channels/email-watcher.ts) — `startMetricsServer()`: health staleness check + metrics rendering.
+**Code:** [`email-watcher.ts:304-332`](../local/claude-code/channels/email-watcher.ts#L304) — `startMetricsServer()`: health staleness check + metrics rendering.
 
 ## Grafana Dashboard
 

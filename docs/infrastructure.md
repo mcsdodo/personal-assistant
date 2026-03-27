@@ -81,12 +81,12 @@ One-time browser login. Credentials persist in `/mnt/shared_configs/personal-ass
 ### Gmail OAuth
 Trigger `start_google_auth` tool from inside the Claude session. OAuth callback via `https://gmail-mcp.lacny.me/oauth2callback` (Caddy-routed, caddy label on gmail-mcp container). Tokens in `/mnt/shared_configs/personal-assistant/gmail/`.
 
-**Config:** [`docker-compose.yml:116-119`](../docker-compose.yml) — OAuth env vars (client ID, secret, redirect URI).
+**Config:** [`docker-compose.yml:116-119`](../docker-compose.yml#L116) — OAuth env vars (client ID, secret, redirect URI).
 
 ### Outlook MSAL Device Code
 Restart outlook-mcp container → check logs for device code URL. Enter code at Microsoft login page. Tokens in `/mnt/shared_configs/personal-assistant/outlook/token_cache.json`.
 
-**Code:** [`outlook-mcp/server.py:31-94`](../local/outlook-mcp/server.py) — MSAL cache load/save, device code flow, silent token acquisition.
+**Code:** [`outlook-mcp/server.py:31-94`](../local/outlook-mcp/server.py#L31) — MSAL cache load/save, device code flow, silent token acquisition.
 
 ### Telegram Pairing
 DM the bot. `access.json` in the NAS volume handles chat allowlisting. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` env vars configure the bot.
@@ -105,7 +105,7 @@ All 5 services have Docker health checks. `claude-code` depends on all MCPs via 
 
 **Staleness detection:** email-watcher `/health` returns 503 if no successful poll in `POLL_INTERVAL_MS * 5` (default 2.5 min). Catches MCP connectivity loss and email-watcher hangs.
 
-**Code:** [`email-watcher.ts:309-322`](../local/claude-code/channels/email-watcher.ts) — health endpoint with staleness check.
+**Code:** [`email-watcher.ts:309-322`](../local/claude-code/channels/email-watcher.ts#L309) — health endpoint with staleness check.
 
 ## Restart Resilience
 
@@ -114,19 +114,19 @@ Three layers ensure the system recovers from crashes:
 ### 1. Docker restart policy
 All services use `restart: unless-stopped`. When the tmux session dies, `entrypoint.sh` exits with code 1, triggering restart.
 
-**Code:** [`entrypoint.sh:65-69`](../local/claude-code/entrypoint.sh) — tmux watchdog loop: `while tmux has-session ... sleep 10`.
+**Code:** [`entrypoint.sh:65-69`](../local/claude-code/entrypoint.sh#L65) — tmux watchdog loop: `while tmux has-session ... sleep 10`.
 
 ### 2. Entrypoint prompt detection
 The entrypoint detects and accepts two TUI prompts:
 1. Development channels prompt ("local development") — polls up to 60s
 2. New MCP server prompt ("new.*mcp", "trust", "approve") — polls 10s after
 
-**Code:** [`entrypoint.sh:29-58`](../local/claude-code/entrypoint.sh) — prompt polling with tmux `capture-pane` + grep + `send-keys Enter`.
+**Code:** [`entrypoint.sh:29-58`](../local/claude-code/entrypoint.sh#L29) — prompt polling with tmux `capture-pane` + grep + `send-keys Enter`.
 
 ### 3. Durable workflow DB
 Jobs in `workflow.db` persist across restarts. On startup, the worker resumes queued jobs automatically.
 
-**Code:** [`workflow-db.ts:46-78`](../local/claude-code/channels/workflow-db.ts) — SQLite schema with `state` column tracking job lifecycle.
+**Code:** [`workflow-db.ts:46-78`](../local/claude-code/channels/workflow-db.ts#L46) — SQLite schema with `state` column tracking job lifecycle.
 
 ## Stateless MCP
 
@@ -137,7 +137,7 @@ Custom servers (`checker-mcp`, `outlook-mcp`) run with `FASTMCP_STATELESS_HTTP=t
 
 Community servers (`paperless-mcp`, `gmail-mcp`) may use stateful sessions — if they restart, restart `claude-code` too.
 
-**Config:** [`docker-compose.yml:94`](../docker-compose.yml) (checker-mcp), [`docker-compose.yml:149`](../docker-compose.yml) (outlook-mcp).
+**Config:** [`docker-compose.yml:94`](../docker-compose.yml#L94) (checker-mcp), [`docker-compose.yml:149`](../docker-compose.yml#L149) (outlook-mcp).
 
 ## Persistence
 
@@ -151,7 +151,7 @@ All state persists on NAS at `/mnt/shared_configs/personal-assistant/`:
 | `gmail/` | Gmail OAuth tokens |
 | `outlook/` | Outlook MSAL token cache |
 
-**Config:** [`docker-compose.yml:27-30`](../docker-compose.yml) — volume mounts.
+**Config:** [`docker-compose.yml:27-30`](../docker-compose.yml#L27) — volume mounts.
 
 NAS: WD MyCloud at 192.168.0.79, NFS → PVE host → bind mount into LXC → Docker volume.
 
@@ -165,7 +165,7 @@ NAS: WD MyCloud at 192.168.0.79, NFS → PVE host → bind mount into LXC → Do
 
 **Watchtower:** All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-session auto-updates.
 
-**Code:** [`docker-compose.yml:7`](../docker-compose.yml), [`docker-compose.yml:67`](../docker-compose.yml), etc. — watchtower labels on every service.
+**Code:** [`docker-compose.yml:7`](../docker-compose.yml#L7), [`docker-compose.yml:67`](../docker-compose.yml#L67), etc. — watchtower labels on every service.
 
 ## MCP Server Configuration
 
