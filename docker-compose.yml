@@ -80,9 +80,9 @@ services:
     labels:
       com.centurylinklabs.watchtower.monitor: "false"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',8001),2); s.close()"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
       start_period: 15s
     environment:
@@ -131,9 +131,9 @@ services:
     labels:
       com.centurylinklabs.watchtower.monitor: "false"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',8002),2); s.close()"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
       start_period: 30s
     volumes:
