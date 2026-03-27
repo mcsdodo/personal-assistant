@@ -30,8 +30,9 @@ claude-code container (node:20-slim, user: node, --model sonnet)
 paperless-mcp container (ghcr.io/baruchiro/paperless-mcp:latest)
 └── 20 Paperless-ngx CRUD tools on :3000/mcp
 
-checker-mcp container (python:3.12-slim)
-└── 4 invoice matching/P&L tools on :8001/mcp (wraps match_invoices.py)
+checker-mcp container (python:3.12-slim, two-process)
+├── 4 invoice matching/P&L tools on :8001/mcp (wraps match_invoices.py)
+└── Flask web UI on :5000 (invoices.lacny.me — matching view + P&L view)
 
 gmail-mcp container (ghcr.io/taylorwilsdon/google_workspace_mcp)
 └── Gmail read-only tools on :8000/mcp (community, OAuth via start_google_auth)
@@ -96,6 +97,8 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | `local/claude-code/channels/db.ts` | Email-watcher SQLite module |
 | `local/claude-code/agents/` | Haiku subagents (email-classifier, invoice-processor) |
 | `local/checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
+| `local/checker-mcp/webapp.py` | Flask web UI (matching view + P&L view) |
+| `local/checker-mcp/entrypoint.sh` | Two-process entrypoint (MCP background + Flask PID 1) |
 | `local/checker-mcp/match_invoices.py` | Invoice matching engine (copy from paperless checker) |
 | `local/outlook-mcp/server.py` | Outlook MCP (MSAL device code auth) |
 | `local/observability/` | Local dev Alloy, Prometheus, Loki, Grafana configs |
