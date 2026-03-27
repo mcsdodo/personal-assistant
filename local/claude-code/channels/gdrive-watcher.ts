@@ -33,7 +33,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const POLL_INTERVAL_MS = parseInt(
-  process.env.GDRIVE_POLL_INTERVAL_MS ?? "60000",
+  process.env.GDRIVE_POLL_INTERVAL_MS ?? "30000",
   10
 );
 const DB_PATH = process.env.GDRIVE_DB_PATH ?? "/data/gdrive-watcher/gdrive.db";
