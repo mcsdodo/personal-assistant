@@ -9,6 +9,7 @@ import {
   requestJobApproval,
   type JobRow,
 } from "./workflow-db";
+import { executeInvoiceIntake } from "./invoice-worker";
 
 export interface WorkflowLogger {
   log(message: string): void;
@@ -64,6 +65,9 @@ export async function executeNextJob(
     switch (job.workflow_type) {
       case "synthetic":
         executeSyntheticJob(db, job, logger);
+        break;
+      case "invoice_intake":
+        await executeInvoiceIntake(db, job, logger);
         break;
       default:
         failJob(db, job.id, {

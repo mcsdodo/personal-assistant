@@ -57,6 +57,9 @@ Always respond with ONLY this JSON (no markdown, no explanation):
   "is_fuel": false,
   "suggested_tags": ["invoicing", "2026-03"],
   "action": "download_and_upload",
+  "download_strategy": "attachment",
+  "strategy_confidence": "high",
+  "requires_review": false,
   "order_id": "583481365",
   "total_amount": 156.68,
   "currency": "EUR"
@@ -71,9 +74,26 @@ Fields:
 - `is_fuel`: boolean — true if this is a fuel/gas station receipt or invoice (for kniha-jazd integration later)
 - `suggested_tags`: array of EXISTING Paperless tags only. Use: `invoicing` (for all invoices/credit notes), `documents` (for non-invoice docs), `techlab` (for Techlab business expenses), and the YYYY-MM month tag. Never invent new tags like vendor names — vendors are tracked as correspondents, not tags.
 - `action`: "download_and_upload" | "notify_user" | "ignore"
+- `download_strategy`: how to retrieve the invoice document:
+  - `"attachment"` — email has a PDF/document attachment (most common)
+  - `"known_link"` — email body contains a known vendor download link pattern (e.g., Alza "Stiahnuť faktúru")
+  - `"direct_url"` — email body contains a direct download URL to a PDF/document
+  - `"browser_required"` — document can only be accessed through a web portal login
+  - `"manual_review"` — cannot determine download strategy; needs human review
+  - `null` — not an invoice (action is "ignore")
+- `strategy_confidence`: "high" | "medium" | "low" — how certain you are about the download strategy
+- `requires_review`: boolean — true if the case needs human review before processing (unknown vendor, low confidence, ambiguous)
 - `order_id`: extracted order/reference/invoice number if present, null otherwise
 - `total_amount`: float amount if visible in subject/body (e.g., "156,68 €" → 156.68), null if unknown
 - `currency`: "EUR", "USD", "CZK", etc. if amount found, null otherwise
+
+## Download Strategy Rules
+
+- Email has PDF/document attachment → `"attachment"` (high confidence)
+- Known vendor with download link pattern (Alza "Stiahnuť faktúru/doklad") → `"known_link"` (high confidence)
+- Email contains a direct .pdf or document download URL → `"direct_url"` (medium-high confidence)
+- Vendor portal login required (Orange self-service, etc.) → `"browser_required"` (high confidence)
+- Cannot determine how to get the document → `"manual_review"` (low confidence)
 
 ## Action Rules
 

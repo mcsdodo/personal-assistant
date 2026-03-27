@@ -47,13 +47,13 @@ async function workerTick(): Promise<void> {
 }
 
 const mcp = new Server(
-  { name: "workflow", version: "0.1.0" },
+  { name: "workflow", version: "0.2.0" },
   {
     capabilities: { tools: {} },
     instructions:
       "Use workflow tools for durable background jobs. " +
-      "Prefer them for stateful or restart-sensitive work. " +
-      "For now, the worker supports synthetic verification jobs.",
+      "For invoice processing, prefer create_invoice_intake_job over direct inline processing. " +
+      "The worker handles download, dedup, and upload deterministically.",
   },
 );
 
@@ -61,7 +61,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "create_job",
-      description: "Create a durable workflow job. Phase 1 supports workflow_type='synthetic'.",
+      description: "Create a generic durable workflow job. Supports workflow_type='synthetic' and 'invoice_intake'.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -75,6 +75,46 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           requires_approval: { type: "boolean" },
         },
         required: ["workflow_type"],
+      },
+    },
+    {
+      name: "create_invoice_intake_job",
+      description:
+        "Create a durable invoice processing job. Use this after classifying an email as an invoice. " +
+        "The worker will download the document, check for duplicates, and upload to Paperless. " +
+        "For unknown vendors, low confidence, or browser_required strategies, the job will pause for approval.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          email_source: {
+            type: "string",
+            description: "Email source: 'gmail' or 'outlook'",
+          },
+          message_id: {
+            type: "string",
+            description: "Email message ID from the email provider",
+          },
+          classification: {
+            type: "object",
+            description:
+              "Classification output from email-classifier. Must include: is_invoice, confidence, vendor, " +
+              "doc_type, suggested_tags, action, download_strategy, strategy_confidence, requires_review, " +
+              "order_id, total_amount, currency",
+          },
+          subject: {
+            type: "string",
+            description: "Email subject line (for title generation)",
+          },
+          sender: {
+            type: "string",
+            description: "Email sender address",
+          },
+          received_at: {
+            type: "string",
+            description: "Email received timestamp (ISO format)",
+          },
+        },
+        required: ["email_source", "message_id", "classification"],
       },
     },
     {
@@ -151,6 +191,52 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           sourceRef: (args?.source_ref as string | undefined) ?? null,
           idempotencyKey: (args?.idempotency_key as string | undefined) ?? null,
           requiresApproval: Boolean(args?.requires_approval),
+        });
+        return { content: [text(job)] };
+      }
+
+      case "create_invoice_intake_job": {
+        const emailSource = args?.email_source as string;
+        const messageId = args?.message_id as string;
+        const classification = args?.classification as Record<string, unknown>;
+        if (!emailSource || !messageId || !classification) {
+          return {
+            content: [text("Error: email_source, message_id, and classification are required")],
+            isError: true,
+          };
+        }
+
+        // Build the input payload
+        const inputPayload = {
+          email_source: emailSource,
+          message_id: messageId,
+          classification,
+          subject: (args?.subject as string | undefined) ?? undefined,
+          sender: (args?.sender as string | undefined) ?? undefined,
+          received_at: (args?.received_at as string | undefined) ?? undefined,
+        };
+
+        // Determine if approval is needed based on classification
+        const vendor = classification.vendor as string;
+        const confidence = classification.confidence as string;
+        const strategy = classification.download_strategy as string | null;
+        const requiresReview = Boolean(classification.requires_review);
+        const needsApproval =
+          vendor === "unknown" ||
+          confidence === "low" ||
+          strategy === "browser_required" ||
+          strategy === "manual_review" ||
+          requiresReview;
+
+        // Use source:message_id as idempotency key
+        const idempotencyKey = `${emailSource}:${messageId}`;
+
+        const job = createJob(db, {
+          workflowType: "invoice_intake",
+          inputJson: JSON.stringify(inputPayload),
+          sourceRef: `${emailSource}:${messageId}`,
+          idempotencyKey,
+          requiresApproval: needsApproval,
         });
         return { content: [text(job)] };
       }

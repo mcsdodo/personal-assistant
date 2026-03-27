@@ -39,14 +39,21 @@ Use these for debugging ("show me recent emails"), status checks ("how many proc
 ### workflow (durable job tools)
 
 The workflow MCP adds durable background-job primitives:
-- `create_job(workflow_type, input_json?, source_ref?, idempotency_key?, requires_approval?)`
-- `get_job(job_id)`
-- `list_jobs(state?, workflow_type?, limit?)`
-- `get_job_events(job_id)`
-- `approve_job(job_id, approved_by?, note?)`
-- `cancel_job(job_id, reason?)`
+- `create_job(workflow_type, input_json?, source_ref?, idempotency_key?, requires_approval?)` — generic job creation
+- `create_invoice_intake_job(email_source, message_id, classification, subject?, sender?, received_at?)` — create an invoice processing job (preferred for invoices)
+- `get_job(job_id)` — fetch job by ID
+- `list_jobs(state?, workflow_type?, limit?)` — list recent jobs
+- `get_job_events(job_id)` — full event history for a job
+- `approve_job(job_id, approved_by?, note?)` — approve a paused job
+- `cancel_job(job_id, reason?)` — cancel a job
 
-Current Phase 1 support is for synthetic verification jobs only. Use it to validate durable workflow behavior without relying on session memory.
+The workflow worker handles invoice processing deterministically:
+- Downloads attachments or links from email
+- Checks for duplicates in Paperless
+- Uploads to Paperless with correct metadata
+- Pauses automatically for unknown vendors, low confidence, or browser-required cases
+
+Use `create_invoice_intake_job` instead of inline processing for all invoice emails.
 
 ## When you receive an email-watcher channel event
 
@@ -62,28 +69,30 @@ On first startup, existing emails are seeded into the database without processin
 
 ## Email Processing Pipeline
 
-Process emails using the Haiku subagents:
+Process emails using the Haiku subagents and durable workflow jobs:
 
-1. **Classify** — dispatch to `email-classifier` agent with the email metadata (sender, subject, body excerpt). It returns a JSON classification.
+1. **Classify** — dispatch to `email-classifier` agent with the email metadata (sender, subject, body excerpt). It returns a JSON classification including `download_strategy`.
 
 2. **Act on classification:**
-   - `action: download_and_upload` — dispatch to `invoice-processor` agent with the email source, message ID, and classification JSON. It handles duplicate detection, download, and Paperless upload. Handle its return value:
-     - `Uploaded ...` → success, notify via Telegram
-     - `DUPLICATE: ...` → silently skip, no notification
-     - `DUPLICATE_LIKELY: ...` → notify user via Telegram with details, ask whether to proceed
-     - `FAILED: ...` → notify user via Telegram with error
+   - `action: download_and_upload` — create a durable workflow job using `create_invoice_intake_job` with the email source, message ID, and full classification JSON. The worker handles download, dedup, and upload automatically.
+     - After creating the job, poll with `get_job(job_id)` to check status:
+       - `state: completed` with `outcome: uploaded` → success, notify via Telegram
+       - `state: completed` with `outcome: duplicate` → silently skip, no notification
+       - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for user response, then call `approve_job` or `cancel_job`
+       - `state: failed` → notify user via Telegram with error
+     - You don't need to poll immediately — the worker processes jobs within seconds. Check once after a short delay.
    - `action: notify_user` — notify the user via Telegram with the classification details and ask what to do. If the Telegram notification fails (e.g. chat not allowlisted, reply tool errors), record status="failed" with the error — do NOT mark as "processed".
    - `action: ignore` — log silently, do nothing.
 
-3. **Report** — after processing, briefly summarize what happened (e.g., "Uploaded Alza invoice FA2026030123 to Paperless with tags [invoicing, 2026-03, alza]").
+3. **Report** — after the job completes, briefly summarize what happened (e.g., "Uploaded Alza invoice FA2026030123 to Paperless with tags [invoicing, 2026-03]").
 
 4. **Record** — after each step, call `update_email_status` on the email-watcher:
    - After classification: `update_email_status(id, status="classified", classification=<json>, action=..., vendor=..., confidence=...)`
-   - After processing: `update_email_status(id, status="processed", process_result="Uploaded X to Paperless")`
-   - On failure: `update_email_status(id, status="failed", process_result="error details")`
+   - After job completion: `update_email_status(id, status="processed", process_result="Uploaded X to Paperless")`
+   - On job failure: `update_email_status(id, status="failed", process_result="error details")`
    - On ignore: `update_email_status(id, status="ignored")`
 
-This pipeline keeps routine classification on Haiku (fast, cheap) and only escalates edge cases to you (Sonnet).
+This pipeline keeps routine classification on Haiku (fast, cheap), deterministic execution in the workflow worker, and only escalates edge cases to you (Sonnet).
 
 ## When asked about invoices or matching
 

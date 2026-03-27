@@ -309,5 +309,9 @@ export function cancelJob(db: Database, jobId: string, reason?: string | null): 
 
 export function parseJobJson<T>(value: string | null): T | null {
   if (!value) return null;
-  return JSON.parse(value) as T;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
 }
