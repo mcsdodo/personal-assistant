@@ -14,9 +14,9 @@ Invoice matching and P&L:
 - `get_pl_summary(year)` — annual profit & loss summary
 - `get_month_status(month?)` — quick overview (how many matched/missing/pending)
 
-### gmail (google_workspace_mcp — read-only)
-Gmail access via Google Workspace MCP. Search emails, read content, download attachments.
-Read-only mode — cannot send or modify emails.
+### gmail (google_workspace_mcp — Gmail + Drive)
+Gmail and Google Drive access via Google Workspace MCP. Search emails, read content, download attachments.
+Drive tools: `list_drive_items`, `search_drive_files`, `get_drive_file_content`, `get_drive_file_download_url`, `update_drive_file`, `create_drive_folder`.
 
 ### outlook (outlook-mcp — read-only)
 Outlook email access via Microsoft Graph:
@@ -36,6 +36,15 @@ The email-watcher is both a channel (pushes events) and a tool server:
 
 Use these for debugging ("show me recent emails"), status checks ("how many processed today?"), and always after processing an email event.
 
+### gdrive-watcher (channel + tools)
+
+The gdrive-watcher polls a Google Drive folder (`Techlab/Invoice scans/`) every 60 seconds for new scanned documents and pushes events here.
+
+Tools:
+- `update_gdrive_scan_status(id, status, classification?, action?, job_id?, process_result?, error?)` — record processing results
+- `get_gdrive_scan_status(limit?, status?)` — query the file audit trail
+- `get_gdrive_scan_stats()` — processing statistics (counts by status)
+
 ### workflow (durable job tools)
 
 The workflow MCP adds durable background-job primitives:
@@ -53,7 +62,7 @@ The workflow worker handles invoice processing deterministically:
 - Uploads to Paperless with correct metadata
 - Pauses automatically for unknown vendors, low confidence, or browser-required cases
 
-Use `create_invoice_intake_job` instead of inline processing for all invoice emails.
+Use `create_invoice_intake_job` for email invoices. Use `create_scan_intake_job` for scanned documents from Google Drive.
 
 ## When you receive an email-watcher channel event
 
@@ -66,6 +75,31 @@ Each event has these meta fields:
 - `received_at`: when the email was received
 
 On first startup, existing emails are seeded into the database without processing. Only emails that arrive after the channel starts are pushed.
+
+## When you receive a gdrive-watcher channel event
+
+The gdrive-watcher polls `Techlab/Invoice scans/` on Google Drive every 60 seconds for new files and pushes events here.
+
+Each event has these meta fields:
+- `source`: always `"gdrive"`
+- `file_id`: the Google Drive file ID — use with gmail MCP Drive tools
+- `name`: original filename
+- `mime_type`: file MIME type
+- `created_time`: when the file was uploaded (scan date)
+- `month_tag`: `YYYY-MM` tag derived from scan date — use this for tagging (hard rule)
+
+**Processing pipeline:**
+1. **Download** — use gmail MCP `get_drive_file_content` with the `file_id`
+2. **Classify** — invoke the `scan-classifier` subagent with the file content (vision-based). Returns vendor, total_amount, doc_type, etc.
+3. **Create job** — call `create_scan_intake_job` on workflow MCP with the classification result, file_id, and `month_tag`. The worker handles dedup, upload, and file move automatically.
+4. **Monitor job** — poll with `get_job(job_id)`:
+   - `state: completed` with `outcome: uploaded` → notify via Telegram: "✓ Uploaded {vendor} scan to Paperless ({amount} EUR)"
+   - `state: completed` with `outcome: duplicate` → silently skip
+   - `state: awaiting_approval` → notify user via Telegram, wait for response
+   - `state: failed` → notify user via Telegram with error
+5. **Record** — call `update_gdrive_scan_status` with the outcome
+
+The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `Processed/`. On failure, it moves to `Errors/`.
 
 ## Email Processing Pipeline
 

@@ -14,6 +14,7 @@ services:
       - ${CLAUDE_CONFIG_DIR:-./local/data/claude-config}:/home/node/.claude
       - ${DOWNLOADS_DIR:-./local/data/downloads}:/workspace/downloads
       - ${EMAIL_WATCHER_DATA_DIR:-./local/data/email-watcher}:/data/email-watcher
+      - ${GDRIVE_WATCHER_DATA_DIR:-./local/data/gdrive-watcher}:/data/gdrive-watcher
     # Local dev: OTEL to local Alloy sidecar
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4317
@@ -34,7 +35,7 @@ services:
       - ${GMAIL_CREDS_DIR:-./local/data/gmail}:/app/store_creds
       - ${GMAIL_CLIENT_SECRET:-./local/data/gmail/client_secret.json}:/app/client_secret.json:ro
     entrypoint: ["uv", "run", "main.py"]
-    command: ["--transport", "streamable-http", "--tools", "gmail", "--read-only"]
+    command: ["--transport", "streamable-http", "--tools", "gmail", "drive"]
 
   alloy:
     image: grafana/alloy:latest

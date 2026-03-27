@@ -22,12 +22,14 @@ services:
       start_period: 90s
     ports:
       - "9465:9465"
+      - "9466:9466"
     volumes:
       # Bind-mount host Claude credentials dir for OAuth tokens
       - /mnt/shared_configs/personal-assistant/claude-config:/home/node/.claude
       # Downloaded invoices
       - /mnt/shared_configs/personal-assistant/downloads:/workspace/downloads
       - /mnt/shared_configs/personal-assistant/email-watcher:/data/email-watcher
+      - /mnt/shared_configs/personal-assistant/gdrive-watcher:/data/gdrive-watcher
     environment:
       - NODE_OPTIONS=--max-old-space-size=4096
       - HOME=/home/node
@@ -58,6 +60,13 @@ services:
       - STARTUP_DELAY_MS=${STARTUP_DELAY_MS:-15000}
       - MAX_NEW_PER_CYCLE=${MAX_NEW_PER_CYCLE:-5}
       - EMAIL_WATCHER_METRICS_PORT=${EMAIL_WATCHER_METRICS_PORT:-9465}
+      # gdrive-watcher channel
+      - GDRIVE_POLL_INTERVAL_MS=${GDRIVE_POLL_INTERVAL_MS:-60000}
+      - GDRIVE_WATCH_FOLDER=${GDRIVE_WATCH_FOLDER:-Techlab/Invoice scans}
+      - GDRIVE_PROCESSED_FOLDER=${GDRIVE_PROCESSED_FOLDER:-Techlab/Invoice scans/Processed}
+      - GDRIVE_ERRORS_FOLDER=${GDRIVE_ERRORS_FOLDER:-Techlab/Invoice scans/Errors}
+      - GDRIVE_MCP_URL=${GDRIVE_MCP_URL:-http://gmail-mcp:8000/mcp}
+      - GDRIVE_WATCHER_METRICS_PORT=${GDRIVE_WATCHER_METRICS_PORT:-9466}
 
   paperless-mcp:
     image: ghcr.io/baruchiro/paperless-mcp:latest  # no semver tags; Watchtower excluded, auto_pull=false
@@ -122,13 +131,13 @@ services:
       - GOOGLE_OAUTH_REDIRECT_URI=https://gmail-mcp.lacny.me/oauth2callback
       - GOOGLE_MCP_CREDENTIALS_DIR=/app/store_creds
       - GOOGLE_CLIENT_SECRET_JSON=${GOOGLE_CLIENT_SECRET_JSON}
-      - TOOLS=gmail
+      - TOOLS=gmail drive
     # Write client_secret.json from env var at startup (no manual file copy needed)
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         echo "$$GOOGLE_CLIENT_SECRET_JSON" > /app/client_secret.json
-        exec uv run main.py --transport streamable-http --tools gmail --read-only
+        exec uv run main.py --transport streamable-http --tools gmail drive
 
   outlook-mcp:
     image: personal-assistant-outlook-mcp:latest
