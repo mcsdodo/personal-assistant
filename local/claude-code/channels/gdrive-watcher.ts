@@ -214,14 +214,24 @@ async function resolveWatchFolderId(): Promise<string> {
   });
 
   const data = parseToolResult(result);
-  if (!data || (Array.isArray(data) && data.length === 0)) {
+  if (!data) {
     throw new Error(`Watch folder not found: ${WATCH_FOLDER}`);
   }
 
-  const folder = Array.isArray(data) ? data[0] : data;
-  const folderId = folder.id ?? folder.fileId;
+  // Try structured data first, fall back to text parsing
+  let folderId: string | undefined;
+  if (Array.isArray(data) && data.length > 0) {
+    folderId = data[0].id ?? data[0].fileId;
+  } else if (typeof data === "string") {
+    // Parse "ID: xxx" from text output
+    const idMatch = data.match(/ID:\s*([^,\s)]+)/);
+    if (idMatch) folderId = idMatch[1].trim();
+  } else if (typeof data === "object") {
+    folderId = data.id ?? data.fileId;
+  }
+
   if (!folderId) {
-    throw new Error(`Could not resolve folder ID for: ${WATCH_FOLDER}`);
+    throw new Error(`Could not resolve folder ID for: ${WATCH_FOLDER} (response: ${typeof data === "string" ? data.slice(0, 200) : JSON.stringify(data).slice(0, 200)})`);
   }
 
   watchFolderId = folderId;
@@ -237,6 +247,32 @@ interface DriveFile {
   modifiedTime: string;
 }
 
+/**
+ * Parse the human-readable text output from google_workspace_mcp's
+ * list_drive_items / search_drive_files tools.
+ *
+ * Format per line:
+ *   - Name: "filename" (ID: xxx, Type: mime, Size: n, Modified: iso) Link: url
+ */
+function parseDriveTextOutput(text: string): DriveFile[] {
+  const files: DriveFile[] = [];
+  const lineRegex =
+    /Name:\s*"([^"]+)"\s*\(ID:\s*([^,]+),\s*Type:\s*([^,]+)(?:,\s*Size:\s*\d+)?,\s*Modified:\s*([^)]+)\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = lineRegex.exec(text)) !== null) {
+    const [, name, id, mimeType, modified] = match;
+    if (mimeType.trim() === "application/vnd.google-apps.folder") continue;
+    files.push({
+      id: id.trim(),
+      name: name.trim(),
+      mimeType: mimeType.trim(),
+      createdTime: modified.trim(),
+      modifiedTime: modified.trim(),
+    });
+  }
+  return files;
+}
+
 async function pollGdrive(): Promise<DriveFile[]> {
   try {
     const folderId = await resolveWatchFolderId();
@@ -250,22 +286,26 @@ async function pollGdrive(): Promise<DriveFile[]> {
     const data = parseToolResult(result);
     if (!data) return [];
 
-    const items: any[] = Array.isArray(data) ? data : [data];
-    return items
-      .filter(
-        (item: any) =>
-          item.mimeType !== "application/vnd.google-apps.folder"
-      )
-      .map((item: any) => ({
-        id: String(item.id ?? item.fileId),
-        name: item.name ?? "(unknown)",
-        mimeType: item.mimeType ?? "application/octet-stream",
-        createdTime:
-          item.createdTime ??
-          item.modifiedTime ??
-          new Date().toISOString(),
-        modifiedTime: item.modifiedTime ?? new Date().toISOString(),
-      }));
+    // google_workspace_mcp returns human-readable text, not JSON objects.
+    // Try structured data first (array of objects), fall back to text parsing.
+    if (Array.isArray(data)) {
+      return data
+        .filter((item: any) => item.mimeType !== "application/vnd.google-apps.folder")
+        .map((item: any) => ({
+          id: String(item.id ?? item.fileId),
+          name: item.name ?? "(unknown)",
+          mimeType: item.mimeType ?? "application/octet-stream",
+          createdTime: item.createdTime ?? item.modifiedTime ?? new Date().toISOString(),
+          modifiedTime: item.modifiedTime ?? new Date().toISOString(),
+        }));
+    }
+
+    // Text format: parse line-by-line
+    if (typeof data === "string") {
+      return parseDriveTextOutput(data);
+    }
+
+    return [];
   } catch (e: any) {
     log(`GDrive poll error: ${e.message}`);
     resetDriveClient();
