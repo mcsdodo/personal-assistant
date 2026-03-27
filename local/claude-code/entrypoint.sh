@@ -16,10 +16,11 @@ fi
 # Run Claude Code in interactive mode inside tmux
 tmux new-session -d -s claude \
   "claude --model sonnet --remote-control \
-    --dangerously-load-development-channels server:email-watcher \
-    --dangerously-load-development-channels server:telegram \
-    --dangerously-skip-permissions \
-    --mcp-config /workspace/.mcp.json"
+     --dangerously-load-development-channels server:email-watcher \
+     --dangerously-load-development-channels server:workflow \
+     --dangerously-load-development-channels server:telegram \
+     --dangerously-skip-permissions \
+     --mcp-config /workspace/.mcp.json"
 
 # Wait for the development channels TUI prompt, then accept it
 # Polls every second instead of blind sleep — handles slow startups reliably

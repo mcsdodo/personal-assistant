@@ -8,6 +8,10 @@
       "command": "bun",
       "args": ["run", "/app/channels/telegram/server.ts"]
     },
+    "workflow": {
+      "command": "bun",
+      "args": ["run", "/app/channels/workflow-mcp.ts"]
+    },
     "paperless": {
       "type": "http",
       "url": "http://paperless-mcp:3000/mcp"

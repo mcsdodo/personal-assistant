@@ -36,6 +36,18 @@ The email-watcher is both a channel (pushes events) and a tool server:
 
 Use these for debugging ("show me recent emails"), status checks ("how many processed today?"), and always after processing an email event.
 
+### workflow (durable job tools)
+
+The workflow MCP adds durable background-job primitives:
+- `create_job(workflow_type, input_json?, source_ref?, idempotency_key?, requires_approval?)`
+- `get_job(job_id)`
+- `list_jobs(state?, workflow_type?, limit?)`
+- `get_job_events(job_id)`
+- `approve_job(job_id, approved_by?, note?)`
+- `cancel_job(job_id, reason?)`
+
+Current Phase 1 support is for synthetic verification jobs only. Use it to validate durable workflow behavior without relying on session memory.
+
 ## When you receive an email-watcher channel event
 
 The email-watcher polls Gmail and Outlook every 30 seconds for new emails and pushes events here.

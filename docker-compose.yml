@@ -53,6 +53,8 @@ services:
       - OUTLOOK_ENABLED=${OUTLOOK_ENABLED:-true}
       - POLL_INTERVAL_MS=${POLL_INTERVAL_MS:-30000}
       - DB_PATH=/data/email-watcher/emails.db
+      - WORKFLOW_DB_PATH=/data/email-watcher/workflow.db
+      - WORKFLOW_POLL_MS=${WORKFLOW_POLL_MS:-2000}
       - STARTUP_DELAY_MS=${STARTUP_DELAY_MS:-15000}
       - MAX_NEW_PER_CYCLE=${MAX_NEW_PER_CYCLE:-5}
       - EMAIL_WATCHER_METRICS_PORT=${EMAIL_WATCHER_METRICS_PORT:-9465}
