@@ -23,8 +23,9 @@ Event-driven personal assistant using Claude Code Channels + MCP tool servers.
 claude-code container (node:20-slim, user: node, --model sonnet)
 ├── Claude Code interactive session in tmux (--remote-control)
 ├── email-watcher channel+tools (stdio, polls gmail+outlook every 30s, SQLite audit trail)
+├── gdrive-watcher channel+tools (stdio, polls GDrive folder every 60s, SQLite audit trail)
 ├── telegram channel (official plugin, cloned at build, two-way)
-├── subagents: email-classifier (haiku), invoice-processor (haiku)
+├── subagents: email-classifier (haiku), scan-classifier (haiku), invoice-processor (haiku)
 └── connects to MCP tool servers via Streamable HTTP
 
 paperless-mcp container (ghcr.io/baruchiro/paperless-mcp:latest)
@@ -35,7 +36,8 @@ checker-mcp container (python:3.12-slim, two-process)
 └── Flask web UI on :5000 (invoices.lacny.me — matching view + P&L view)
 
 gmail-mcp container (ghcr.io/taylorwilsdon/google_workspace_mcp)
-└── Gmail read-only tools on :8000/mcp (community, OAuth via start_google_auth)
+├── Gmail tools on :8000/mcp (community, OAuth via start_google_auth)
+└── Google Drive tools (list, download, move files)
 
 outlook-mcp container (python:3.12-slim)
 └── 6 Outlook read-only tools on :8002/mcp (custom, MSAL device code auth)
@@ -95,7 +97,9 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | `local/claude-code/entrypoint.sh` | tmux wrapper, prompt detection, health monitor |
 | `local/claude-code/channels/email-watcher.ts` | Email-watcher channel (polls Gmail+Outlook, SQLite audit) |
 | `local/claude-code/channels/db.ts` | Email-watcher SQLite module |
-| `local/claude-code/agents/` | Haiku subagents (email-classifier, invoice-processor) |
+| `local/claude-code/channels/gdrive-watcher.ts` | GDrive-watcher channel (polls Google Drive, SQLite audit) |
+| `local/claude-code/channels/gdrive-db.ts` | GDrive-watcher SQLite module |
+| `local/claude-code/agents/` | Haiku subagents (email-classifier, scan-classifier, invoice-processor) |
 | `local/checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
 | `local/checker-mcp/webapp.py` | Flask web UI (matching view + P&L view) |
 | `local/checker-mcp/entrypoint.sh` | Two-process entrypoint (MCP background + Flask PID 1) |
