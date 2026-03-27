@@ -103,6 +103,7 @@ interface WorkerLogger {
 
 const OUTLOOK_MCP_URL = process.env.OUTLOOK_MCP_URL ?? "http://outlook-mcp:8002/mcp";
 const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
+const GOOGLE_EMAIL = process.env.GMAIL_EMAIL ?? "";
 const PAPERLESS_MCP_URL = process.env.PAPERLESS_MCP_URL ?? "http://paperless-mcp:3000/mcp";
 
 // ── Main executor ──────────────────────────────────────────────────────
@@ -846,6 +847,7 @@ async function downloadFromGdrive(
 
   const result = await callMcpTool(GMAIL_MCP_URL, "get_drive_file_content", {
     file_id: fileId,
+    user_google_email: GOOGLE_EMAIL,
   });
   const data = extractText(result);
   if (!data) throw new Error("Failed to download file from GDrive");
@@ -882,6 +884,7 @@ async function moveGdriveFile(
     // Search for the target folder
     const searchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
       query: `name = '${targetFolder}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      user_google_email: GOOGLE_EMAIL,
     });
     const searchText = extractText(searchResult);
     if (!searchText) {
@@ -914,6 +917,7 @@ async function moveGdriveFile(
       file_id: fileId,
       add_parents: targetFolderId,
       remove_parents: watchFolder,
+      user_google_email: GOOGLE_EMAIL,
     });
     logger.log(`Moved file ${fileId} to ${targetFolder}/`);
   } catch (error) {

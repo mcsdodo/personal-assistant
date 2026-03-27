@@ -55,6 +55,8 @@ const GDRIVE_MCP_URL =
   process.env.GDRIVE_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const WATCH_FOLDER =
   process.env.GDRIVE_WATCH_FOLDER ?? "Techlab/Invoice scans";
+const GOOGLE_EMAIL =
+  process.env.GMAIL_EMAIL ?? "";
 
 // ---------------------------------------------------------------------------
 // Logging — all to stderr (stdout reserved for MCP stdio transport)
@@ -207,6 +209,7 @@ async function resolveWatchFolderId(): Promise<string> {
     name: "search_drive_files",
     arguments: {
       query: `name = '${leafName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      user_google_email: GOOGLE_EMAIL,
     },
   });
 
@@ -241,7 +244,7 @@ async function pollGdrive(): Promise<DriveFile[]> {
 
     const result = await client.callTool({
       name: "list_drive_items",
-      arguments: { folder_id: folderId },
+      arguments: { folder_id: folderId, user_google_email: GOOGLE_EMAIL },
     });
 
     const data = parseToolResult(result);
