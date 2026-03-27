@@ -118,6 +118,23 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "create_scan_intake_job",
+      description: "Create a durable workflow job for a scanned document from Google Drive.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          file_id: { type: "string", description: "Google Drive file ID" },
+          filename: { type: "string", description: "Original filename" },
+          month_tag: { type: "string", description: "YYYY-MM tag derived from scan date" },
+          classification: {
+            type: "object",
+            description: "Classification result from scan-classifier agent",
+          },
+        },
+        required: ["file_id", "classification"],
+      },
+    },
+    {
       name: "get_job",
       description: "Fetch a single workflow job by id.",
       inputSchema: {
@@ -239,6 +256,40 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           requiresApproval: needsApproval,
         });
         return { content: [text(job)] };
+      }
+
+      case "create_scan_intake_job": {
+        const fileId = args?.file_id as string;
+        const classification = args?.classification as Record<string, unknown>;
+        if (!fileId || !classification) {
+          return { content: [text("Error: file_id and classification are required")], isError: true };
+        }
+
+        const inputPayload = {
+          source: "gdrive",
+          file_id: fileId,
+          filename: (args?.filename as string | undefined) ?? undefined,
+          month_tag: (args?.month_tag as string | undefined) ?? undefined,
+          classification,
+        };
+
+        const vendor = classification.vendor as string;
+        const confidence = classification.confidence as string;
+        const needsApproval =
+          vendor === "unknown" ||
+          confidence === "low" ||
+          Boolean(classification.requires_review);
+
+        const idempotencyKey = `gdrive:${fileId}`;
+
+        const job = createJob(db, {
+          workflowType: "scan_intake",
+          inputJson: JSON.stringify(inputPayload),
+          sourceRef: `gdrive:${fileId}`,
+          idempotencyKey,
+          requiresApproval: needsApproval,
+        });
+        return { content: [text(JSON.stringify(job, null, 2))] };
       }
 
       case "get_job": {

@@ -59,6 +59,23 @@ export interface InvoiceIntakeInput {
   received_at?: string;
 }
 
+export interface ScanIntakeInput {
+  source: "gdrive";
+  file_id: string;
+  filename?: string;
+  month_tag?: string;
+  classification: {
+    doc_type: string;
+    vendor: string;
+    total_amount: number | null;
+    currency: string | null;
+    is_fuel: boolean;
+    suggested_tags: string[];
+    confidence: string;
+    order_id: string | null;
+  };
+}
+
 export interface InvoiceIntakeResult {
   outcome: "uploaded" | "duplicate" | "duplicate_likely" | "paused" | "failed";
   title?: string;
@@ -648,4 +665,259 @@ function buildTitle(
     return `${vendor} - ${cleaned}`;
   }
   return `${vendor} - invoice`;
+}
+
+// ── Scan intake (GDrive) ──────────────────────────────────────────────
+
+export async function executeScanIntake(
+  db: Database,
+  job: JobRow,
+  logger: WorkerLogger,
+): Promise<void> {
+  const input = parseJobJson<ScanIntakeInput>(job.input_json);
+  if (!input) {
+    failJob(db, job.id, { code: "invalid_input", message: "Missing or invalid input_json" });
+    return;
+  }
+
+  const { classification, file_id } = input;
+
+  // ── Gate: unknown vendor requires approval (unless already approved) ──
+  if (classification.vendor === "unknown" && !job.approved_by) {
+    requestJobApproval(db, job.id, {
+      reason: "Unknown vendor — cannot process scan without human confirmation",
+      filename: input.filename,
+      file_id,
+    });
+    logger.log(`Job ${job.id} paused: unknown vendor`);
+    return;
+  }
+
+  // ── Gate: low confidence requires approval ──
+  if (classification.confidence === "low" && !job.approved_by) {
+    requestJobApproval(db, job.id, {
+      reason: `Low classification confidence for "${classification.vendor}"`,
+      filename: input.filename,
+      file_id,
+    });
+    logger.log(`Job ${job.id} paused: low confidence`);
+    return;
+  }
+
+  try {
+    // Step 1: Download from GDrive
+    addJobEvent(db, job.id, "step_started", { step: "download", source: "gdrive" });
+    const file = await downloadFromGdrive(file_id, input.filename, logger);
+    addJobEvent(db, job.id, "step_completed", {
+      step: "download",
+      filename: file.filename,
+      size: file.size,
+      content_type: file.content_type,
+    });
+
+    // Step 2: Resolve correspondent
+    addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
+    const correspondent = await resolveCorrespondent(classification.vendor, logger);
+    addJobEvent(db, job.id, "step_completed", {
+      step: "resolve_correspondent",
+      correspondent,
+    });
+
+    // Step 3: Deduplicate (only if order_id exists)
+    addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
+    const dedupeResult = await checkDuplicate(
+      classification as unknown as InvoiceIntakeInput["classification"],
+      correspondent,
+      logger,
+    );
+    if (dedupeResult) {
+      addJobEvent(db, job.id, "step_completed", {
+        step: "deduplicate",
+        ...dedupeResult,
+      });
+
+      if (dedupeResult.outcome === "duplicate") {
+        const result: InvoiceIntakeResult = {
+          outcome: "duplicate",
+          duplicate_of: dedupeResult.existing_id,
+          duplicate_message: dedupeResult.message,
+        };
+        completeJob(db, job.id, result);
+        await moveGdriveFile(file_id, "Processed", logger);
+        logger.log(`Job ${job.id} completed: duplicate of doc #${dedupeResult.existing_id}`);
+        return;
+      }
+
+      if (dedupeResult.outcome === "duplicate_likely") {
+        requestJobApproval(db, job.id, {
+          reason: dedupeResult.message,
+          existing_document_id: dedupeResult.existing_id,
+        });
+        logger.log(`Job ${job.id} paused: likely duplicate`);
+        return;
+      }
+    } else {
+      addJobEvent(db, job.id, "step_completed", {
+        step: "deduplicate",
+        outcome: "no_duplicate",
+      });
+    }
+
+    // Step 4: Resolve tags (merge suggested_tags + month_tag)
+    addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
+    const allTagNames = [...classification.suggested_tags];
+    if (input.month_tag && !allTagNames.includes(input.month_tag)) {
+      allTagNames.push(input.month_tag);
+    }
+    const tagIds = await resolveTags(allTagNames, logger);
+    addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
+
+    // Step 5: Resolve document type
+    const documentTypeId = await resolveDocumentType(classification.doc_type, logger);
+
+    // Step 6: Upload to Paperless
+    addJobEvent(db, job.id, "step_started", { step: "upload" });
+    const title = buildScanTitle(
+      classification.vendor,
+      classification.order_id,
+      input.filename,
+    );
+    const uploadResult = await uploadToPaperless({
+      title,
+      file,
+      correspondentId: correspondent.id,
+      tagIds,
+      documentTypeId,
+      totalAmount: classification.total_amount,
+      orderId: classification.order_id,
+    }, logger);
+    addJobEvent(db, job.id, "step_completed", {
+      step: "upload",
+      ...uploadResult,
+    });
+
+    // Step 7: Move GDrive file to Processed/
+    await moveGdriveFile(file_id, "Processed", logger);
+
+    const result: InvoiceIntakeResult = {
+      outcome: "uploaded",
+      title,
+      paperless_document_id: uploadResult.document_id,
+      correspondent: correspondent.name,
+      tags: allTagNames,
+      total_amount: classification.total_amount,
+    };
+    completeJob(db, job.id, result);
+    logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    failJob(db, job.id, { code: "scan_intake_error", message, step: "unknown" });
+    await moveGdriveFile(file_id, "Errors", logger).catch((moveErr) => {
+      logger.log(`Failed to move file to Errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
+    });
+    logger.log(`Job ${job.id} failed: ${message}`);
+  }
+}
+
+function buildScanTitle(
+  vendor: string,
+  orderId: string | null | undefined,
+  filename: string | undefined,
+): string {
+  if (orderId) {
+    return `${vendor} - ${orderId}`;
+  }
+  if (filename) {
+    // Strip extension and use as title context
+    const cleaned = filename.replace(/\.[^.]+$/, "").trim().slice(0, 80);
+    return `${vendor} - ${cleaned}`;
+  }
+  return `${vendor} - scan`;
+}
+
+// ── GDrive helpers ────────────────────────────────────────────────────
+
+async function downloadFromGdrive(
+  fileId: string,
+  filename: string | undefined,
+  logger: WorkerLogger,
+): Promise<DownloadedFile> {
+  logger.log(`Downloading file ${fileId} from GDrive`);
+
+  const result = await callMcpTool(GMAIL_MCP_URL, "get_drive_file_content", {
+    file_id: fileId,
+  });
+  const data = extractText(result);
+  if (!data) throw new Error("Failed to download file from GDrive");
+
+  // The response may be JSON with base64 content or raw text
+  let contentBase64: string;
+  let contentType = "application/pdf";
+  try {
+    const parsed = JSON.parse(data);
+    contentBase64 = parsed.content_base64 ?? parsed.data ?? parsed.content ?? "";
+    contentType = parsed.content_type ?? parsed.mimeType ?? contentType;
+  } catch {
+    // Raw base64 string
+    contentBase64 = data;
+  }
+
+  const resolvedFilename = filename ?? `gdrive-${fileId}`;
+  const size = Math.ceil((contentBase64.length * 3) / 4);
+
+  return {
+    filename: resolvedFilename,
+    content_base64: contentBase64,
+    content_type: contentType,
+    size,
+  };
+}
+
+async function moveGdriveFile(
+  fileId: string,
+  targetFolder: string,
+  logger: WorkerLogger,
+): Promise<void> {
+  try {
+    // Search for the target folder
+    const searchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
+      query: `name = '${targetFolder}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+    });
+    const searchText = extractText(searchResult);
+    if (!searchText) {
+      logger.log(`Warning: target folder "${targetFolder}" not found, skipping move`);
+      return;
+    }
+
+    let folders: any[];
+    try {
+      folders = JSON.parse(searchText);
+    } catch {
+      logger.log(`Warning: could not parse folder search result, skipping move`);
+      return;
+    }
+
+    if (!Array.isArray(folders) || folders.length === 0) {
+      logger.log(`Warning: target folder "${targetFolder}" not found, skipping move`);
+      return;
+    }
+
+    const targetFolderId = folders[0].id ?? folders[0].fileId;
+    if (!targetFolderId) {
+      logger.log(`Warning: target folder "${targetFolder}" has no ID, skipping move`);
+      return;
+    }
+
+    const watchFolder = process.env.GDRIVE_WATCH_FOLDER ?? "Techlab/Invoice scans";
+
+    await callMcpTool(GMAIL_MCP_URL, "update_drive_file", {
+      file_id: fileId,
+      add_parents: targetFolderId,
+      remove_parents: watchFolder,
+    });
+    logger.log(`Moved file ${fileId} to ${targetFolder}/`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.log(`Warning: failed to move GDrive file ${fileId} to ${targetFolder}/: ${message}`);
+  }
 }

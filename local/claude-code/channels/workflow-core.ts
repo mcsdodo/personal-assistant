@@ -9,7 +9,7 @@ import {
   requestJobApproval,
   type JobRow,
 } from "./workflow-db";
-import { executeInvoiceIntake } from "./invoice-worker";
+import { executeInvoiceIntake, executeScanIntake } from "./invoice-worker";
 
 export interface WorkflowLogger {
   log(message: string): void;
@@ -68,6 +68,9 @@ export async function executeNextJob(
         break;
       case "invoice_intake":
         await executeInvoiceIntake(db, job, logger);
+        break;
+      case "scan_intake":
+        await executeScanIntake(db, job, logger);
         break;
       default:
         failJob(db, job.id, {
