@@ -149,7 +149,7 @@ Claude notifies the user via the Telegram channel's `reply` tool after processin
 **Telegram plugin:** Official Anthropic plugin, cloned at Docker build time from `github.com/anthropics/claude-plugins-official`.
 - [`Dockerfile:33-36`](../local/claude-code/Dockerfile#L33) — git clone + bun install
 
-## UC-1.6: Approval Gates (WIP)
+## UC-1.6: Approval Gates
 
 The invoice-worker pauses automatically for edge cases and waits for human approval via Telegram.
 
@@ -168,7 +168,7 @@ The invoice-worker pauses automatically for edge cases and waits for human appro
 - [`workflow-mcp.ts:150-161`](../local/claude-code/channels/workflow-mcp.ts#L150) — `approve_job` tool definition
 - [`workflow-mcp.ts:163-174`](../local/claude-code/channels/workflow-mcp.ts#L163) — `cancel_job` tool definition
 
-**Status:** Approval gates implemented and tested (19 unit tests). Awaiting live e2e validation.
+**Status:** Approval gates implemented and tested (19 unit tests). Deployed.
 
 ## UC-1.7: Query Invoice Status
 
