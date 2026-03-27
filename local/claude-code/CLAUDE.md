@@ -89,8 +89,8 @@ Each event has these meta fields:
 - `month_tag`: `YYYY-MM` tag derived from scan date — use this for tagging (hard rule)
 
 **Processing pipeline:**
-1. **Download** — use gmail MCP `get_drive_file_content` with the `file_id`
-2. **Classify** — invoke the `scan-classifier` subagent with the file content (vision-based). Returns vendor, total_amount, doc_type, etc.
+1. **Download to disk** — use gmail MCP `get_drive_file_download_url` with the `file_id` to get a download URL, then use Bash `curl -o /workspace/downloads/{name} "{url}"` to save the file locally. This preserves the visual content for classification.
+2. **Classify** — invoke the `scan-classifier` subagent with the local file path (e.g., `/workspace/downloads/20260325_blok_tankovanie.pdf`). The subagent uses the Read tool to visually inspect the PDF/image and returns vendor, total_amount, doc_type, etc.
 3. **Create job** — call `create_scan_intake_job` on workflow MCP with the classification result, file_id, and `month_tag`. The worker handles dedup, upload, and file move automatically.
 4. **Monitor job** — poll with `get_job(job_id)`:
    - `state: completed` with `outcome: uploaded` → notify via Telegram: "✓ Uploaded {vendor} scan to Paperless ({amount} EUR)"

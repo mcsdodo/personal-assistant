@@ -273,10 +273,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           classification,
         };
 
-        const vendor = classification.vendor as string;
         const confidence = classification.confidence as string;
+        // For scans, unknown vendor is normal (POS receipts) — don't block.
+        // Only pause for low confidence or explicit review flag.
         const needsApproval =
-          vendor === "unknown" ||
           confidence === "low" ||
           Boolean(classification.requires_review);
 
