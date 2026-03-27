@@ -81,12 +81,16 @@ services:
     restart: unless-stopped
     labels:
       com.centurylinklabs.watchtower.monitor: "false"
+      caddy: invoices.lacny.me
+      caddy.reverse_proxy: "{{upstreams 5000}}"
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',8001),2); s.close()"]
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8001),2); s.close()\" && python -c \"import socket; s=socket.create_connection(('localhost',5000),2); s.close()\""]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
+    ports:
+      - "8011:5000"
     environment:
       - PAPERLESS_URL=${PAPERLESS_URL}
       - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}
