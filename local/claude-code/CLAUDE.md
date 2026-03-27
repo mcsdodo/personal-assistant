@@ -89,7 +89,7 @@ Each event has these meta fields:
 - `month_tag`: `YYYY-MM` tag derived from scan date — use this for tagging (hard rule)
 
 **Processing pipeline:**
-1. **Download to disk** — use gmail MCP `get_drive_file_download_url` with the `file_id` to get a download URL, then use Bash `curl -o /workspace/downloads/{name} "{url}"` to save the file locally. This preserves the visual content for classification.
+1. **Download to disk** — use gmail MCP `get_drive_file_download_url` with the `file_id` and `user_google_email` set to the `GMAIL_EMAIL` env var (read it once at start). Then use Bash `curl -o /workspace/downloads/{name} "{url}"` to save the file locally. This preserves the visual content for classification. **Always pass `user_google_email` on every Gmail/Drive MCP call.**
 2. **Classify** — invoke the `scan-classifier` subagent with the local file path (e.g., `/workspace/downloads/20260325_blok_tankovanie.pdf`). The subagent uses the Read tool to visually inspect the PDF/image and returns vendor, total_amount, doc_type, etc.
 3. **Create job** — call `create_scan_intake_job` on workflow MCP with the classification result, file_id, and `month_tag`. The worker handles dedup, upload, and file move automatically.
 4. **Monitor job** — poll with `get_job(job_id)`:
