@@ -22,7 +22,6 @@ import {
   openDb,
   insertFile,
   fileExists,
-  hasAnyFiles,
   updateFile,
   getRecentFiles,
   getFileStats,
@@ -320,25 +319,9 @@ async function pollGdrive(): Promise<DriveFile[]> {
 async function pollCycle(db: Database, channel: Server): Promise<void> {
   const files = await pollGdrive();
 
-  // Seed on first scan — mark existing files so only new arrivals trigger events
-  if (!hasAnyFiles(db)) {
-    if (files.length > 0) {
-      log(`First scan: seeding ${files.length} existing file(s)`);
-      for (const file of files) {
-        insertFile(db, {
-          id: file.id,
-          filename: file.name,
-          mime_type: file.mimeType,
-          created_at: file.createdTime,
-          status: "seed",
-        });
-      }
-    }
-    lastSuccessfulPollAt = Date.now();
-    return;
-  }
-
-  // Filter to files not already in DB
+  // Any file in the watch folder that isn't tracked yet should be processed.
+  // Unlike email-watcher, there's no "seeding" — files stay in this folder
+  // precisely because they need processing. They move to Processed/ after upload.
   const newFiles = files.filter((f) => !fileExists(db, f.id));
 
   // Poll completed successfully
