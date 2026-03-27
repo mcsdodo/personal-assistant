@@ -60,7 +60,7 @@ Process emails using the Haiku subagents:
      - `DUPLICATE: ...` → silently skip, no notification
      - `DUPLICATE_LIKELY: ...` → notify user via Telegram with details, ask whether to proceed
      - `FAILED: ...` → notify user via Telegram with error
-   - `action: notify_user` — report the email to the user with the classification details and ask what to do.
+   - `action: notify_user` — notify the user via Telegram with the classification details and ask what to do. If the Telegram notification fails (e.g. chat not allowlisted, reply tool errors), record status="failed" with the error — do NOT mark as "processed".
    - `action: ignore` — log silently, do nothing.
 
 3. **Report** — after processing, briefly summarize what happened (e.g., "Uploaded Alza invoice FA2026030123 to Paperless with tags [invoicing, 2026-03, alza]").
