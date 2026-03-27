@@ -34,25 +34,47 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-    participant G as Gmail / Outlook MCP
-    participant EW as email-watcher
+    participant G as Gmail/Outlook MCPs
+    participant EW as email-watcher<br/>(channel)
+    participant DB as SQLite
     participant C as Claude (Sonnet)
-    participant CL as email-classifier (Haiku)
+    participant CL as email-classifier<br/>(Haiku)
     participant WF as workflow-mcp
     participant IW as invoice-worker
     participant P as Paperless MCP
     participant TG as Telegram
 
-    loop every 30s
-        EW->>G: poll for new emails
-        G-->>EW: email list
+    rect rgb(40, 40, 60)
+    note over G,TG: First scan (per source)
+    G-->>EW: emails[]
+    EW->>DB: INSERT status="seed" (all emails)
+    note over DB: Seeds are terminal — never processed
     end
 
-    EW->>C: channel notification (new email)
-    C->>CL: classify (sender, subject, body)
-    CL-->>C: classification JSON
+    rect rgb(40, 40, 60)
+    note over G,TG: Subsequent polls — new email detected
+    loop Every 30s
+        EW->>G: poll
+        G-->>EW: emails[]
+    end
+    EW->>DB: emailExists(id)?
+    DB-->>EW: false
+    EW->>DB: INSERT status="new"
+    EW--)C: channel notification<br/>(sender, subject, message_id, source)
+    end
 
-    alt action = download_and_upload
+    rect rgb(50, 40, 40)
+    note over C,CL: Step 1 — Classify
+    C->>CL: dispatch (email metadata)
+    CL-->>C: JSON {is_invoice, confidence,<br/>vendor, action, doc_type}
+    C->>EW: update_email_status(id,<br/>status="classified",<br/>classification, action,<br/>vendor, confidence)
+    EW->>DB: UPDATE classified_at=now()
+    end
+
+    rect rgb(40, 50, 40)
+    note over C,TG: Step 2 — Act on classification
+
+    alt action = "download_and_upload"
         C->>WF: create_invoice_intake_job
         WF->>IW: execute job
         IW->>G: download attachment/link
@@ -61,15 +83,31 @@ sequenceDiagram
         P-->>IW: no duplicate
         IW->>P: post_document
         P-->>IW: document ID
-        IW-->>WF: completed (uploaded)
-        C->>TG: "✓ Uploaded vendor invoice"
-    else action = notify_user
-        C->>TG: "New invoice from X — process?"
-    else action = ignore
-        Note over C: silent, no notification
+        IW-->>WF: completed
+
+        alt "Uploaded ..."
+            C->>TG: reply("Uploaded {vendor} invoice")
+        else "DUPLICATE: ..."
+            note over C: Skip silently (no notification)
+        else "DUPLICATE_LIKELY: ..."
+            C->>TG: reply("Ask user: proceed?")
+        else "FAILED: ..."
+            C->>TG: reply("{vendor} failed: {reason}")
+        end
+
+    else action = "notify_user"
+        C->>TG: reply("New invoice from {sender}.<br/>Process? Reply yes/no")
+
+    else action = "ignore"
+        note over C: Silent — no notification
+    end
     end
 
-    C->>EW: update_email_status
+    rect rgb(40, 40, 50)
+    note over C,DB: Step 3 — Record final status
+    C->>EW: update_email_status(id,<br/>status="processed|failed|ignored",<br/>process_result="...")
+    EW->>DB: UPDATE processed_at=now()
+    end
 ```
 
 ## UC-1.1: Gmail Polling
@@ -215,7 +253,43 @@ Every email is tracked in SQLite from discovery to final outcome.
 
 **Schema:** [`db.ts:47-66`](../local/claude-code/channels/db.ts#L47) — `emails` table with fields: id, source, sender, subject, preview, has_attachments, received_at, discovered_at, classified_at, classification, action, vendor, confidence, processed_at, process_result, status.
 
-**Status lifecycle:** `new` → `classified` → `processed`/`failed`/`ignored` (or `seed` for pre-existing emails on first startup).
+### Status Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> seed : First scan<br/>(per source)
+    [*] --> new : New email<br/>detected
+
+    new --> classified : email-classifier<br/>subagent
+
+    classified --> processed : download_and_upload<br/>succeeded / duplicate
+    classified --> ignored : action = ignore
+    classified --> failed : download/upload error
+
+    seed --> [*]
+    processed --> [*]
+    ignored --> [*]
+    failed --> [*]
+```
+
+### Status Reference
+
+| Status | Meaning | Set by | Timestamp |
+|--------|---------|--------|-----------|
+| `seed` | Pre-existing email from first scan — never processed | email-watcher `pollCycle` | `discovered_at` |
+| `new` | Newly detected, pushed to Claude as channel event | email-watcher `pollCycle` | `discovered_at` |
+| `classified` | email-classifier returned classification JSON | Claude via `update_email_status` | `classified_at` (auto) |
+| `processed` | invoice-worker completed (uploaded or duplicate) | Claude via `update_email_status` | `processed_at` (auto) |
+| `ignored` | Classifier said action=ignore (not an invoice) | Claude via `update_email_status` | `processed_at` |
+| `failed` | Download, upload, or classification error | Claude via `update_email_status` | `processed_at` |
+
+### Design Decisions
+
+- **Per-source seeding**: Gmail and Outlook seed independently via `hasAnyEmailsForSource()` — prevents false "new" notifications when one source seeds before the other
+- **Capping**: Max 5 new emails per poll cycle (`MAX_NEW_PER_CYCLE`) to avoid flooding Claude's context
+- **Two-stage update**: Classification and processing are separate `update_email_status` calls — shows where in the pipeline an email stalled
+- **Auto-timestamps**: `classified_at` set when `classification` provided, `processed_at` when `process_result` provided
+- **Idempotent inserts**: `INSERT OR IGNORE` on email ID prevents duplicate pushes across restarts
 
 **First-run seeding:** On startup, if no emails exist for a source, existing emails are inserted as `seed` status without triggering notifications. Only subsequent new emails generate channel events.
 - [`email-watcher.ts:603-704`](../local/claude-code/channels/email-watcher.ts#L603) — `pollCycle()`: seed detection, dedup, notification push
