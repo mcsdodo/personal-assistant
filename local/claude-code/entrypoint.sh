@@ -44,6 +44,19 @@ if [ "$accepted" = false ]; then
   echo "Claude may have started without channels, or the prompt text changed"
 fi
 
+# Check for additional TUI prompts (e.g. "new MCP servers found" when adding
+# new stdio servers like workflow). Poll for a few seconds after channels prompt.
+echo "Checking for additional startup prompts..."
+for i in $(seq 1 10); do
+  pane_content=$(tmux capture-pane -t claude -p 2>/dev/null || true)
+  if echo "$pane_content" | grep -qi "new.*mcp\|new.*server\|trust\|approve\|continue"; then
+    tmux send-keys -t claude Enter
+    echo "Accepted additional startup prompt (after ${i}s)"
+    sleep 2
+  fi
+  sleep 1
+done
+
 echo "Claude Code session started in tmux."
 echo "Use 'docker exec -it <container> tmux attach -t claude' to view."
 
