@@ -6,30 +6,31 @@ Everything that makes the stack run but isn't a user-facing use case: build, dep
 
 5 services, all in one Docker Compose stack:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Docker Compose Stack                       │
-│                                                              │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │              claude-code (node:20-slim)               │   │
-│  │                                                       │   │
-│  │  tmux session ─── Claude CLI (Sonnet, --remote-control)│  │
-│  │       │                                                │  │
-│  │       ├── email-watcher (channel, stdio)               │  │
-│  │       ├── telegram (channel, stdio, official plugin)   │  │
-│  │       ├── workflow-mcp (stdio, durable job queue)      │  │
-│  │       │                                                │  │
-│  │       └── HTTP MCP connections ────────────────────┐   │  │
-│  │                                                    │   │  │
-│  │  :9465 metrics + health                            │   │  │
-│  └────────────────────────────────────────────────────┼───┘  │
-│                                                       │      │
-│  ┌──────────┐  ┌──────────┐  ┌─────────┐  ┌─────────▼──┐   │
-│  │paperless │  │ checker  │  │  gmail   │  │  outlook   │   │
-│  │  -mcp    │  │  -mcp    │  │  -mcp   │  │   -mcp     │   │
-│  │  :3000   │  │  :8001   │  │  :8000  │  │   :8002    │   │
-│  └──────────┘  └──────────┘  └─────────┘  └────────────┘   │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph stack["Docker Compose Stack"]
+        subgraph cc["claude-code (node:20-slim)"]
+            tmux["tmux session → Claude CLI<br/>(Sonnet, --remote-control)"]
+            ew["email-watcher (channel, stdio)"]
+            tg["telegram (channel, stdio)"]
+            wf["workflow-mcp (stdio, durable jobs)"]
+            metrics[":9465 metrics + health"]
+
+            tmux --- ew
+            tmux --- tg
+            tmux --- wf
+        end
+
+        paperless["paperless-mcp<br/>:3000"]
+        checker["checker-mcp<br/>:8001"]
+        gmail["gmail-mcp<br/>:8000"]
+        outlook["outlook-mcp<br/>:8002"]
+
+        tmux -->|HTTP MCP| paperless
+        tmux -->|HTTP MCP| checker
+        tmux -->|HTTP MCP| gmail
+        tmux -->|HTTP MCP| outlook
+    end
 ```
 
 **Config:** [`docker-compose.yml`](../docker-compose.yml) — production stack | [`local/docker-compose.yml`](../local/docker-compose.yml) — dev overlay with build contexts + observability sidecar.

@@ -4,30 +4,23 @@ Two metric sources feed Grafana dashboards: email-watcher Prometheus scrape and 
 
 ## Architecture
 
-```
-┌─────────────────────┐          ┌──────────────────┐
-│   claude-code       │          │   claude-code     │
-│                     │          │                   │
-│  email-watcher      │  OTLP    │  Claude Code CLI  │
-│  :9465/metrics ─────┼──────┐   │  native telemetry │
-│                     │      │   │  (grpc)           │
-└─────────────────────┘      │   └────────┬──────────┘
-                             │            │
-                    scrape   │     ┌──────▼──────┐
-                             │     │   Alloy      │
-                             │     │  OTLP recv   │
-                             └────▶│  + scrape    │
-                                   └──┬──────┬───┘
-                                      │      │
-                              ┌───────▼┐  ┌──▼────────┐
-                              │Promethe│  │   Loki     │
-                              │us      │  │            │
-                              └───┬────┘  └────┬───────┘
-                                  │            │
-                              ┌───▼────────────▼───┐
-                              │      Grafana        │
-                              │  claude-code.json   │
-                              └─────────────────────┘
+```mermaid
+flowchart TB
+    subgraph claude_code["claude-code container"]
+        ew[":9465/metrics<br/>email-watcher"]
+        otel["Claude Code CLI<br/>native OTLP (grpc)"]
+    end
+
+    alloy["Alloy<br/>OTLP receiver + scrape"]
+
+    ew -->|scrape| alloy
+    otel -->|OTLP grpc| alloy
+
+    alloy --> prometheus["Prometheus"]
+    alloy --> loki["Loki"]
+
+    prometheus --> grafana["Grafana<br/>claude-code.json dashboard"]
+    loki --> grafana
 ```
 
 **Local dev:** Alloy + Prometheus + Loki + Grafana run as a sidecar stack via [`local/docker-compose.yml`](../local/docker-compose.yml).

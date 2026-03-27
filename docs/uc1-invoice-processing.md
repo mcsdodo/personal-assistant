@@ -4,43 +4,27 @@ Automated pipeline: poll Gmail + Outlook → classify with Haiku → process via
 
 ## Architecture
 
-```
-┌──────────────┐     ┌──────────────┐
-│   Gmail MCP  │     │ Outlook MCP  │
-│  (community) │     │   (custom)   │
-│    :8000     │     │    :8002     │
-└──────┬───────┘     └──────┬───────┘
-       │    Streamable HTTP  │
-       └─────────┬───────────┘
-                 │
-    ┌────────────▼────────────┐
-    │     email-watcher       │
-    │  (channel + MCP tools)  │
-    │  polls every 30s        │
-    │  SQLite audit trail     │
-    │  Prometheus metrics     │
-    └────────────┬────────────┘
-                 │ channel notification
-    ┌────────────▼────────────┐
-    │   Claude (Sonnet)       │
-    │                         │
-    │  ┌───────────────────┐  │
-    │  │ email-classifier  │  │   ┌─────────────────┐
-    │  │   (Haiku agent)   │──┼──▶│  workflow-mcp    │
-    │  └───────────────────┘  │   │  durable jobs    │
-    │                         │   └────────┬─────────┘
-    └─────────────────────────┘            │
-                                ┌──────────▼─────────┐
-                                │  invoice-worker     │
-                                │  deterministic      │
-                                │  download → dedup   │
-                                │  → upload           │
-                                └──────────┬──────────┘
-                                           │ callMcpTool()
-                              ┌────────────▼────────────┐
-                              │    Paperless MCP         │
-                              │  (community, :3000)      │
-                              └──────────────────────────┘
+```mermaid
+flowchart TB
+    gmail["Gmail MCP<br/>(community, :8000)"]
+    outlook["Outlook MCP<br/>(custom, :8002)"]
+
+    ew["email-watcher<br/>channel + MCP tools<br/>polls every 30s<br/>SQLite audit trail<br/>Prometheus metrics"]
+
+    gmail -->|Streamable HTTP| ew
+    outlook -->|Streamable HTTP| ew
+
+    ew -->|channel notification| claude
+
+    subgraph claude["Claude (Sonnet)"]
+        classifier["email-classifier<br/>(Haiku agent)"]
+    end
+
+    classifier -->|create job| workflow["workflow-mcp<br/>durable jobs"]
+
+    workflow --> worker["invoice-worker<br/>download → dedup → upload"]
+
+    worker -->|callMcpTool| paperless["Paperless MCP<br/>(community, :3000)"]
 ```
 
 ## UC-1.1: Gmail Polling

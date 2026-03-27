@@ -4,30 +4,13 @@ Match bank statement movements against Paperless-ngx invoices. Detect missing in
 
 ## Architecture
 
-```
-┌─────────────────────┐
-│   Claude (Sonnet)   │
-│                     │
-│  "Match invoices    │
-│   for March 2026"   │
-└──────────┬──────────┘
-           │ Streamable HTTP
-┌──────────▼──────────┐
-│    checker-mcp      │
-│    :8001/mcp        │
-│                     │
-│  4 MCP tools        │
-│  (FastMCP/Python)   │
-└──────────┬──────────┘
-           │ API calls
-┌──────────▼──────────┐
-│  Paperless-ngx API  │
-│  documents.lacny.me │
-│                     │
-│  - Bank statements  │
-│  - Invoices         │
-│  - Custom fields    │
-└─────────────────────┘
+```mermaid
+flowchart TB
+    claude["Claude (Sonnet)<br/>'Match invoices for March 2026'"]
+
+    claude -->|Streamable HTTP| checker["checker-mcp<br/>:8001/mcp<br/>4 MCP tools (FastMCP/Python)"]
+
+    checker -->|API calls| paperless["Paperless-ngx API<br/>documents.lacny.me<br/>bank statements + invoices + custom fields"]
 ```
 
 The checker-mcp wraps the same matching engine used by the [Invoice Checker webapp](../../../media-gpu/paperless/local/checker/CLAUDE.md) (`match_invoices.py`). It's copied into the container at build time.
