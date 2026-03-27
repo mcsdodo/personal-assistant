@@ -445,7 +445,9 @@ async function resolveCorrespondent(
 
   const listResult = await callMcpTool(PAPERLESS_MCP_URL, "list_correspondents", {});
   const listText = extractText(listResult);
-  const correspondents = JSON.parse(listText) as Array<{ id: number; name: string }>;
+  const parsed = JSON.parse(listText);
+  // Paperless MCP returns paginated object { results: [...] }, not a raw array
+  const correspondents = (Array.isArray(parsed) ? parsed : parsed.results ?? []) as Array<{ id: number; name: string }>;
 
   // Case-insensitive match
   const match = correspondents.find(
@@ -537,7 +539,8 @@ async function resolveTags(
 
   const listResult = await callMcpTool(PAPERLESS_MCP_URL, "list_tags", {});
   const listText = extractText(listResult);
-  const tags = JSON.parse(listText) as Array<{ id: number; name: string }>;
+  const parsedTags = JSON.parse(listText);
+  const tags = (Array.isArray(parsedTags) ? parsedTags : parsedTags.results ?? []) as Array<{ id: number; name: string }>;
 
   const tagIds: number[] = [];
   for (const name of tagNames) {
@@ -575,7 +578,8 @@ async function resolveDocumentType(
   try {
     const listResult = await callMcpTool(PAPERLESS_MCP_URL, "list_document_types", {});
     const listText = extractText(listResult);
-    const types = JSON.parse(listText) as Array<{ id: number; name: string }>;
+    const parsedTypes = JSON.parse(listText);
+    const types = (Array.isArray(parsedTypes) ? parsedTypes : parsedTypes.results ?? []) as Array<{ id: number; name: string }>;
     const match = types.find(
       (t) => t.name.toLowerCase() === paperlessTypeName.toLowerCase(),
     );
