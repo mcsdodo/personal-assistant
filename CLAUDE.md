@@ -23,7 +23,7 @@ Event-driven personal assistant using Claude Code Channels + MCP tool servers.
 claude-code container (node:20-slim, user: node, --model sonnet)
 ├── Claude Code interactive session in tmux (--remote-control)
 ├── email-watcher channel+tools (stdio, polls gmail+outlook every 30s, SQLite audit trail)
-├── gdrive-watcher channel+tools (stdio, polls GDrive folder every 60s, SQLite audit trail)
+├── gdrive-watcher channel+tools (stdio, polls GDrive folder every 30s, SQLite audit trail)
 ├── telegram channel (official plugin, cloned at build, two-way)
 ├── subagents: email-classifier (haiku), scan-classifier (haiku), invoice-processor (haiku)
 └── connects to MCP tool servers via Streamable HTTP

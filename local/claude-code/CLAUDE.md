@@ -38,7 +38,7 @@ Use these for debugging ("show me recent emails"), status checks ("how many proc
 
 ### gdrive-watcher (channel + tools)
 
-The gdrive-watcher polls a Google Drive folder (`Techlab/Invoice scans/`) every 60 seconds for new scanned documents and pushes events here.
+The gdrive-watcher polls a Google Drive folder (`Techlab/Invoice scans/`) every 30 seconds for new scanned documents and pushes events here.
 
 Tools:
 - `update_gdrive_scan_status(id, status, classification?, action?, job_id?, process_result?, error?)` — record processing results
@@ -78,7 +78,7 @@ On first startup, existing emails are seeded into the database without processin
 
 ## When you receive a gdrive-watcher channel event
 
-The gdrive-watcher polls `Techlab/Invoice scans/` on Google Drive every 60 seconds for new files and pushes events here.
+The gdrive-watcher polls `Techlab/Invoice scans/` on Google Drive every 30 seconds for new files and pushes events here.
 
 Each event has these meta fields:
 - `source`: always `"gdrive"`
