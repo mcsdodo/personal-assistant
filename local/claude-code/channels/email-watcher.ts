@@ -521,7 +521,7 @@ async function pollGmail(): Promise<EmailInfo[]> {
       arguments: {
         query: GMAIL_SEARCH_QUERY,
         user_google_email: GMAIL_EMAIL,
-        page_size: 20,
+        page_size: 50,
       },
     });
 
@@ -531,14 +531,15 @@ async function pollGmail(): Promise<EmailInfo[]> {
       return [];
     }
 
-    const ids = extractGmailIds(searchData);
+    const ids = [...new Set(extractGmailIds(searchData))];
     if (ids.length === 0) {
       return [];
     }
 
-    // If search result already had rich metadata, use it directly
+    // If search result already had rich metadata (subjects), use it directly
     const fromSearch = parseGmailEmails(searchData, []);
-    if (fromSearch.length > 0) {
+    const hasMetadata = fromSearch.some((e) => e.subject || e.sender);
+    if (fromSearch.length > 0 && hasMetadata) {
       return fromSearch;
     }
 
