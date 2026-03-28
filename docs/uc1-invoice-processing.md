@@ -137,8 +137,8 @@ Polls Gmail via the community `google_workspace_mcp` image (pinned `1.14.3`).
 `extractGmailIds` deduplicates IDs with `new Set()` because Gmail search results can return the same message as Message ID, Thread ID, and URL hex — without dedup, batch-fetch would process the same email multiple times.
 
 **Code:**
-- [`email-watcher.ts:498-560`](../local/claude-code/channels/email-watcher.ts#L498) — `pollGmail()`: search + batch-fetch + parse
-- [`email-watcher.ts:508-512`](../local/claude-code/channels/email-watcher.ts#L508) — search query from `GMAIL_SEARCH_QUERY` env (default: `newer_than:1d`)
+- [`email-watcher.ts:512-574`](../local/claude-code/channels/email-watcher.ts#L512) — `pollGmail()`: search + batch-fetch + parse
+- [`email-watcher.ts:522`](../local/claude-code/channels/email-watcher.ts#L522) — search query from `GMAIL_SEARCH_QUERY` env (default: `newer_than:1d`)
 
 **Auth:** OAuth via `https://gmail-mcp.lacny.me/oauth2callback`. Trigger `start_google_auth` tool from inside the Claude session. Tokens persist in `/mnt/shared_configs/personal-assistant/gmail/`.
 
@@ -152,7 +152,7 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 **Flow:** `list_emails(top=20)` → parse response array → map to `EmailInfo`.
 
 **Code:**
-- [`email-watcher.ts:566-597`](../local/claude-code/channels/email-watcher.ts#L566) — `pollOutlook()`: call `list_emails`, parse array
+- [`email-watcher.ts:581-612`](../local/claude-code/channels/email-watcher.ts#L581) — `pollOutlook()`: call `list_emails`, parse array
 - [`outlook-mcp/server.py`](../local/outlook-mcp/server.py) — 6 tools: `list_emails`, `get_email`, `get_attachments`, `download_attachment`, `extract_invoice_links`, `download_invoice_link`
 - [`outlook-mcp/server.py:22-26`](../local/outlook-mcp/server.py#L22) — `INVOICE_RULES`: regex patterns for invoice link extraction (e.g., Alza.sk "Stiahnuť faktúru")
 
@@ -171,7 +171,7 @@ Haiku subagent classifies each new email by sender, subject, and body excerpt.
 
 **Code:**
 - [`agents/email-classifier.md`](../local/claude-code/agents/email-classifier.md) — Haiku classifier prompt defining all output fields and decision rules
-- [`invoice-worker.ts:33-89`](../local/claude-code/channels/invoice-worker.ts#L33) — `InvoiceIntakeInput` type definition with all classification fields
+- [`invoice-worker.ts:36-89`](../local/claude-code/channels/invoice-worker.ts#L36) — `InvoiceIntakeInput` type definition with all classification fields
 
 **Document classification (post-download):** After downloading the PDF, Claude runs the `document-classifier` Haiku subagent ([`agents/document-classifier.md`](../local/claude-code/agents/document-classifier.md)) which visually inspects the PDF and returns 7 fields: `doc_type`, `vendor`, `total_amount`, `currency`, `is_fuel`, `confidence`, `order_id`. Non-null values override the email-classifier's guesses. This same classifier handles GDrive scans.
 
@@ -189,11 +189,11 @@ The invoice-worker uploads documents via the Paperless MCP's `post_document` too
 5. **Upload** — `post_document` with base64 content, correspondent, tags, type, custom fields (total_amount, order_id)
 
 **Code:**
-- [`invoice-worker.ts:422-448`](../local/claude-code/channels/invoice-worker.ts#L422) — `resolveCorrespondent()`: list → match → create if needed
-- [`invoice-worker.ts:456-512`](../local/claude-code/channels/invoice-worker.ts#L456) — `checkDuplicate()`: search by order_id + correspondent, compare amounts
-- [`invoice-worker.ts:514-540`](../local/claude-code/channels/invoice-worker.ts#L514) — `resolveTags()`: list → match → create missing
-- [`invoice-worker.ts:587-630`](../local/claude-code/channels/invoice-worker.ts#L587) — `uploadToPaperless()`: assemble args, call `post_document`
-- [`invoice-worker.ts:634-651`](../local/claude-code/channels/invoice-worker.ts#L634) — `buildTitle()`: title generation logic
+- [`invoice-worker.ts:445-475`](../local/claude-code/channels/invoice-worker.ts#L445) — `resolveCorrespondent()`: list → match → create if needed
+- [`invoice-worker.ts:481-550`](../local/claude-code/channels/invoice-worker.ts#L481) — `checkDuplicate()`: search by order_id + correspondent, compare amounts
+- [`invoice-worker.ts:552-625`](../local/claude-code/channels/invoice-worker.ts#L552) — `resolveTags()`: list → match → create missing
+- [`invoice-worker.ts:628-700`](../local/claude-code/channels/invoice-worker.ts#L628) — `uploadToPaperless()`: assemble args, call `post_document`
+- [`invoice-worker.ts:706`](../local/claude-code/channels/invoice-worker.ts#L706) — `buildTitle()`: title generation logic
 
 ## UC-1.5: Telegram Notification
 
@@ -206,7 +206,7 @@ Claude notifies the user via the Telegram channel's `reply` tool after processin
 - Auth expired: `"⚠ {service} auth expired — re-authenticate"`
 
 **Channel notifications (email-watcher → Claude):**
-- [`email-watcher.ts:676-702`](../local/claude-code/channels/email-watcher.ts#L676) — channel notification format: meta fields include `email_source`, `message_id`, `sender`, `subject`, `has_attachments`, `received_at`
+- [`email-watcher.ts:701-730`](../local/claude-code/channels/email-watcher.ts#L701) — channel notification format: meta fields include `email_source`, `message_id`, `sender`, `subject`, `has_attachments`, `received_at`
 
 **Telegram plugin:** Official Anthropic plugin, cloned at Docker build time from `github.com/anthropics/claude-plugins-official`.
 - [`Dockerfile:33-36`](../local/claude-code/Dockerfile#L33) — git clone + bun install
@@ -221,11 +221,11 @@ The invoice-worker pauses automatically for edge cases and waits for human appro
 Gates for unknown vendor, low confidence, browser_required, and requires_review were removed — triage now happens in Claude before job creation, using the document-classifier's higher-quality PDF analysis.
 
 **Code:**
-- [`invoice-worker.ts:189-195`](../local/claude-code/channels/invoice-worker.ts#L189) — `duplicate_likely` approval gate
+- [`invoice-worker.ts:185-195`](../local/claude-code/channels/invoice-worker.ts#L185) — `duplicate_likely` approval gate
 
 **Workflow tools for approval:**
-- [`workflow-mcp.ts:150-161`](../local/claude-code/channels/workflow-mcp.ts#L150) — `approve_job` tool definition
-- [`workflow-mcp.ts:163-174`](../local/claude-code/channels/workflow-mcp.ts#L163) — `cancel_job` tool definition
+- [`workflow-mcp.ts:182-194`](../local/claude-code/channels/workflow-mcp.ts#L182) — `approve_job` tool definition
+- [`workflow-mcp.ts:195-207`](../local/claude-code/channels/workflow-mcp.ts#L195) — `cancel_job` tool definition
 
 **Status:** Simplified to single dedup gate. Deployed.
 
@@ -234,8 +234,8 @@ Gates for unknown vendor, low confidence, browser_required, and requires_review 
 Claude can query Paperless directly using `search_documents` from the community Paperless MCP. Example: "do I have March invoices?" triggers a search with month filter.
 
 **Also available:** email-watcher audit trail queries:
-- [`email-watcher.ts:759-769`](../local/claude-code/channels/email-watcher.ts#L759) — `get_recent_emails` tool (filter by status, source, limit)
-- [`email-watcher.ts:771-777`](../local/claude-code/channels/email-watcher.ts#L771) — `get_email_stats` tool (counts by status, last 24h breakdown)
+- [`email-watcher.ts:784-794`](../local/claude-code/channels/email-watcher.ts#L784) — `get_recent_emails` tool (filter by status, source, limit)
+- [`email-watcher.ts:796-802`](../local/claude-code/channels/email-watcher.ts#L796) — `get_email_stats` tool (counts by status, last 24h breakdown)
 
 ## UC-1.8: GDrive Scan Auto-Upload
 
@@ -258,8 +258,8 @@ The classifier assigns a `download_strategy` that determines how the worker gets
 
 | Strategy | Handler | Description |
 |----------|---------|-------------|
-| `attachment` | [`invoice-worker.ts:270-369`](../local/claude-code/channels/invoice-worker.ts#L270) | Download email attachment via MCP (prefers PDF) |
-| `known_link` | [`invoice-worker.ts:371-413`](../local/claude-code/channels/invoice-worker.ts#L371) | Extract invoice link from email body using vendor rules, download via MCP |
+| `attachment` | [`invoice-worker.ts:270-370`](../local/claude-code/channels/invoice-worker.ts#L270) | Download email attachment via MCP (prefers PDF) |
+| `known_link` | [`invoice-worker.ts:284-290`](../local/claude-code/channels/invoice-worker.ts#L284) | Extract invoice link from email body using vendor rules, download via MCP |
 | `direct_url` | Same as known_link | Direct URL in email body |
 | `browser_required` | Pauses for approval | Requires browser interaction (e.g., login-gated portal) |
 | `manual_review` | Pauses for approval | Classifier unsure, needs human review |
@@ -279,9 +279,9 @@ Jobs survive container restarts. The workflow layer provides:
 
 **Code:**
 - [`workflow-db.ts:46-78`](../local/claude-code/channels/workflow-db.ts#L46) — schema: `jobs` + `job_events` tables
-- [`workflow-core.ts:55-89`](../local/claude-code/channels/workflow-core.ts#L55) — `executeNextJob()`: claim + dispatch by workflow_type
-- [`workflow-mcp.ts:39-47`](../local/claude-code/channels/workflow-mcp.ts#L39) — worker loop: poll every `WORKFLOW_POLL_MS` (default 2s)
-- [`workflow-mcp.ts:60-176`](../local/claude-code/channels/workflow-mcp.ts#L60) — 7 MCP tools exposed to Claude
+- [`workflow-core.ts:56`](../local/claude-code/channels/workflow-core.ts#L56) — `executeNextJob()`: claim + dispatch by workflow_type
+- [`workflow-mcp.ts:368`](../local/claude-code/channels/workflow-mcp.ts#L368) — worker loop: poll every `WORKFLOW_POLL_MS` (default 2s)
+- [`workflow-mcp.ts:62-207`](../local/claude-code/channels/workflow-mcp.ts#L62) — 7 MCP tools exposed to Claude
 - [`mcp-client.ts:32-75`](../local/claude-code/channels/mcp-client.ts#L32) — HTTP MCP client for worker → MCP server calls (stateless path)
 - [`mcp-client.ts:81-170`](../local/claude-code/channels/mcp-client.ts#L81) — stateful MCP client with initialize handshake (for paperless-mcp, gmail-mcp)
 
@@ -330,4 +330,4 @@ stateDiagram-v2
 - **Idempotent inserts**: `INSERT OR IGNORE` on email ID prevents duplicate pushes across restarts
 
 **First-run seeding:** On startup, if no emails exist for a source, existing emails are inserted as `seed` status without triggering notifications. Only subsequent new emails generate channel events.
-- [`email-watcher.ts:603-704`](../local/claude-code/channels/email-watcher.ts#L603) — `pollCycle()`: seed detection, dedup, notification push
+- [`email-watcher.ts:619-730`](../local/claude-code/channels/email-watcher.ts#L619) — `pollCycle()`: seed detection, dedup, notification push
