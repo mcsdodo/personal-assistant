@@ -83,8 +83,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "create_invoice_intake_job",
       description:
         "Create a durable invoice processing job. Use this after classifying an email as an invoice. " +
-        "The worker will download the document, check for duplicates, and upload to Paperless. " +
-        "For unknown vendors, low confidence, or browser_required strategies, the job will pause for approval.",
+        "Pass file_path if the PDF is already downloaded to disk. " +
+        "The worker will check for duplicates and upload to Paperless.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -115,6 +115,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Email received timestamp (ISO format)",
           },
+          file_path: {
+            type: "string",
+            description: "Path to pre-downloaded file on disk (Claude downloads before creating job)",
+          },
+          month_tag: {
+            type: "string",
+            description: "YYYY-MM tag (Claude infers from email context)",
+          },
         },
         required: ["email_source", "message_id", "classification"],
       },
@@ -131,6 +139,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           classification: {
             type: "object",
             description: "Classification result from scan-classifier agent",
+          },
+          file_path: {
+            type: "string",
+            description: "Path to pre-downloaded file on disk",
           },
         },
         required: ["file_id", "classification"],
@@ -233,19 +245,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           subject: (args?.subject as string | undefined) ?? undefined,
           sender: (args?.sender as string | undefined) ?? undefined,
           received_at: (args?.received_at as string | undefined) ?? undefined,
+          file_path: (args?.file_path as string | undefined) ?? undefined,
+          month_tag: (args?.month_tag as string | undefined) ?? undefined,
         };
-
-        // Determine if approval is needed based on classification
-        const vendor = classification.vendor as string;
-        const confidence = classification.confidence as string;
-        const strategy = classification.download_strategy as string | null;
-        const requiresReview = Boolean(classification.requires_review);
-        const needsApproval =
-          vendor === "unknown" ||
-          confidence === "low" ||
-          strategy === "browser_required" ||
-          strategy === "manual_review" ||
-          requiresReview;
 
         // Use source:message_id as idempotency key
         const idempotencyKey = `${emailSource}:${messageId}`;
@@ -255,7 +257,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           inputJson: JSON.stringify(inputPayload),
           sourceRef: `${emailSource}:${messageId}`,
           idempotencyKey,
-          requiresApproval: needsApproval,
+          requiresApproval: false,
         });
         return { content: [text(job)] };
       }
@@ -273,14 +275,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           filename: (args?.filename as string | undefined) ?? undefined,
           month_tag: (args?.month_tag as string | undefined) ?? undefined,
           classification,
+          file_path: (args?.file_path as string | undefined) ?? undefined,
         };
-
-        const confidence = classification.confidence as string;
-        // For scans, unknown vendor is normal (POS receipts) — don't block.
-        // Only pause for low confidence or explicit review flag.
-        const needsApproval =
-          confidence === "low" ||
-          Boolean(classification.requires_review);
 
         const idempotencyKey = `gdrive:${fileId}`;
 
@@ -289,7 +285,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           inputJson: JSON.stringify(inputPayload),
           sourceRef: `gdrive:${fileId}`,
           idempotencyKey,
-          requiresApproval: needsApproval,
+          requiresApproval: false,
         });
         return { content: [text(JSON.stringify(job, null, 2))] };
       }
