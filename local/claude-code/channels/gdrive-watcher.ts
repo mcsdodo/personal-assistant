@@ -271,8 +271,8 @@ async function ensureSubfolder(
     await client.callTool({
       name: "create_drive_folder",
       arguments: {
-        name,
-        parent_id: parentId,
+        folder_name: name,
+        parent_folder_id: parentId,
         user_google_email: GOOGLE_EMAIL,
       },
     });
