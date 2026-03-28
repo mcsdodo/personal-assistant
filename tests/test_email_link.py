@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 import requests
 
 from .helpers import (
     OUTLOOK_TO,
-    REPO_ROOT,
     poll_email_status,
     send_html_email,
     paperless_find_by_title,
@@ -34,7 +34,7 @@ pytestmark = [pytest.mark.link, pytest.mark.slow]
 PDF_SERVER_HOST = "192.168.0.96"
 PDF_SERVER_PORT = 8888
 PDF_URL = f"http://{PDF_SERVER_HOST}:{PDF_SERVER_PORT}/invoice.pdf"
-TEST_PDF = REPO_ROOT / "_tmp" / "test-data" / "invoice.pdf"
+TEST_PDF = Path(__file__).parent / "test_data" / "invoice.pdf"
 
 # Use a unique order ID to avoid duplicate detection
 LINK_ORDER_ID = "999000111"

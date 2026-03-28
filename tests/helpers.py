@@ -28,7 +28,7 @@ import requests
 REPO_ROOT = Path(__file__).resolve().parents[4]  # C:\_dev\home.notavailable
 PA_STACK = REPO_ROOT / "compose.stacks" / "infra" / "personal-assistant"
 PA_DATA = PA_STACK / "local" / "data"
-TEST_DATA_DIR = REPO_ROOT / "_tmp" / "test-data"
+TEST_DATA_DIR = Path(__file__).parent / "test_data"
 
 CREDENTIALS_FILE = Path(r"C:\_dev\invoice-automation\config\credentials.json")
 TOKEN_FILE = Path(r"C:\_dev\invoice-automation\config\token.json")
