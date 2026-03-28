@@ -37,6 +37,7 @@ interface EmailInfo {
   id: string;
   source: "gmail" | "outlook";
   sender?: string;
+  to?: string;
   subject?: string;
   preview?: string;
   hasAttachments?: boolean;
@@ -60,6 +61,14 @@ const GMAIL_SEARCH_QUERY = process.env.GMAIL_SEARCH_QUERY ?? "newer_than:1d";
 
 const OUTLOOK_MCP_URL = process.env.OUTLOOK_MCP_URL ?? "http://outlook-mcp:8002/mcp";
 const OUTLOOK_ENABLED = (process.env.OUTLOOK_ENABLED ?? "true").toLowerCase() !== "false";
+
+// Email filtering: whitelist/blacklist by recipient address (supports Gmail + addressing)
+// EMAIL_FILTER_INCLUDE: only process emails where TO contains this string (dev: "+dev")
+// EMAIL_FILTER_EXCLUDE: skip emails where TO contains this string (prod: "+dev")
+const EMAIL_FILTER_INCLUDE = process.env.EMAIL_FILTER_INCLUDE ?? "";
+const EMAIL_FILTER_EXCLUDE = process.env.EMAIL_FILTER_EXCLUDE ?? "";
+
+import { filterEmailsByRecipient } from "./email-filter";
 
 const gmailEnabled = GMAIL_EMAIL.length > 0;
 
@@ -456,6 +465,7 @@ function parseGmailEmails(data: any, ids: string[]): EmailInfo[] {
           id,
           source: "gmail",
           sender: item.sender ?? item.from ?? item.fromAddress ?? undefined,
+          to: item.to ?? item.toAddress ?? item.recipient ?? undefined,
           subject: item.subject ?? undefined,
           preview: item.snippet ?? item.preview ?? item.body?.substring(0, 200) ?? undefined,
           hasAttachments: item.hasAttachments ?? item.has_attachments ?? false,
@@ -473,15 +483,19 @@ function parseGmailEmails(data: any, ids: string[]): EmailInfo[] {
       const idMatch = block.match(/Message ID:\s*(\S+)/);
       if (!idMatch) continue;
       const fromMatch = block.match(/From:\s*(.+)/);
+      const toMatch = block.match(/To:\s*(.+)/);
       const subjectMatch = block.match(/Subject:\s*(.+)/);
       const dateMatch = block.match(/Date:\s*(.+)/);
       // Extract email from "Display Name" <email> format
       const rawFrom = fromMatch?.[1]?.trim() ?? "";
       const emailMatch = rawFrom.match(/<([^>]+)>/);
+      const rawTo = toMatch?.[1]?.trim() ?? "";
+      const toEmailMatch = rawTo.match(/<([^>]+)>/);
       emails.push({
         id: idMatch[1],
         source: "gmail",
         sender: emailMatch ? emailMatch[1] : rawFrom,
+        to: toEmailMatch ? toEmailMatch[1] : rawTo || undefined,
         subject: subjectMatch?.[1]?.trim(),
         hasAttachments: false,
         receivedAt: dateMatch?.[1]?.trim(),
@@ -645,7 +659,16 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
   }
 
   // Filter to emails not already in DB
-  const newEmails = emailsToProcess.filter((e) => !emailExists(db, e.id));
+  let newEmails = emailsToProcess.filter((e) => !emailExists(db, e.id));
+
+  // Apply whitelist/blacklist filter on recipient address
+  if (EMAIL_FILTER_INCLUDE || EMAIL_FILTER_EXCLUDE) {
+    const before = newEmails.length;
+    newEmails = filterEmailsByRecipient(newEmails, EMAIL_FILTER_INCLUDE, EMAIL_FILTER_EXCLUDE);
+    if (before !== newEmails.length) {
+      log(`Email filter: ${before} → ${newEmails.length} (include="${EMAIL_FILTER_INCLUDE}", exclude="${EMAIL_FILTER_EXCLUDE}")`);
+    }
+  }
 
   // Poll completed successfully (reached MCP servers, no errors)
   lastSuccessfulPollAt = Date.now();
