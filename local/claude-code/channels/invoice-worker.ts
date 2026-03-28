@@ -847,13 +847,13 @@ export async function executeScanIntake(
     // Step 7: Set custom fields (total_amount, order_id) if available
     if (classification.total_amount != null || classification.order_id) {
       addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
-      await setDocumentCustomFields(
+      const cfResult = await setDocumentCustomFields(
         uploadResult.task_uuid,
         classification.total_amount,
         classification.order_id,
         logger,
       );
-      addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields" });
+      addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
     }
 
     // Step 8: Move GDrive file to Processed/
@@ -958,15 +958,22 @@ async function downloadFromGdrive(
   };
 }
 
+interface CustomFieldResult {
+  doc_id?: number;
+  fields_set?: Array<{ field: number; value: unknown }>;
+  verified?: unknown;
+  error?: string;
+}
+
 async function setDocumentCustomFields(
   taskUuid: string | undefined,
   totalAmount: number | null | undefined,
   orderId: string | null | undefined,
   logger: WorkerLogger,
-): Promise<void> {
+): Promise<CustomFieldResult> {
   if (!taskUuid) {
     logger.log("Warning: no task UUID from upload, cannot set custom fields");
-    return;
+    return { error: "no task UUID" };
   }
 
   const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
@@ -999,13 +1006,13 @@ async function setDocumentCustomFields(
         break;
       } else if (task.status === "FAILURE") {
         logger.log(`Warning: Paperless consumption failed: ${task.result?.slice(0, 200)}`);
-        return;
+        return { error: `consumption failed: ${task.result?.slice(0, 100)}` };
       }
       logger.log(`Waiting for Paperless consumption (attempt ${attempt + 1}/12, status: ${task.status})`);
     }
     if (!docId) {
       logger.log(`Warning: could not resolve document ID from task ${taskUuid}`);
-      return;
+      return { error: `could not resolve doc ID from task ${taskUuid}` };
     }
 
     // Build custom_fields array for PATCH
@@ -1017,7 +1024,7 @@ async function setDocumentCustomFields(
       customFields.push({ field: 3, value: orderId }); // field 3 = order_id
     }
 
-    if (customFields.length === 0) return;
+    if (customFields.length === 0) return { doc_id: docId, error: "no fields to set" };
 
     const patchRes = await fetch(`${paperlessUrl}/api/documents/${docId}/`, {
       method: "PATCH",
@@ -1031,20 +1038,23 @@ async function setDocumentCustomFields(
     if (!patchRes.ok) {
       const errText = await patchRes.text();
       logger.log(`Warning: failed to set custom fields on doc #${docId}: ${errText.slice(0, 200)}`);
-    } else {
-      // Verify the PATCH actually stuck
-      const verifyRes = await fetch(`${paperlessUrl}/api/documents/${docId}/`, {
-        headers: { "Authorization": `Token ${paperlessToken}` },
-      });
-      if (verifyRes.ok) {
-        const verifyDoc = await verifyRes.json() as { custom_fields?: Array<{ field: number; value: unknown }> };
-        logger.log(`Set custom fields on doc #${docId}: ${JSON.stringify(customFields)} — verified: ${JSON.stringify(verifyDoc.custom_fields)}`);
-      } else {
-        logger.log(`Set custom fields on doc #${docId}: ${JSON.stringify(customFields)} — could not verify`);
-      }
+      return { doc_id: docId, fields_set: customFields, error: `PATCH failed: ${errText.slice(0, 100)}` };
     }
+
+    // Verify the PATCH actually stuck
+    const verifyRes = await fetch(`${paperlessUrl}/api/documents/${docId}/`, {
+      headers: { "Authorization": `Token ${paperlessToken}` },
+    });
+    let verified: unknown;
+    if (verifyRes.ok) {
+      const verifyDoc = await verifyRes.json() as { custom_fields?: Array<{ field: number; value: unknown }> };
+      verified = verifyDoc.custom_fields;
+      logger.log(`Set custom fields on doc #${docId}: ${JSON.stringify(customFields)} — verified: ${JSON.stringify(verified)}`);
+    }
+    return { doc_id: docId, fields_set: customFields, verified };
   } catch (e: any) {
-    logger.log(`Warning: failed to set custom fields for "${title}": ${e.message}`);
+    logger.log(`Warning: failed to set custom fields: ${e.message}`);
+    return { error: e.message };
   }
 }
 
