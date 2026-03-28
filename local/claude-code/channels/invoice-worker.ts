@@ -843,33 +843,57 @@ async function downloadFromGdrive(
 ): Promise<DownloadedFile> {
   logger.log(`Downloading file ${fileId} from GDrive`);
 
-  const result = await callMcpTool(GMAIL_MCP_URL, "get_drive_file_content", {
+  // Step 1: Get download URL via Drive MCP
+  const urlResult = await callMcpTool(GMAIL_MCP_URL, "get_drive_file_download_url", {
     file_id: fileId,
     user_google_email: GOOGLE_EMAIL,
   });
-  const data = extractText(result);
-  if (!data) throw new Error("Failed to download file from GDrive");
+  const urlText = extractText(urlResult);
+  if (!urlText) throw new Error("Failed to get download URL from GDrive");
 
-  // The response may be JSON with base64 content or raw text
-  let contentBase64: string;
-  let contentType = "application/pdf";
+  // Extract URL from response (may be JSON or text with URL)
+  let downloadUrl: string;
   try {
-    const parsed = JSON.parse(data);
-    contentBase64 = parsed.content_base64 ?? parsed.data ?? parsed.content ?? "";
-    contentType = parsed.content_type ?? parsed.mimeType ?? contentType;
+    const parsed = JSON.parse(urlText);
+    downloadUrl = parsed.url ?? parsed.download_url ?? parsed.webContentLink ?? "";
   } catch {
-    // Raw base64 string
-    contentBase64 = data;
+    // Try to extract URL from text
+    const urlMatch = urlText.match(/https?:\/\/[^\s"<>]+/);
+    downloadUrl = urlMatch ? urlMatch[0] : "";
   }
+  if (!downloadUrl) throw new Error(`Could not extract download URL from: ${urlText.slice(0, 200)}`);
 
+  // The MCP server returns localhost URLs, but we're in Docker — replace with container hostname
+  downloadUrl = downloadUrl.replace("http://localhost:8000", GMAIL_MCP_URL.replace("/mcp", ""));
+  logger.log(`Got download URL for ${fileId}`);
+
+  // Step 2: Download the actual file binary
   const resolvedFilename = filename ?? `gdrive-${fileId}`;
-  const size = Math.ceil((contentBase64.length * 3) / 4);
+  const localPath = `/workspace/downloads/${resolvedFilename}`;
+
+  const { execSync } = await import("child_process");
+  execSync(`curl -sL -o "${localPath}" "${downloadUrl}"`, { timeout: 30000 });
+
+  // Step 3: Read file and base64 encode
+  const fs = await import("fs");
+  const fileBuffer = fs.readFileSync(localPath);
+  const contentBase64 = fileBuffer.toString("base64");
+
+  // Determine content type from filename
+  let contentType = "application/pdf";
+  const ext = resolvedFilename.toLowerCase().split(".").pop();
+  if (ext === "jpg" || ext === "jpeg") contentType = "image/jpeg";
+  else if (ext === "png") contentType = "image/png";
+  else if (ext === "heic") contentType = "image/heic";
+
+  // Clean up local file
+  try { fs.unlinkSync(localPath); } catch { /* ignore */ }
 
   return {
     filename: resolvedFilename,
     content_base64: contentBase64,
     content_type: contentType,
-    size,
+    size: fileBuffer.length,
   };
 }
 
