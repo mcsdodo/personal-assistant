@@ -181,7 +181,8 @@ describe("invoice-worker approval gates (removed)", () => {
       () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 1024, content_base64: "AAAA" })),
       () => jsonResponse(rpcResponse([])),
       () => jsonResponse(rpcResponse({ id: 99, name: "unknown" })),
-      () => jsonResponse(rpcResponse([])),
+      // dedup check (direct Paperless API)
+      () => jsonResponse({ results: [] }),
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse({ id: 3 })),
@@ -208,7 +209,8 @@ describe("invoice-worker approval gates (removed)", () => {
       () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 100 }])),
       () => jsonResponse(rpcResponse({ name: "inv.pdf", content_type: "application/pdf", size: 100, content_base64: "AA" })),
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      () => jsonResponse(rpcResponse([])),
+      // dedup check (direct Paperless API)
+      () => jsonResponse({ results: [] }),
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse({ id: 3 })),
@@ -230,11 +232,12 @@ describe("invoice-worker approval gates (removed)", () => {
       () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 512 }])),
       () => jsonResponse(rpcResponse({ name: "inv.pdf", content_type: "application/pdf", size: 512, content_base64: "AA" })),
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      () => jsonResponse(rpcResponse([{
+      // dedup check (direct Paperless API) — duplicate with different amount
+      () => jsonResponse({ results: [{
         id: 77,
         title: "Alza - FA2026030001",
-        custom_fields: { order_id: "FA2026030001", total_amount: 100.0 },
-      }])),
+        custom_fields: [{ field: 4, value: "FA2026030001" }, { field: 1, value: 100.0 }],
+      }] }),
     );
 
     await executeInvoiceIntake(db, job, logger, registry);
@@ -268,8 +271,8 @@ describe("invoice-worker attachment download + upload", () => {
         ),
       // 3. list_correspondents
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      // 4. search_documents (dedup check)
-      () => jsonResponse(rpcResponse([])),
+      // 4. dedup check (direct Paperless API)
+      () => jsonResponse({ results: [] }),
       // 5. list_tags (now derived: ["invoicing", "techlab"])
       () =>
         jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
@@ -321,17 +324,12 @@ describe("invoice-worker attachment download + upload", () => {
         ),
       // 3. list_correspondents
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      // 4. search_documents → returns a match with same order_id
-      () =>
-        jsonResponse(
-          rpcResponse([
-            {
-              id: 77,
-              title: "Alza - FA2026030001",
-              custom_fields: { order_id: "FA2026030001", total_amount: 59.99 },
-            },
-          ]),
-        ),
+      // 4. dedup check (direct Paperless API) → exact duplicate
+      () => jsonResponse({ results: [{
+        id: 77,
+        title: "Alza - FA2026030001",
+        custom_fields: [{ field: 4, value: "FA2026030001" }, { field: 1, value: 59.99 }],
+      }] }),
     );
 
     await executeInvoiceIntake(db, job, logger, registry);
@@ -360,17 +358,12 @@ describe("invoice-worker attachment download + upload", () => {
         ),
       // 3. list_correspondents
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      // 4. search_documents → match but different amount
-      () =>
-        jsonResponse(
-          rpcResponse([
-            {
-              id: 77,
-              title: "Alza - FA2026030001",
-              custom_fields: { order_id: "FA2026030001", total_amount: 100.0 },
-            },
-          ]),
-        ),
+      // 4. dedup check (direct Paperless API) → match but different amount
+      () => jsonResponse({ results: [{
+        id: 77,
+        title: "Alza - FA2026030001",
+        custom_fields: [{ field: 4, value: "FA2026030001" }, { field: 1, value: 100.0 }],
+      }] }),
     );
 
     await executeInvoiceIntake(db, job, logger, registry);
@@ -637,7 +630,8 @@ describe("invoice-worker title building", () => {
       () => jsonResponse(rpcResponse([{ id: "a1", name: "invoice.pdf", content_type: "application/pdf", size: 100 }])),
       () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 100, content_base64: "X" })),
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      () => jsonResponse(rpcResponse([])), // no duplicate
+      // dedup check (direct Paperless API)
+      () => jsonResponse({ results: [] }),
       // list_tags (derived: ["invoicing", "techlab"])
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
       // create_tag for "techlab"
@@ -694,7 +688,8 @@ describe("invoice-worker file_path from disk", () => {
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      () => jsonResponse(rpcResponse([])),
+      // dedup check (direct Paperless API)
+      () => jsonResponse({ results: [] }),
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse({ id: 3 })),
@@ -718,7 +713,8 @@ describe("invoice-worker file_path from disk", () => {
       () => jsonResponse(rpcResponse([{ id: "att-1", name: "invoice.pdf", content_type: "application/pdf", size: 2048 }])),
       () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 2048, content_base64: "JVBER" })),
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      () => jsonResponse(rpcResponse([])),
+      // dedup check (direct Paperless API)
+      () => jsonResponse({ results: [] }),
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse({ id: 3 })),
@@ -740,7 +736,8 @@ describe("invoice-worker file_path from disk", () => {
       () => jsonResponse(rpcResponse([{ id: "att-1", name: "invoice.pdf", content_type: "application/pdf", size: 100 }])),
       () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 100, content_base64: "AA" })),
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      () => jsonResponse(rpcResponse([])),
+      // dedup check (direct Paperless API)
+      () => jsonResponse({ results: [] }),
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse({ id: 3 })),
@@ -772,7 +769,8 @@ describe("invoice-worker unified tag derivation", () => {
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      () => jsonResponse(rpcResponse([])),
+      // dedup check (direct Paperless API)
+      () => jsonResponse({ results: [] }),
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }, { id: 3, name: "techlab" }])),
       () => jsonResponse(rpcResponse({ id: 10 })),
       () => jsonResponse(rpcResponse({ id: 11 })),

@@ -164,7 +164,7 @@ export async function executeInvoiceIntake(
 
     // Step 3: Deduplicate
     addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
-    const dedupeResult = await checkDuplicate(classification, correspondent, logger);
+    const dedupeResult = await checkDuplicate(classification, correspondent, logger, registry);
     if (dedupeResult) {
       addJobEvent(db, job.id, "step_completed", {
         step: "deduplicate",
@@ -482,6 +482,7 @@ async function checkDuplicate(
   classification: InvoiceIntakeInput["classification"],
   correspondent: CorrespondentInfo,
   logger: WorkerLogger,
+  registry: PaperlessFieldRegistry,
 ): Promise<DedupeResult | null> {
   if (!classification.order_id) {
     logger.log("No order_id — skipping dedup check");
@@ -490,29 +491,41 @@ async function checkDuplicate(
 
   logger.log(`Checking for duplicate: order_id=${classification.order_id}`);
 
-  const searchResult = await callMcpTool(PAPERLESS_MCP_URL, "search_documents", {
-    query: classification.order_id,
-    correspondent_id: correspondent.id,
+  // Search via direct Paperless API using custom_fields__icontains
+  // (paperless-mcp search_documents does full-text search which doesn't reliably find custom field values)
+  const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
+  const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
+
+  const searchParams = new URLSearchParams({
+    custom_fields__icontains: classification.order_id,
+    correspondent__id: String(correspondent.id),
+    page_size: "10",
   });
-  const searchText = extractText(searchResult);
-  let docs: any[];
-  try {
-    docs = JSON.parse(searchText);
-  } catch {
-    // Search returned non-JSON (e.g., "No documents found")
+
+  const response = await fetch(`${paperlessUrl}/api/documents/?${searchParams}`, {
+    headers: { "Authorization": `Token ${paperlessToken}` },
+  });
+
+  if (!response.ok) {
+    logger.log(`Warning: dedup search failed (${response.status}), skipping`);
     return null;
   }
 
-  if (!Array.isArray(docs) || docs.length === 0) {
+  const data = await response.json() as { results: Array<{ id: number; title: string; custom_fields: Array<{ field: number; value: unknown }> }> };
+  const docs = data.results;
+
+  if (!docs.length) {
     return null;
   }
 
-  // Check each result for order_id custom field match
+  // Extract custom field values by field ID
+  const orderIdFieldId = registry.getFieldId("order_id");
+  const totalAmountFieldId = registry.getFieldId("total_amount");
+
   for (const doc of docs) {
-    const existingOrderId = doc.custom_fields?.order_id ?? doc.order_id;
+    const existingOrderId = doc.custom_fields.find(cf => cf.field === orderIdFieldId)?.value as string | undefined;
     if (existingOrderId === classification.order_id) {
-      // Check amounts
-      const existingAmount = doc.custom_fields?.total_amount ?? doc.total_amount;
+      const existingAmount = doc.custom_fields.find(cf => cf.field === totalAmountFieldId)?.value as number | undefined;
       if (
         existingAmount != null &&
         classification.total_amount != null &&
@@ -761,6 +774,7 @@ export async function executeScanIntake(
       classification as unknown as InvoiceIntakeInput["classification"],
       correspondent,
       logger,
+      registry,
     );
     if (dedupeResult) {
       addJobEvent(db, job.id, "step_completed", {
