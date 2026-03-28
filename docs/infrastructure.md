@@ -188,4 +188,4 @@ Channels are stdio subprocesses of Claude Code — they MUST run in the same con
 - **Main session:** Sonnet — handles orchestration, Telegram conversation, complex decisions
 - **Subagents:** Haiku — fast/cheap classification and processing
   - `email-classifier.md` — classifies email intent, vendor, download strategy
-  - `invoice-processor.md` — legacy processor (being replaced by invoice-worker)
+  - `document-processor.md` — document processor (invoices, statements, receipts, other business docs)
