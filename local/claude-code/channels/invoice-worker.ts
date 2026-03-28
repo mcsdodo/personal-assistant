@@ -1085,12 +1085,7 @@ async function moveGdriveFile(
       if (idMatch) targetFolderId = idMatch[1].trim();
     }
 
-    if (!targetFolderId) {
-      logger.log(`Warning: target folder "${targetFolder}" not found or no ID, skipping move`);
-      return;
-    }
-
-    // Resolve watch folder ID (remove_parents needs an ID, not a name)
+    // Resolve watch folder ID (needed as parent for folder creation + remove_parents for move)
     const watchFolderName = (process.env.GDRIVE_WATCH_FOLDER ?? "Techlab/Invoice scans").split("/").pop()!;
     const watchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
       query: `name = '${watchFolderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
@@ -1108,6 +1103,29 @@ async function moveGdriveFile(
         const idMatch = watchText.match(/ID:\s*([^,\s)]+)/);
         if (idMatch) watchFolderId = idMatch[1].trim();
       }
+    }
+
+    // Create target folder if it doesn't exist
+    if (!targetFolderId && watchFolderId) {
+      logger.log(`Creating folder "${targetFolder}" in watch folder`);
+      const createResult = await callMcpTool(GMAIL_MCP_URL, "create_drive_folder", {
+        name: targetFolder,
+        parent_id: watchFolderId,
+        user_google_email: GOOGLE_EMAIL,
+      });
+      const createText = extractText(createResult);
+      try {
+        const parsed = JSON.parse(createText);
+        targetFolderId = parsed.id ?? parsed.fileId;
+      } catch {
+        const idMatch = createText.match(/ID:\s*([^,\s)]+)/);
+        if (idMatch) targetFolderId = idMatch[1].trim();
+      }
+    }
+
+    if (!targetFolderId) {
+      logger.log(`Warning: could not find or create folder "${targetFolder}", skipping move`);
+      return;
     }
 
     await callMcpTool(GMAIL_MCP_URL, "update_drive_file", {
