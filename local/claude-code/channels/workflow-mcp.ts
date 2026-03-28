@@ -9,6 +9,7 @@ import {
 import type { Database } from "bun:sqlite";
 
 import { executeNextJob } from "./workflow-core";
+import { PaperlessFieldRegistry } from "./paperless-fields";
 import {
   approveJob,
   cancelJob,
@@ -35,12 +36,13 @@ function text(value: unknown): { type: "text"; text: string } {
 
 let db: Database;
 let workerBusy = false;
+let fieldRegistry: PaperlessFieldRegistry;
 
 async function workerTick(): Promise<void> {
   if (workerBusy) return;
   workerBusy = true;
   try {
-    await executeNextJob(db, { log });
+    await executeNextJob(db, { log }, fieldRegistry);
   } finally {
     workerBusy = false;
   }
@@ -356,6 +358,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main(): Promise<void> {
   db = openWorkflowDb(WORKFLOW_DB_PATH);
   log(`Opened workflow DB at ${WORKFLOW_DB_PATH}`);
+
+  const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
+  const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
+  fieldRegistry = new PaperlessFieldRegistry(paperlessUrl, paperlessToken, log);
+  await fieldRegistry.init();
+  log("Custom field registry initialized");
 
   await mcp.connect(new StdioServerTransport());
   log("Workflow MCP connected (stdio)");
