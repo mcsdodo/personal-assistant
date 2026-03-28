@@ -29,6 +29,8 @@ import {
   type InsertEmail,
 } from "./db";
 
+import { initTracing, getTracer, withSpan, createLogger } from "./tracing";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -73,12 +75,17 @@ import { filterEmailsByRecipient } from "./email-filter";
 const gmailEnabled = GMAIL_EMAIL.length > 0;
 
 // ---------------------------------------------------------------------------
+// Tracing
+// ---------------------------------------------------------------------------
+
+initTracing("email-watcher");
+const tracer = getTracer("email-watcher");
+
+// ---------------------------------------------------------------------------
 // Logging — all to stderr (stdout reserved for MCP stdio transport)
 // ---------------------------------------------------------------------------
 
-function log(msg: string): void {
-  console.error(`[email-watcher] ${msg}`);
-}
+const log = createLogger("email-watcher");
 
 function esc(value: string | null | undefined): string {
   return String(value ?? "")
@@ -617,116 +624,125 @@ async function pollOutlook(): Promise<EmailInfo[]> {
 // ---------------------------------------------------------------------------
 
 async function pollCycle(db: Database, channel: Server): Promise<void> {
-  const [gmailEmails, outlookEmails] = await Promise.all([
-    pollGmail(),
-    pollOutlook(),
-  ]);
+  return withSpan(tracer, "email-watcher.poll", {}, async (span) => {
+    const [gmailEmails, outlookEmails] = await Promise.all([
+      pollGmail(),
+      pollOutlook(),
+    ]);
 
-  // Per-source seeding: each source seeds independently on its first
-  // successful poll. This prevents the bug where Gmail seeds first, then
-  // Outlook emails on the next cycle are treated as "new" (not seeded)
-  // because the global hasAnyEmails() already returns true.
-  const emailsBySource: Map<string, EmailInfo[]> = new Map();
-  for (const email of gmailEmails) {
-    const list = emailsBySource.get(email.source) ?? [];
-    list.push(email);
-    emailsBySource.set(email.source, list);
-  }
-  for (const email of outlookEmails) {
-    const list = emailsBySource.get(email.source) ?? [];
-    list.push(email);
-    emailsBySource.set(email.source, list);
-  }
+    // Per-source seeding: each source seeds independently on its first
+    // successful poll. This prevents the bug where Gmail seeds first, then
+    // Outlook emails on the next cycle are treated as "new" (not seeded)
+    // because the global hasAnyEmails() already returns true.
+    const emailsBySource: Map<string, EmailInfo[]> = new Map();
+    for (const email of gmailEmails) {
+      const list = emailsBySource.get(email.source) ?? [];
+      list.push(email);
+      emailsBySource.set(email.source, list);
+    }
+    for (const email of outlookEmails) {
+      const list = emailsBySource.get(email.source) ?? [];
+      list.push(email);
+      emailsBySource.set(email.source, list);
+    }
 
-  // Seed any source that has never been seen before
-  const emailsToProcess: EmailInfo[] = [];
-  for (const [source, emails] of emailsBySource) {
-    if (!hasAnyEmailsForSource(db, source)) {
-      log(`First scan for ${source}: seeding ${emails.length} emails`);
-      for (const email of emails) {
-        insertEmail(db, {
-          id: email.id,
-          source: email.source,
-          sender: email.sender ?? null,
-          subject: email.subject ?? null,
-          preview: email.preview ?? null,
-          hasAttachments: email.hasAttachments ?? false,
-          receivedAt: email.receivedAt ?? null,
-          status: "seed",
-        });
+    // Seed any source that has never been seen before
+    let seededCount = 0;
+    const emailsToProcess: EmailInfo[] = [];
+    for (const [source, emails] of emailsBySource) {
+      if (!hasAnyEmailsForSource(db, source)) {
+        log(`First scan for ${source}: seeding ${emails.length} emails`);
+        for (const email of emails) {
+          insertEmail(db, {
+            id: email.id,
+            source: email.source,
+            sender: email.sender ?? null,
+            subject: email.subject ?? null,
+            preview: email.preview ?? null,
+            hasAttachments: email.hasAttachments ?? false,
+            receivedAt: email.receivedAt ?? null,
+            status: "seed",
+          });
+          seededCount++;
+        }
+      } else {
+        emailsToProcess.push(...emails);
       }
-    } else {
-      emailsToProcess.push(...emails);
     }
-  }
 
-  // Filter to emails not already in DB
-  let newEmails = emailsToProcess.filter((e) => !emailExists(db, e.id));
+    // Filter to emails not already in DB
+    let newEmails = emailsToProcess.filter((e) => !emailExists(db, e.id));
 
-  // Apply whitelist/blacklist filter on recipient address
-  if (EMAIL_FILTER_INCLUDE || EMAIL_FILTER_EXCLUDE) {
-    const before = newEmails.length;
-    newEmails = filterEmailsByRecipient(newEmails, EMAIL_FILTER_INCLUDE, EMAIL_FILTER_EXCLUDE);
-    if (before !== newEmails.length) {
-      log(`Email filter: ${before} → ${newEmails.length} (include="${EMAIL_FILTER_INCLUDE}", exclude="${EMAIL_FILTER_EXCLUDE}")`);
+    // Apply whitelist/blacklist filter on recipient address
+    if (EMAIL_FILTER_INCLUDE || EMAIL_FILTER_EXCLUDE) {
+      const before = newEmails.length;
+      newEmails = filterEmailsByRecipient(newEmails, EMAIL_FILTER_INCLUDE, EMAIL_FILTER_EXCLUDE);
+      if (before !== newEmails.length) {
+        log(`Email filter: ${before} → ${newEmails.length} (include="${EMAIL_FILTER_INCLUDE}", exclude="${EMAIL_FILTER_EXCLUDE}")`);
+      }
     }
-  }
 
-  // Poll completed successfully (reached MCP servers, no errors)
-  lastSuccessfulPollAt = Date.now();
+    // Poll completed successfully (reached MCP servers, no errors)
+    lastSuccessfulPollAt = Date.now();
 
-  if (newEmails.length === 0) {
-    return;
-  }
+    const totalFound = gmailEmails.length + outlookEmails.length;
+    span.setAttribute("email.found", totalFound);
+    span.setAttribute("email.new", newEmails.length);
+    span.setAttribute("email.seeded", seededCount);
 
-  // Cap to avoid flooding
-  const capped = newEmails.slice(0, MAX_NEW_PER_CYCLE);
-  if (newEmails.length > MAX_NEW_PER_CYCLE) {
-    log(`Capped new emails from ${newEmails.length} to ${MAX_NEW_PER_CYCLE}`);
-  }
+    if (newEmails.length === 0) {
+      return;
+    }
 
-  for (const email of capped) {
-    // Insert as 'new'
-    insertEmail(db, {
-      id: email.id,
-      source: email.source,
-      sender: email.sender ?? null,
-      subject: email.subject ?? null,
-      preview: email.preview ?? null,
-      hasAttachments: email.hasAttachments ?? false,
-      receivedAt: email.receivedAt ?? null,
-      status: "new",
-    });
+    // Cap to avoid flooding
+    const capped = newEmails.slice(0, MAX_NEW_PER_CYCLE);
+    if (newEmails.length > MAX_NEW_PER_CYCLE) {
+      log(`Capped new emails from ${newEmails.length} to ${MAX_NEW_PER_CYCLE}`);
+    }
 
-    // Push channel notification
-    const contentLines = [
-      "New email detected:",
-      `Source: ${email.source}`,
-    ];
-    if (email.sender) contentLines.push(`From: ${email.sender}`);
-    if (email.subject) contentLines.push(`Subject: ${email.subject}`);
-    contentLines.push(`Has attachments: ${email.hasAttachments ? "yes" : "no"}`);
-    if (email.preview) contentLines.push(`Preview: ${email.preview}`);
-    contentLines.push(`Message ID: ${email.id}`);
+    for (const email of capped) {
+      // Insert as 'new'
+      insertEmail(db, {
+        id: email.id,
+        source: email.source,
+        sender: email.sender ?? null,
+        subject: email.subject ?? null,
+        preview: email.preview ?? null,
+        hasAttachments: email.hasAttachments ?? false,
+        receivedAt: email.receivedAt ?? null,
+        status: "new",
+      });
 
-    await channel.notification({
-      method: "notifications/claude/channel",
-      params: {
-        content: contentLines.join("\n"),
-        meta: {
-          email_source: email.source,
-          sender: email.sender ?? "",
-          subject: email.subject ?? "",
-          has_attachments: String(email.hasAttachments ?? false),
-          message_id: email.id,
-          received_at: email.receivedAt ?? "",
-          timestamp: new Date().toISOString(),
+      // Push channel notification
+      const contentLines = [
+        "New email detected:",
+        `Source: ${email.source}`,
+      ];
+      if (email.sender) contentLines.push(`From: ${email.sender}`);
+      if (email.subject) contentLines.push(`Subject: ${email.subject}`);
+      contentLines.push(`Has attachments: ${email.hasAttachments ? "yes" : "no"}`);
+      if (email.preview) contentLines.push(`Preview: ${email.preview}`);
+      contentLines.push(`Message ID: ${email.id}`);
+
+      await channel.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: contentLines.join("\n"),
+          meta: {
+            email_source: email.source,
+            sender: email.sender ?? "",
+            subject: email.subject ?? "",
+            has_attachments: String(email.hasAttachments ?? false),
+            message_id: email.id,
+            received_at: email.receivedAt ?? "",
+            timestamp: new Date().toISOString(),
+          },
         },
-      },
-    });
-  }
+      });
+    }
 
-  log(`Pushed ${capped.length} new email(s)`);
+    log(`Pushed ${capped.length} new email(s)`);
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -20,12 +20,14 @@ import {
   openWorkflowDb,
 } from "./workflow-db";
 
+import { initTracing, getTracer, withSpan, createLogger } from "./tracing";
+
 const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
 const WORKFLOW_POLL_MS = parseInt(process.env.WORKFLOW_POLL_MS ?? "2000", 10);
 
-function log(message: string): void {
-  console.error(`[workflow] ${message}`);
-}
+initTracing("workflow");
+const tracer = getTracer("workflow");
+const log = createLogger("workflow");
 
 function text(value: unknown): { type: "text"; text: string } {
   return {
@@ -42,7 +44,9 @@ async function workerTick(): Promise<void> {
   if (workerBusy) return;
   workerBusy = true;
   try {
-    await executeNextJob(db, { log }, fieldRegistry);
+    await withSpan(tracer, "workflow.tick", {}, async () => {
+      await executeNextJob(db, { log }, fieldRegistry);
+    });
   } finally {
     workerBusy = false;
   }

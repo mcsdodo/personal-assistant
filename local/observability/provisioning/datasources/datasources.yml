@@ -20,3 +20,18 @@ datasources:
   editable: false
   jsonData:
     timeInterval: 10s
+- name: Tempo
+  type: tempo
+  access: proxy
+  orgId: 1
+  url: http://tempo:3200
+  basicAuth: false
+  isDefault: false
+  version: 1
+  editable: false
+  jsonData:
+    tracesToLogsV2:
+      datasourceUid: ''
+      filterByTraceID: true
+    nodeGraph:
+      enabled: true

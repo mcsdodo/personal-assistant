@@ -12,6 +12,9 @@
 import type { Database } from "bun:sqlite";
 import { existsSync } from "fs";
 
+import { getTracer, withSpan, SpanStatusCode } from "./tracing";
+import type { Span } from "./tracing";
+
 import {
   addJobEvent,
   completeJob,
@@ -115,6 +118,8 @@ const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const GOOGLE_EMAIL = process.env.GMAIL_EMAIL ?? "";
 const PAPERLESS_MCP_URL = process.env.PAPERLESS_MCP_URL ?? "http://paperless-mcp:3000/mcp";
 
+const tracer = getTracer("invoice-worker");
+
 // ── Main executor ──────────────────────────────────────────────────────
 
 export async function executeInvoiceIntake(
@@ -132,139 +137,160 @@ export async function executeInvoiceIntake(
   const { classification } = input;
   const strategy = classification.download_strategy;
 
-  try {
-    // Step 1: Get file — prefer disk, fallback to MCP download
-    let file: DownloadedFile;
-    if (input.file_path && existsSync(input.file_path)) {
-      addJobEvent(db, job.id, "step_started", { step: "read_from_disk", file_path: input.file_path });
-      file = readFileAsDownload(input.file_path);
-      addJobEvent(db, job.id, "step_completed", {
-        step: "read_from_disk",
-        filename: file.filename,
-        size: file.size,
-      });
-    } else {
-      addJobEvent(db, job.id, "step_started", { step: "download", strategy });
-      file = await downloadInvoice(input, logger);
-      addJobEvent(db, job.id, "step_completed", {
-        step: "download",
-        filename: file.filename,
-        size: file.size,
-        content_type: file.content_type,
-      });
-    }
-
-    // Step 2: Resolve correspondent
-    addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
-    const correspondent = await resolveCorrespondent(classification.vendor, logger);
-    addJobEvent(db, job.id, "step_completed", {
-      step: "resolve_correspondent",
-      correspondent,
-    });
-
-    // Step 3: Deduplicate
-    addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
-    const dedupeResult = await checkDuplicate(classification, correspondent, logger, registry);
-    if (dedupeResult) {
-      addJobEvent(db, job.id, "step_completed", {
-        step: "deduplicate",
-        ...dedupeResult,
-      });
-
-      if (dedupeResult.outcome === "duplicate") {
-        const result: InvoiceIntakeResult = {
-          outcome: "duplicate",
-          duplicate_of: dedupeResult.existing_id,
-          duplicate_message: dedupeResult.message,
-        };
-        completeJob(db, job.id, result);
-        logger.log(`Job ${job.id} completed: duplicate of doc #${dedupeResult.existing_id}`);
-        return;
-      }
-
-      if (dedupeResult.outcome === "duplicate_likely") {
-        // Pause for user decision on likely duplicates
-        requestJobApproval(db, job.id, {
-          reason: dedupeResult.message,
-          existing_document_id: dedupeResult.existing_id,
+  await tracer.startActiveSpan("invoice-worker.execute", {
+    attributes: {
+      "job.id": job.id,
+      "job.type": "invoice_intake",
+      "invoice.vendor": classification.vendor,
+      "invoice.download_strategy": classification.download_strategy ?? "unknown",
+    },
+  }, async (span: Span) => {
+    try {
+      // Step 1: Get file — prefer disk, fallback to MCP download
+      let file: DownloadedFile;
+      if (input.file_path && existsSync(input.file_path)) {
+        addJobEvent(db, job.id, "step_started", { step: "read_from_disk", file_path: input.file_path });
+        file = readFileAsDownload(input.file_path);
+        addJobEvent(db, job.id, "step_completed", {
+          step: "read_from_disk",
+          filename: file.filename,
+          size: file.size,
         });
-        logger.log(`Job ${job.id} paused: likely duplicate`);
-        return;
+      } else {
+        addJobEvent(db, job.id, "step_started", { step: "download", strategy });
+        file = await downloadInvoice(input, logger);
+        addJobEvent(db, job.id, "step_completed", {
+          step: "download",
+          filename: file.filename,
+          size: file.size,
+          content_type: file.content_type,
+        });
       }
-    } else {
+
+      // Step 2: Resolve correspondent
+      addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
+      const correspondent = await resolveCorrespondent(classification.vendor, logger);
       addJobEvent(db, job.id, "step_completed", {
-        step: "deduplicate",
-        outcome: "no_duplicate",
+        step: "resolve_correspondent",
+        correspondent,
       });
-    }
 
-    // Step 4: Resolve tags — derived deterministically from classification
-    addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-    const allTagNames: string[] = [];
-    const docType = classification.doc_type;
-    if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
-      allTagNames.push("invoicing");
-    } else if (docType === "document") {
-      allTagNames.push("documents");
-    }
-    allTagNames.push("techlab");
-    if (classification.is_fuel) {
-      allTagNames.push("fuel");
-    }
-    if (input.month_tag && !allTagNames.includes(input.month_tag)) {
-      allTagNames.push(input.month_tag);
-    }
-    const tagIds = await resolveTags(allTagNames, logger);
-    addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
+      // Step 3: Deduplicate
+      addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
+      const dedupeResult = await checkDuplicate(classification, correspondent, logger, registry);
+      if (dedupeResult) {
+        addJobEvent(db, job.id, "step_completed", {
+          step: "deduplicate",
+          ...dedupeResult,
+        });
 
-    // Step 5: Resolve document type
-    const documentTypeId = await resolveDocumentType(classification.doc_type, logger);
+        if (dedupeResult.outcome === "duplicate") {
+          const result: InvoiceIntakeResult = {
+            outcome: "duplicate",
+            duplicate_of: dedupeResult.existing_id,
+            duplicate_message: dedupeResult.message,
+          };
+          completeJob(db, job.id, result);
+          logger.log(`Job ${job.id} completed: duplicate of doc #${dedupeResult.existing_id}`);
+          span.setAttribute("invoice.outcome", "duplicate");
+          span.setStatus({ code: SpanStatusCode.OK });
+          return;
+        }
 
-    // Step 6: Upload to Paperless
-    addJobEvent(db, job.id, "step_started", { step: "upload" });
-    const title = buildTitle(classification.vendor, classification.order_id, input.subject);
-    const uploadResult = await uploadToPaperless({
-      title,
-      file,
-      correspondentId: correspondent.id,
-      tagIds,
-      documentTypeId,
-      totalAmount: classification.total_amount,
-      orderId: classification.order_id,
-    }, logger);
-    addJobEvent(db, job.id, "step_completed", {
-      step: "upload",
-      ...uploadResult,
-    });
+        if (dedupeResult.outcome === "duplicate_likely") {
+          // Pause for user decision on likely duplicates
+          requestJobApproval(db, job.id, {
+            reason: dedupeResult.message,
+            existing_document_id: dedupeResult.existing_id,
+          });
+          logger.log(`Job ${job.id} paused: likely duplicate`);
+          span.setAttribute("invoice.outcome", "paused");
+          span.setStatus({ code: SpanStatusCode.OK });
+          return;
+        }
+      } else {
+        addJobEvent(db, job.id, "step_completed", {
+          step: "deduplicate",
+          outcome: "no_duplicate",
+        });
+      }
 
-    // Step 7: Set custom fields (total_amount, order_id) if available
-    if (classification.total_amount != null || classification.order_id) {
-      addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
-      const cfResult = await setDocumentCustomFields(
-        uploadResult.task_uuid,
-        classification.total_amount,
-        classification.order_id,
-        logger,
-        registry,
-      );
-      addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
+      // Step 4: Resolve tags — derived deterministically from classification
+      addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
+      const allTagNames: string[] = [];
+      const docType = classification.doc_type;
+      if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
+        allTagNames.push("invoicing");
+      } else if (docType === "document") {
+        allTagNames.push("documents");
+      }
+      allTagNames.push("techlab");
+      if (classification.is_fuel) {
+        allTagNames.push("fuel");
+      }
+      if (input.month_tag && !allTagNames.includes(input.month_tag)) {
+        allTagNames.push(input.month_tag);
+      }
+      const tagIds = await resolveTags(allTagNames, logger);
+      addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
+
+      // Step 5: Resolve document type
+      const documentTypeId = await resolveDocumentType(classification.doc_type, logger);
+
+      // Step 6: Upload to Paperless
+      addJobEvent(db, job.id, "step_started", { step: "upload" });
+      const title = buildTitle(classification.vendor, classification.order_id, input.subject);
+      const uploadResult = await uploadToPaperless({
+        title,
+        file,
+        correspondentId: correspondent.id,
+        tagIds,
+        documentTypeId,
+        totalAmount: classification.total_amount,
+        orderId: classification.order_id,
+      }, logger);
+      addJobEvent(db, job.id, "step_completed", {
+        step: "upload",
+        ...uploadResult,
+      });
+
+      // Step 7: Set custom fields (total_amount, order_id) if available
+      if (classification.total_amount != null || classification.order_id) {
+        addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
+        const cfResult = await setDocumentCustomFields(
+          uploadResult.task_uuid,
+          classification.total_amount,
+          classification.order_id,
+          logger,
+          registry,
+        );
+        addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
+      }
+
+      const result: InvoiceIntakeResult = {
+        outcome: "uploaded",
+        title,
+        paperless_document_id: uploadResult.document_id,
+        correspondent: correspondent.name,
+        tags: allTagNames,
+        total_amount: classification.total_amount,
+      };
+      completeJob(db, job.id, result);
+      logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
+      span.setAttribute("invoice.outcome", "uploaded");
+      span.setAttribute("paperless.document_id", uploadResult.document_id ?? 0);
+      span.setStatus({ code: SpanStatusCode.OK });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failJob(db, job.id, { code: "invoice_intake_error", message, step: "unknown" });
+      logger.log(`Job ${job.id} failed: ${message}`);
+      span.setAttribute("invoice.outcome", "failed");
+      span.setStatus({ code: SpanStatusCode.ERROR, message });
+      span.recordException(error instanceof Error ? error : new Error(message));
+    } finally {
+      span.end();
     }
-
-    const result: InvoiceIntakeResult = {
-      outcome: "uploaded",
-      title,
-      paperless_document_id: uploadResult.document_id,
-      correspondent: correspondent.name,
-      tags: allTagNames,
-      total_amount: classification.total_amount,
-    };
-    completeJob(db, job.id, result);
-    logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    failJob(db, job.id, { code: "invoice_intake_error", message, step: "unknown" });
-    logger.log(`Job ${job.id} failed: ${message}`);
-  }
+  });
 }
 
 // ── Download step ──────────────────────────────────────────────────────
@@ -273,21 +299,34 @@ async function downloadInvoice(
   input: InvoiceIntakeInput,
   logger: WorkerLogger,
 ): Promise<DownloadedFile> {
-  const { email_source, message_id, classification } = input;
-  const strategy = classification.download_strategy;
-  const mcpUrl = email_source === "gmail" ? GMAIL_MCP_URL : OUTLOOK_MCP_URL;
+  return withSpan(tracer, "invoice-worker.download", {
+    "download.strategy": input.classification.download_strategy ?? "unknown",
+    "email.source": input.email_source,
+    "email.message_id": input.message_id,
+  }, async (span) => {
+    const { email_source, message_id, classification } = input;
+    const strategy = classification.download_strategy;
+    const mcpUrl = email_source === "gmail" ? GMAIL_MCP_URL : OUTLOOK_MCP_URL;
 
-  switch (strategy) {
-    case "attachment":
-      return downloadAttachment(mcpUrl, email_source, message_id, logger);
+    let file: DownloadedFile;
+    switch (strategy) {
+      case "attachment":
+        file = await downloadAttachment(mcpUrl, email_source, message_id, logger);
+        break;
 
-    case "known_link":
-    case "direct_url":
-      return downloadViaLink(mcpUrl, email_source, message_id, logger);
+      case "known_link":
+      case "direct_url":
+        file = await downloadViaLink(mcpUrl, email_source, message_id, logger);
+        break;
 
-    default:
-      throw new Error(`Unsupported download strategy: ${strategy}`);
-  }
+      default:
+        throw new Error(`Unsupported download strategy: ${strategy}`);
+    }
+
+    span.setAttribute("download.filename", file.filename);
+    span.setAttribute("download.size", file.size);
+    return file;
+  });
 }
 
 async function downloadAttachment(
@@ -446,30 +485,38 @@ async function resolveCorrespondent(
   vendor: string,
   logger: WorkerLogger,
 ): Promise<CorrespondentInfo> {
-  logger.log(`Resolving correspondent for vendor: ${vendor}`);
+  return withSpan(tracer, "invoice-worker.resolve_correspondent", {
+    "correspondent.vendor": vendor,
+  }, async (span) => {
+    logger.log(`Resolving correspondent for vendor: ${vendor}`);
 
-  const listResult = await callMcpTool(PAPERLESS_MCP_URL, "list_correspondents", {});
-  const listText = extractText(listResult);
-  const parsed = JSON.parse(listText);
-  // Paperless MCP returns paginated object { results: [...] }, not a raw array
-  const correspondents = (Array.isArray(parsed) ? parsed : parsed.results ?? []) as Array<{ id: number; name: string }>;
+    const listResult = await callMcpTool(PAPERLESS_MCP_URL, "list_correspondents", {});
+    const listText = extractText(listResult);
+    const parsed = JSON.parse(listText);
+    // Paperless MCP returns paginated object { results: [...] }, not a raw array
+    const correspondents = (Array.isArray(parsed) ? parsed : parsed.results ?? []) as Array<{ id: number; name: string }>;
 
-  // Case-insensitive match
-  const match = correspondents.find(
-    (c) => c.name.toLowerCase() === vendor.toLowerCase(),
-  );
-  if (match) {
-    return { id: match.id, name: match.name };
-  }
+    // Case-insensitive match
+    const match = correspondents.find(
+      (c) => c.name.toLowerCase() === vendor.toLowerCase(),
+    );
+    if (match) {
+      span.setAttribute("correspondent.id", match.id);
+      span.setAttribute("correspondent.name", match.name);
+      return { id: match.id, name: match.name };
+    }
 
-  // Create new correspondent
-  logger.log(`Creating new correspondent: ${vendor}`);
-  const createResult = await callMcpTool(PAPERLESS_MCP_URL, "create_correspondent", {
-    name: vendor,
+    // Create new correspondent
+    logger.log(`Creating new correspondent: ${vendor}`);
+    const createResult = await callMcpTool(PAPERLESS_MCP_URL, "create_correspondent", {
+      name: vendor,
+    });
+    const createText = extractText(createResult);
+    const created = JSON.parse(createText) as { id: number; name: string };
+    span.setAttribute("correspondent.id", created.id);
+    span.setAttribute("correspondent.name", created.name);
+    return { id: created.id, name: created.name };
   });
-  const createText = extractText(createResult);
-  const created = JSON.parse(createText) as { id: number; name: string };
-  return { id: created.id, name: created.name };
 }
 
 interface DedupeResult {
@@ -484,69 +531,80 @@ async function checkDuplicate(
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<DedupeResult | null> {
-  if (!classification.order_id) {
-    logger.log("No order_id — skipping dedup check");
-    return null;
-  }
+  return withSpan(tracer, "invoice-worker.dedup", {
+    "dedup.order_id": classification.order_id ?? "none",
+    "dedup.correspondent": correspondent.name,
+  }, async (span) => {
+    if (!classification.order_id) {
+      logger.log("No order_id — skipping dedup check");
+      span.setAttribute("dedup.outcome", "no_duplicate");
+      return null;
+    }
 
-  logger.log(`Checking for duplicate: order_id=${classification.order_id}`);
+    logger.log(`Checking for duplicate: order_id=${classification.order_id}`);
 
-  // Search via direct Paperless API using custom_fields__icontains
-  // (paperless-mcp search_documents does full-text search which doesn't reliably find custom field values)
-  const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
-  const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
+    // Search via direct Paperless API using custom_fields__icontains
+    // (paperless-mcp search_documents does full-text search which doesn't reliably find custom field values)
+    const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
+    const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
 
-  const searchParams = new URLSearchParams({
-    custom_fields__icontains: classification.order_id,
-    correspondent__id: String(correspondent.id),
-    page_size: "10",
-  });
+    const searchParams = new URLSearchParams({
+      custom_fields__icontains: classification.order_id,
+      correspondent__id: String(correspondent.id),
+      page_size: "10",
+    });
 
-  const response = await fetch(`${paperlessUrl}/api/documents/?${searchParams}`, {
-    headers: { "Authorization": `Token ${paperlessToken}` },
-  });
+    const response = await fetch(`${paperlessUrl}/api/documents/?${searchParams}`, {
+      headers: { "Authorization": `Token ${paperlessToken}` },
+    });
 
-  if (!response.ok) {
-    logger.log(`Warning: dedup search failed (${response.status}), skipping`);
-    return null;
-  }
+    if (!response.ok) {
+      logger.log(`Warning: dedup search failed (${response.status}), skipping`);
+      span.setAttribute("dedup.outcome", "no_duplicate");
+      return null;
+    }
 
-  const data = await response.json() as { results: Array<{ id: number; title: string; custom_fields: Array<{ field: number; value: unknown }> }> };
-  const docs = data.results;
+    const data = await response.json() as { results: Array<{ id: number; title: string; custom_fields: Array<{ field: number; value: unknown }> }> };
+    const docs = data.results;
 
-  if (!docs.length) {
-    return null;
-  }
+    if (!docs.length) {
+      span.setAttribute("dedup.outcome", "no_duplicate");
+      return null;
+    }
 
-  // Extract custom field values by field ID
-  const orderIdFieldId = registry.getFieldId("order_id");
-  const totalAmountFieldId = registry.getFieldId("total_amount");
+    // Extract custom field values by field ID
+    const orderIdFieldId = registry.getFieldId("order_id");
+    const totalAmountFieldId = registry.getFieldId("total_amount");
 
-  for (const doc of docs) {
-    const existingOrderId = doc.custom_fields.find(cf => cf.field === orderIdFieldId)?.value as string | undefined;
-    if (existingOrderId === classification.order_id) {
-      const existingAmount = doc.custom_fields.find(cf => cf.field === totalAmountFieldId)?.value as number | undefined;
-      if (
-        existingAmount != null &&
-        classification.total_amount != null &&
-        existingAmount !== classification.total_amount
-      ) {
+    for (const doc of docs) {
+      const existingOrderId = doc.custom_fields.find(cf => cf.field === orderIdFieldId)?.value as string | undefined;
+      if (existingOrderId === classification.order_id) {
+        const existingAmount = doc.custom_fields.find(cf => cf.field === totalAmountFieldId)?.value as number | undefined;
+        if (
+          existingAmount != null &&
+          classification.total_amount != null &&
+          existingAmount !== classification.total_amount
+        ) {
+          span.setAttribute("dedup.outcome", "duplicate_likely");
+          return {
+            outcome: "duplicate_likely",
+            existing_id: doc.id,
+            message: `Order ${classification.order_id} matches doc #${doc.id} "${doc.title}" but amount differs (${existingAmount} vs ${classification.total_amount})`,
+          };
+        }
+
+        span.setAttribute("dedup.outcome", "duplicate");
         return {
-          outcome: "duplicate_likely",
+          outcome: "duplicate",
           existing_id: doc.id,
-          message: `Order ${classification.order_id} matches doc #${doc.id} "${doc.title}" but amount differs (${existingAmount} vs ${classification.total_amount})`,
+          message: `Order ${classification.order_id} already exists as doc #${doc.id} "${doc.title}"`,
         };
       }
-
-      return {
-        outcome: "duplicate",
-        existing_id: doc.id,
-        message: `Order ${classification.order_id} already exists as doc #${doc.id} "${doc.title}"`,
-      };
     }
-  }
 
-  return null;
+    span.setAttribute("dedup.outcome", "no_duplicate");
+    return null;
+  });
 }
 
 async function resolveTags(
@@ -555,27 +613,31 @@ async function resolveTags(
 ): Promise<number[]> {
   if (!tagNames.length) return [];
 
-  const listResult = await callMcpTool(PAPERLESS_MCP_URL, "list_tags", {});
-  const listText = extractText(listResult);
-  const parsedTags = JSON.parse(listText);
-  const tags = (Array.isArray(parsedTags) ? parsedTags : parsedTags.results ?? []) as Array<{ id: number; name: string }>;
+  return withSpan(tracer, "invoice-worker.resolve_tags", {
+    "tags.count": tagNames.length,
+  }, async (_span) => {
+    const listResult = await callMcpTool(PAPERLESS_MCP_URL, "list_tags", {});
+    const listText = extractText(listResult);
+    const parsedTags = JSON.parse(listText);
+    const tags = (Array.isArray(parsedTags) ? parsedTags : parsedTags.results ?? []) as Array<{ id: number; name: string }>;
 
-  const tagIds: number[] = [];
-  for (const name of tagNames) {
-    const match = tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
-    if (match) {
-      tagIds.push(match.id);
-    } else {
-      // Create tag if it doesn't exist (e.g., new month tag)
-      logger.log(`Creating tag: ${name}`);
-      const createResult = await callMcpTool(PAPERLESS_MCP_URL, "create_tag", { name });
-      const createText = extractText(createResult);
-      const created = JSON.parse(createText) as { id: number };
-      tagIds.push(created.id);
+    const tagIds: number[] = [];
+    for (const name of tagNames) {
+      const match = tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
+      if (match) {
+        tagIds.push(match.id);
+      } else {
+        // Create tag if it doesn't exist (e.g., new month tag)
+        logger.log(`Creating tag: ${name}`);
+        const createResult = await callMcpTool(PAPERLESS_MCP_URL, "create_tag", { name });
+        const createText = extractText(createResult);
+        const created = JSON.parse(createText) as { id: number };
+        tagIds.push(created.id);
+      }
     }
-  }
 
-  return tagIds;
+    return tagIds;
+  });
 }
 
 async function resolveDocumentType(
@@ -629,76 +691,82 @@ async function uploadToPaperless(
   params: UploadParams,
   logger: WorkerLogger,
 ): Promise<UploadResult> {
-  logger.log(`Uploading to Paperless: "${params.title}"`);
+  return withSpan(tracer, "invoice-worker.upload", {
+    "upload.title": params.title,
+    "upload.filename": params.file.filename,
+  }, async (span) => {
+    logger.log(`Uploading to Paperless: "${params.title}"`);
 
-  // Upload directly to Paperless API (bypasses paperless-mcp to avoid
-  // 413 Payload Too Large on base64-encoded files over ~200KB).
-  const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
-  const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
-  const fileBuffer = Buffer.from(params.file.content_base64, "base64");
+    // Upload directly to Paperless API (bypasses paperless-mcp to avoid
+    // 413 Payload Too Large on base64-encoded files over ~200KB).
+    const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
+    const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
+    const fileBuffer = Buffer.from(params.file.content_base64, "base64");
 
-  // Build multipart form data manually
-  const boundary = `----FormBoundary${Date.now()}`;
-  const parts: Buffer[] = [];
+    // Build multipart form data manually
+    const boundary = `----FormBoundary${Date.now()}`;
+    const parts: Buffer[] = [];
 
-  // File field
-  parts.push(Buffer.from(
-    `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${params.file.filename}"\r\nContent-Type: ${params.file.content_type}\r\n\r\n`
-  ));
-  parts.push(fileBuffer);
-  parts.push(Buffer.from("\r\n"));
-
-  // Title
-  parts.push(Buffer.from(
-    `--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n${params.title}\r\n`
-  ));
-
-  // Correspondent
-  if (params.correspondentId) {
+    // File field
     parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="correspondent"\r\n\r\n${params.correspondentId}\r\n`
+      `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${params.file.filename}"\r\nContent-Type: ${params.file.content_type}\r\n\r\n`
     ));
-  }
+    parts.push(fileBuffer);
+    parts.push(Buffer.from("\r\n"));
 
-  // Document type
-  if (params.documentTypeId) {
+    // Title
     parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="document_type"\r\n\r\n${params.documentTypeId}\r\n`
+      `--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n${params.title}\r\n`
     ));
-  }
 
-  // Tags (one field per tag)
-  for (const tagId of params.tagIds) {
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="tags"\r\n\r\n${tagId}\r\n`
-    ));
-  }
+    // Correspondent
+    if (params.correspondentId) {
+      parts.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="correspondent"\r\n\r\n${params.correspondentId}\r\n`
+      ));
+    }
 
-  parts.push(Buffer.from(`--${boundary}--\r\n`));
+    // Document type
+    if (params.documentTypeId) {
+      parts.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="document_type"\r\n\r\n${params.documentTypeId}\r\n`
+      ));
+    }
 
-  const body = Buffer.concat(parts);
+    // Tags (one field per tag)
+    for (const tagId of params.tagIds) {
+      parts.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="tags"\r\n\r\n${tagId}\r\n`
+      ));
+    }
 
-  const response = await fetch(`${paperlessUrl}/api/documents/post_document/`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Token ${paperlessToken}`,
-      "Content-Type": `multipart/form-data; boundary=${boundary}`,
-    },
-    body,
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
+
+    const body = Buffer.concat(parts);
+
+    const response = await fetch(`${paperlessUrl}/api/documents/post_document/`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Token ${paperlessToken}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Paperless upload failed (${response.status}): ${errText.slice(0, 200)}`);
+    }
+
+    const resultText = await response.text();
+    logger.log(`Upload response: ${resultText}`);
+
+    // post_document returns a task UUID string (e.g. "abc-123-def")
+    const taskUuid = resultText.replace(/^["'\s]+|["'\s]+$/g, "");
+
+    span.setAttribute("upload.task_uuid", taskUuid);
+    return { task_uuid: taskUuid, title: params.title };
   });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Paperless upload failed (${response.status}): ${errText.slice(0, 200)}`);
-  }
-
-  const resultText = await response.text();
-  logger.log(`Upload response: ${resultText}`);
-
-  // post_document returns a task UUID string (e.g. "abc-123-def")
-  const taskUuid = resultText.replace(/^["'\s]+|["'\s]+$/g, "");
-
-  return { task_uuid: taskUuid, title: params.title };
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -738,155 +806,176 @@ export async function executeScanIntake(
 
   const { classification, file_id } = input;
 
-  try {
-    // Step 1: Get file — prefer disk, fallback to GDrive download
-    let file: DownloadedFile;
-    if (input.file_path && existsSync(input.file_path)) {
-      addJobEvent(db, job.id, "step_started", { step: "read_from_disk", file_path: input.file_path });
-      file = readFileAsDownload(input.file_path);
-      addJobEvent(db, job.id, "step_completed", {
-        step: "read_from_disk",
-        filename: file.filename,
-        size: file.size,
-      });
-    } else {
-      addJobEvent(db, job.id, "step_started", { step: "download", source: "gdrive" });
-      file = await downloadFromGdrive(file_id, input.filename, logger);
-      addJobEvent(db, job.id, "step_completed", {
-        step: "download",
-        filename: file.filename,
-        size: file.size,
-        content_type: file.content_type,
-      });
-    }
-
-    // Step 2: Resolve correspondent
-    addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
-    const correspondent = await resolveCorrespondent(classification.vendor, logger);
-    addJobEvent(db, job.id, "step_completed", {
-      step: "resolve_correspondent",
-      correspondent,
-    });
-
-    // Step 3: Deduplicate (only if order_id exists)
-    addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
-    const dedupeResult = await checkDuplicate(
-      classification as unknown as InvoiceIntakeInput["classification"],
-      correspondent,
-      logger,
-      registry,
-    );
-    if (dedupeResult) {
-      addJobEvent(db, job.id, "step_completed", {
-        step: "deduplicate",
-        ...dedupeResult,
-      });
-
-      if (dedupeResult.outcome === "duplicate") {
-        const result: InvoiceIntakeResult = {
-          outcome: "duplicate",
-          duplicate_of: dedupeResult.existing_id,
-          duplicate_message: dedupeResult.message,
-        };
-        completeJob(db, job.id, result);
-        await moveGdriveFile(file_id, "Processed", logger);
-        logger.log(`Job ${job.id} completed: duplicate of doc #${dedupeResult.existing_id}`);
-        return;
-      }
-
-      if (dedupeResult.outcome === "duplicate_likely") {
-        requestJobApproval(db, job.id, {
-          reason: dedupeResult.message,
-          existing_document_id: dedupeResult.existing_id,
+  await tracer.startActiveSpan("invoice-worker.execute", {
+    attributes: {
+      "job.id": job.id,
+      "job.type": "scan_intake",
+      "invoice.vendor": classification.vendor,
+      "source": "gdrive",
+    },
+  }, async (span: Span) => {
+    try {
+      // Step 1: Get file — prefer disk, fallback to GDrive download
+      let file: DownloadedFile;
+      if (input.file_path && existsSync(input.file_path)) {
+        addJobEvent(db, job.id, "step_started", { step: "read_from_disk", file_path: input.file_path });
+        file = readFileAsDownload(input.file_path);
+        addJobEvent(db, job.id, "step_completed", {
+          step: "read_from_disk",
+          filename: file.filename,
+          size: file.size,
         });
-        logger.log(`Job ${job.id} paused: likely duplicate`);
-        return;
+      } else {
+        addJobEvent(db, job.id, "step_started", { step: "download", source: "gdrive" });
+        file = await downloadFromGdrive(file_id, input.filename, logger);
+        addJobEvent(db, job.id, "step_completed", {
+          step: "download",
+          filename: file.filename,
+          size: file.size,
+          content_type: file.content_type,
+        });
       }
-    } else {
+
+      // Step 2: Resolve correspondent
+      addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
+      const correspondent = await resolveCorrespondent(classification.vendor, logger);
       addJobEvent(db, job.id, "step_completed", {
-        step: "deduplicate",
-        outcome: "no_duplicate",
+        step: "resolve_correspondent",
+        correspondent,
       });
-    }
 
-    // Step 4: Resolve tags — derived deterministically from classification
-    addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-    const allTagNames: string[] = [];
-    // doc_type → tag mapping (business logic, not classifier's job)
-    const docType = classification.doc_type;
-    if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
-      allTagNames.push("invoicing");
-    } else if (docType === "document") {
-      allTagNames.push("documents");
-    }
-    allTagNames.push("techlab"); // all scans are business expenses
-    if (classification.is_fuel) {
-      allTagNames.push("fuel");
-    }
-    if (input.month_tag && !allTagNames.includes(input.month_tag)) {
-      allTagNames.push(input.month_tag);
-    }
-    const tagIds = await resolveTags(allTagNames, logger);
-    addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
-
-    // Step 5: Resolve document type
-    const documentTypeId = await resolveDocumentType(classification.doc_type, logger);
-
-    // Step 6: Upload to Paperless
-    addJobEvent(db, job.id, "step_started", { step: "upload" });
-    const title = buildScanTitle(
-      classification.vendor,
-      classification.order_id,
-      input.filename,
-    );
-    const uploadResult = await uploadToPaperless({
-      title,
-      file,
-      correspondentId: correspondent.id,
-      tagIds,
-      documentTypeId,
-      totalAmount: classification.total_amount,
-      orderId: classification.order_id,
-    }, logger);
-    addJobEvent(db, job.id, "step_completed", {
-      step: "upload",
-      ...uploadResult,
-    });
-
-    // Step 7: Set custom fields (total_amount, order_id) if available
-    if (classification.total_amount != null || classification.order_id) {
-      addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
-      const cfResult = await setDocumentCustomFields(
-        uploadResult.task_uuid,
-        classification.total_amount,
-        classification.order_id,
+      // Step 3: Deduplicate (only if order_id exists)
+      addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
+      const dedupeResult = await checkDuplicate(
+        classification as unknown as InvoiceIntakeInput["classification"],
+        correspondent,
         logger,
         registry,
       );
-      addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
+      if (dedupeResult) {
+        addJobEvent(db, job.id, "step_completed", {
+          step: "deduplicate",
+          ...dedupeResult,
+        });
+
+        if (dedupeResult.outcome === "duplicate") {
+          const result: InvoiceIntakeResult = {
+            outcome: "duplicate",
+            duplicate_of: dedupeResult.existing_id,
+            duplicate_message: dedupeResult.message,
+          };
+          completeJob(db, job.id, result);
+          await moveGdriveFile(file_id, "Processed", logger);
+          logger.log(`Job ${job.id} completed: duplicate of doc #${dedupeResult.existing_id}`);
+          span.setAttribute("invoice.outcome", "duplicate");
+          span.setStatus({ code: SpanStatusCode.OK });
+          return;
+        }
+
+        if (dedupeResult.outcome === "duplicate_likely") {
+          requestJobApproval(db, job.id, {
+            reason: dedupeResult.message,
+            existing_document_id: dedupeResult.existing_id,
+          });
+          logger.log(`Job ${job.id} paused: likely duplicate`);
+          span.setAttribute("invoice.outcome", "paused");
+          span.setStatus({ code: SpanStatusCode.OK });
+          return;
+        }
+      } else {
+        addJobEvent(db, job.id, "step_completed", {
+          step: "deduplicate",
+          outcome: "no_duplicate",
+        });
+      }
+
+      // Step 4: Resolve tags — derived deterministically from classification
+      addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
+      const allTagNames: string[] = [];
+      // doc_type → tag mapping (business logic, not classifier's job)
+      const docType = classification.doc_type;
+      if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
+        allTagNames.push("invoicing");
+      } else if (docType === "document") {
+        allTagNames.push("documents");
+      }
+      allTagNames.push("techlab"); // all scans are business expenses
+      if (classification.is_fuel) {
+        allTagNames.push("fuel");
+      }
+      if (input.month_tag && !allTagNames.includes(input.month_tag)) {
+        allTagNames.push(input.month_tag);
+      }
+      const tagIds = await resolveTags(allTagNames, logger);
+      addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
+
+      // Step 5: Resolve document type
+      const documentTypeId = await resolveDocumentType(classification.doc_type, logger);
+
+      // Step 6: Upload to Paperless
+      addJobEvent(db, job.id, "step_started", { step: "upload" });
+      const title = buildScanTitle(
+        classification.vendor,
+        classification.order_id,
+        input.filename,
+      );
+      const uploadResult = await uploadToPaperless({
+        title,
+        file,
+        correspondentId: correspondent.id,
+        tagIds,
+        documentTypeId,
+        totalAmount: classification.total_amount,
+        orderId: classification.order_id,
+      }, logger);
+      addJobEvent(db, job.id, "step_completed", {
+        step: "upload",
+        ...uploadResult,
+      });
+
+      // Step 7: Set custom fields (total_amount, order_id) if available
+      if (classification.total_amount != null || classification.order_id) {
+        addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
+        const cfResult = await setDocumentCustomFields(
+          uploadResult.task_uuid,
+          classification.total_amount,
+          classification.order_id,
+          logger,
+          registry,
+        );
+        addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
+      }
+
+      // Step 8: Move GDrive file to Processed/
+      await moveGdriveFile(file_id, "Processed", logger);
+
+      const result: InvoiceIntakeResult = {
+        outcome: "uploaded",
+        title,
+        paperless_document_id: uploadResult.document_id,
+        correspondent: correspondent.name,
+        tags: allTagNames,
+        total_amount: classification.total_amount,
+      };
+      completeJob(db, job.id, result);
+      logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
+      span.setAttribute("invoice.outcome", "uploaded");
+      span.setAttribute("paperless.document_id", uploadResult.document_id ?? 0);
+      span.setStatus({ code: SpanStatusCode.OK });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failJob(db, job.id, { code: "scan_intake_error", message, step: "unknown" });
+      await moveGdriveFile(file_id, "Errors", logger).catch((moveErr) => {
+        logger.log(`Failed to move file to Errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
+      });
+      logger.log(`Job ${job.id} failed: ${message}`);
+      span.setAttribute("invoice.outcome", "failed");
+      span.setStatus({ code: SpanStatusCode.ERROR, message });
+      span.recordException(error instanceof Error ? error : new Error(message));
+    } finally {
+      span.end();
     }
-
-    // Step 8: Move GDrive file to Processed/
-    await moveGdriveFile(file_id, "Processed", logger);
-
-    const result: InvoiceIntakeResult = {
-      outcome: "uploaded",
-      title,
-      paperless_document_id: uploadResult.document_id,
-      correspondent: correspondent.name,
-      tags: allTagNames,
-      total_amount: classification.total_amount,
-    };
-    completeJob(db, job.id, result);
-    logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    failJob(db, job.id, { code: "scan_intake_error", message, step: "unknown" });
-    await moveGdriveFile(file_id, "Errors", logger).catch((moveErr) => {
-      logger.log(`Failed to move file to Errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
-    });
-    logger.log(`Job ${job.id} failed: ${message}`);
-  }
+  });
 }
 
 function buildScanTitle(
@@ -982,91 +1071,98 @@ async function setDocumentCustomFields(
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<CustomFieldResult> {
-  if (!taskUuid) {
-    logger.log("Warning: no task UUID from upload, cannot set custom fields");
-    return { error: "no task UUID" };
-  }
+  return withSpan(tracer, "invoice-worker.set_fields", {
+    "fields.total_amount": totalAmount ?? 0,
+    "fields.order_id": orderId ?? "none",
+  }, async (span) => {
+    if (!taskUuid) {
+      logger.log("Warning: no task UUID from upload, cannot set custom fields");
+      return { error: "no task UUID" };
+    }
 
-  const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
-  const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
+    const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
+    const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
 
-  try {
-    // Poll Paperless task API until consumption completes and returns the document ID
-    let docId: number | undefined;
-    for (let attempt = 0; attempt < 12; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-      const taskRes = await fetch(`${paperlessUrl}/api/tasks/?task_id=${taskUuid}`, {
+    try {
+      // Poll Paperless task API until consumption completes and returns the document ID
+      let docId: number | undefined;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        const taskRes = await fetch(`${paperlessUrl}/api/tasks/?task_id=${taskUuid}`, {
+          headers: { "Authorization": `Token ${paperlessToken}` },
+        });
+        if (!taskRes.ok) continue;
+        const tasks = await taskRes.json() as Array<{ status: string; result?: string; related_document?: string }>;
+        const task = tasks[0];
+        if (!task) continue;
+
+        if (task.status === "SUCCESS") {
+          // Extract document ID from result string: "Success. New document id 379 created"
+          const idMatch = task.result?.match(/document id (\d+)/i);
+          if (idMatch) docId = parseInt(idMatch[1], 10);
+          // Also check related_document field
+          if (!docId && task.related_document) {
+            docId = parseInt(task.related_document, 10) || undefined;
+          }
+          // Wait for Paperless to finish all post-consumption processing (OCR, classification)
+          // before PATCHing custom fields — otherwise Paperless may overwrite them
+          await new Promise((resolve) => setTimeout(resolve, 10000));
+          break;
+        } else if (task.status === "FAILURE") {
+          logger.log(`Warning: Paperless consumption failed: ${task.result?.slice(0, 200)}`);
+          return { error: `consumption failed: ${task.result?.slice(0, 100)}` };
+        }
+        logger.log(`Waiting for Paperless consumption (attempt ${attempt + 1}/12, status: ${task.status})`);
+      }
+      if (!docId) {
+        logger.log(`Warning: could not resolve document ID from task ${taskUuid}`);
+        return { error: `could not resolve doc ID from task ${taskUuid}` };
+      }
+
+      span.setAttribute("fields.doc_id", docId);
+
+      // Build custom_fields array for PATCH
+      const customFields: Array<{ field: number; value: unknown }> = [];
+      if (totalAmount != null) {
+        customFields.push({ field: registry.getFieldId("total_amount"), value: totalAmount });
+      }
+      if (orderId) {
+        customFields.push({ field: registry.getFieldId("order_id"), value: orderId });
+      }
+
+      if (customFields.length === 0) return { doc_id: docId, error: "no fields to set" };
+
+      const patchRes = await fetch(`${paperlessUrl}/api/documents/${docId}/`, {
+        method: "PATCH",
+        headers: {
+          "Authorization": `Token ${paperlessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ custom_fields: customFields }),
+      });
+
+      if (!patchRes.ok) {
+        const errText = await patchRes.text();
+        logger.log(`Warning: failed to set custom fields on doc #${docId}: ${errText.slice(0, 200)}`);
+        return { doc_id: docId, fields_set: customFields, error: `PATCH failed: ${errText.slice(0, 100)}` };
+      }
+
+      // Verify the PATCH actually stuck
+      const verifyRes = await fetch(`${paperlessUrl}/api/documents/${docId}/`, {
         headers: { "Authorization": `Token ${paperlessToken}` },
       });
-      if (!taskRes.ok) continue;
-      const tasks = await taskRes.json() as Array<{ status: string; result?: string; related_document?: string }>;
-      const task = tasks[0];
-      if (!task) continue;
-
-      if (task.status === "SUCCESS") {
-        // Extract document ID from result string: "Success. New document id 379 created"
-        const idMatch = task.result?.match(/document id (\d+)/i);
-        if (idMatch) docId = parseInt(idMatch[1], 10);
-        // Also check related_document field
-        if (!docId && task.related_document) {
-          docId = parseInt(task.related_document, 10) || undefined;
-        }
-        // Wait for Paperless to finish all post-consumption processing (OCR, classification)
-        // before PATCHing custom fields — otherwise Paperless may overwrite them
-        await new Promise((resolve) => setTimeout(resolve, 10000));
-        break;
-      } else if (task.status === "FAILURE") {
-        logger.log(`Warning: Paperless consumption failed: ${task.result?.slice(0, 200)}`);
-        return { error: `consumption failed: ${task.result?.slice(0, 100)}` };
+      let verified: unknown;
+      if (verifyRes.ok) {
+        const verifyDoc = await verifyRes.json() as { custom_fields?: Array<{ field: number; value: unknown }> };
+        verified = verifyDoc.custom_fields;
+        logger.log(`Set custom fields on doc #${docId}: ${JSON.stringify(customFields)} — verified: ${JSON.stringify(verified)}`);
       }
-      logger.log(`Waiting for Paperless consumption (attempt ${attempt + 1}/12, status: ${task.status})`);
+      return { doc_id: docId, fields_set: customFields, verified };
+    } catch (e: any) {
+      logger.log(`Warning: failed to set custom fields: ${e.message}`);
+      return { error: e.message };
     }
-    if (!docId) {
-      logger.log(`Warning: could not resolve document ID from task ${taskUuid}`);
-      return { error: `could not resolve doc ID from task ${taskUuid}` };
-    }
-
-    // Build custom_fields array for PATCH
-    const customFields: Array<{ field: number; value: unknown }> = [];
-    if (totalAmount != null) {
-      customFields.push({ field: registry.getFieldId("total_amount"), value: totalAmount });
-    }
-    if (orderId) {
-      customFields.push({ field: registry.getFieldId("order_id"), value: orderId });
-    }
-
-    if (customFields.length === 0) return { doc_id: docId, error: "no fields to set" };
-
-    const patchRes = await fetch(`${paperlessUrl}/api/documents/${docId}/`, {
-      method: "PATCH",
-      headers: {
-        "Authorization": `Token ${paperlessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ custom_fields: customFields }),
-    });
-
-    if (!patchRes.ok) {
-      const errText = await patchRes.text();
-      logger.log(`Warning: failed to set custom fields on doc #${docId}: ${errText.slice(0, 200)}`);
-      return { doc_id: docId, fields_set: customFields, error: `PATCH failed: ${errText.slice(0, 100)}` };
-    }
-
-    // Verify the PATCH actually stuck
-    const verifyRes = await fetch(`${paperlessUrl}/api/documents/${docId}/`, {
-      headers: { "Authorization": `Token ${paperlessToken}` },
-    });
-    let verified: unknown;
-    if (verifyRes.ok) {
-      const verifyDoc = await verifyRes.json() as { custom_fields?: Array<{ field: number; value: unknown }> };
-      verified = verifyDoc.custom_fields;
-      logger.log(`Set custom fields on doc #${docId}: ${JSON.stringify(customFields)} — verified: ${JSON.stringify(verified)}`);
-    }
-    return { doc_id: docId, fields_set: customFields, verified };
-  } catch (e: any) {
-    logger.log(`Warning: failed to set custom fields: ${e.message}`);
-    return { error: e.message };
-  }
+  });
 }
 
 async function moveGdriveFile(
@@ -1074,83 +1170,88 @@ async function moveGdriveFile(
   targetFolder: string,
   logger: WorkerLogger,
 ): Promise<void> {
-  try {
-    // Resolve target folder ID
-    const searchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
-      query: `name = '${targetFolder}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-      user_google_email: GOOGLE_EMAIL,
-    });
-    const searchText = extractText(searchResult);
-    if (!searchText) {
-      logger.log(`Warning: target folder "${targetFolder}" not found, skipping move`);
-      return;
-    }
-
-    // Response is text format: parse ID from "ID: xxx"
-    let targetFolderId: string | undefined;
+  return withSpan(tracer, "invoice-worker.move_file", {
+    "gdrive.file_id": fileId,
+    "gdrive.target_folder": targetFolder,
+  }, async (_span) => {
     try {
-      const parsed = JSON.parse(searchText);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        targetFolderId = parsed[0].id ?? parsed[0].fileId;
-      }
-    } catch {
-      // Text format: extract ID
-      const idMatch = searchText.match(/ID:\s*([^,\s)]+)/);
-      if (idMatch) targetFolderId = idMatch[1].trim();
-    }
-
-    // Resolve watch folder ID (needed as parent for folder creation + remove_parents for move)
-    const watchFolderName = (process.env.GDRIVE_WATCH_FOLDER ?? "Techlab/Invoice scans").split("/").pop()!;
-    const watchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
-      query: `name = '${watchFolderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-      user_google_email: GOOGLE_EMAIL,
-    });
-    const watchText = extractText(watchResult);
-    let watchFolderId: string | undefined;
-    if (watchText) {
-      try {
-        const parsed = JSON.parse(watchText);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          watchFolderId = parsed[0].id ?? parsed[0].fileId;
-        }
-      } catch {
-        const idMatch = watchText.match(/ID:\s*([^,\s)]+)/);
-        if (idMatch) watchFolderId = idMatch[1].trim();
-      }
-    }
-
-    // Create target folder if it doesn't exist
-    if (!targetFolderId && watchFolderId) {
-      logger.log(`Creating folder "${targetFolder}" in watch folder`);
-      const createResult = await callMcpTool(GMAIL_MCP_URL, "create_drive_folder", {
-        name: targetFolder,
-        parent_id: watchFolderId,
+      // Resolve target folder ID
+      const searchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
+        query: `name = '${targetFolder}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         user_google_email: GOOGLE_EMAIL,
       });
-      const createText = extractText(createResult);
+      const searchText = extractText(searchResult);
+      if (!searchText) {
+        logger.log(`Warning: target folder "${targetFolder}" not found, skipping move`);
+        return;
+      }
+
+      // Response is text format: parse ID from "ID: xxx"
+      let targetFolderId: string | undefined;
       try {
-        const parsed = JSON.parse(createText);
-        targetFolderId = parsed.id ?? parsed.fileId;
+        const parsed = JSON.parse(searchText);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          targetFolderId = parsed[0].id ?? parsed[0].fileId;
+        }
       } catch {
-        const idMatch = createText.match(/ID:\s*([^,\s)]+)/);
+        // Text format: extract ID
+        const idMatch = searchText.match(/ID:\s*([^,\s)]+)/);
         if (idMatch) targetFolderId = idMatch[1].trim();
       }
-    }
 
-    if (!targetFolderId) {
-      logger.log(`Warning: could not find or create folder "${targetFolder}", skipping move`);
-      return;
-    }
+      // Resolve watch folder ID (needed as parent for folder creation + remove_parents for move)
+      const watchFolderName = (process.env.GDRIVE_WATCH_FOLDER ?? "Techlab/Invoice scans").split("/").pop()!;
+      const watchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
+        query: `name = '${watchFolderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        user_google_email: GOOGLE_EMAIL,
+      });
+      const watchText = extractText(watchResult);
+      let watchFolderId: string | undefined;
+      if (watchText) {
+        try {
+          const parsed = JSON.parse(watchText);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            watchFolderId = parsed[0].id ?? parsed[0].fileId;
+          }
+        } catch {
+          const idMatch = watchText.match(/ID:\s*([^,\s)]+)/);
+          if (idMatch) watchFolderId = idMatch[1].trim();
+        }
+      }
 
-    await callMcpTool(GMAIL_MCP_URL, "update_drive_file", {
-      file_id: fileId,
-      add_parents: targetFolderId,
-      remove_parents: watchFolderId ?? undefined,
-      user_google_email: GOOGLE_EMAIL,
-    });
-    logger.log(`Moved file ${fileId} to ${targetFolder}/`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.log(`Warning: failed to move GDrive file ${fileId} to ${targetFolder}/: ${message}`);
-  }
+      // Create target folder if it doesn't exist
+      if (!targetFolderId && watchFolderId) {
+        logger.log(`Creating folder "${targetFolder}" in watch folder`);
+        const createResult = await callMcpTool(GMAIL_MCP_URL, "create_drive_folder", {
+          name: targetFolder,
+          parent_id: watchFolderId,
+          user_google_email: GOOGLE_EMAIL,
+        });
+        const createText = extractText(createResult);
+        try {
+          const parsed = JSON.parse(createText);
+          targetFolderId = parsed.id ?? parsed.fileId;
+        } catch {
+          const idMatch = createText.match(/ID:\s*([^,\s)]+)/);
+          if (idMatch) targetFolderId = idMatch[1].trim();
+        }
+      }
+
+      if (!targetFolderId) {
+        logger.log(`Warning: could not find or create folder "${targetFolder}", skipping move`);
+        return;
+      }
+
+      await callMcpTool(GMAIL_MCP_URL, "update_drive_file", {
+        file_id: fileId,
+        add_parents: targetFolderId,
+        remove_parents: watchFolderId ?? undefined,
+        user_google_email: GOOGLE_EMAIL,
+      });
+      logger.log(`Moved file ${fileId} to ${targetFolder}/`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.log(`Warning: failed to move GDrive file ${fileId} to ${targetFolder}/: ${message}`);
+    }
+  });
 }

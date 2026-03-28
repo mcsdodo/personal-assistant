@@ -50,6 +50,7 @@ services:
     environment:
       - PROMETHEUS_URL=http://prometheus:9090/api/v1/write
       - LOKI_URL=http://loki:3100/loki/api/v1/push
+      - TEMPO_URL=http://tempo:3200
     command: >
       run
       --server.http.listen-addr=0.0.0.0:12345
@@ -83,6 +84,17 @@ services:
       - ./local/observability/loki-config.yml:/etc/loki/loki-config.yaml:ro
       - loki-data:/loki
 
+  tempo:
+    image: grafana/tempo:latest
+    container_name: personal-assistant-tempo
+    restart: unless-stopped
+    ports:
+      - "3200:3200"      # Tempo query API
+    command: -config.file=/etc/tempo/tempo.yml
+    volumes:
+      - ./local/observability/tempo-config.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+
   grafana:
     image: grafana/grafana:latest
     container_name: personal-assistant-grafana
@@ -100,3 +112,4 @@ services:
 volumes:
   prometheus-data:
   loki-data:
+  tempo-data:

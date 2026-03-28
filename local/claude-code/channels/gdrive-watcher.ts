@@ -27,6 +27,8 @@ import {
   getFileStats,
 } from "./gdrive-db";
 
+import { initTracing, getTracer, withSpan, createLogger } from "./tracing";
+
 // ---------------------------------------------------------------------------
 // Config (env vars)
 // ---------------------------------------------------------------------------
@@ -58,12 +60,17 @@ const GOOGLE_EMAIL =
   process.env.GMAIL_EMAIL ?? "";
 
 // ---------------------------------------------------------------------------
+// Tracing
+// ---------------------------------------------------------------------------
+
+initTracing("gdrive-watcher");
+const tracer = getTracer("gdrive-watcher");
+
+// ---------------------------------------------------------------------------
 // Logging — all to stderr (stdout reserved for MCP stdio transport)
 // ---------------------------------------------------------------------------
 
-function log(msg: string): void {
-  console.error(`[gdrive-watcher] ${msg}`);
-}
+const log = createLogger("gdrive-watcher");
 
 // ---------------------------------------------------------------------------
 // Metrics
@@ -361,67 +368,72 @@ async function pollGdrive(): Promise<DriveFile[]> {
 // ---------------------------------------------------------------------------
 
 async function pollCycle(db: Database, channel: Server): Promise<void> {
-  const files = await pollGdrive();
+  return withSpan(tracer, "gdrive-watcher.poll", {}, async (span) => {
+    const files = await pollGdrive();
 
-  // Any file in the watch folder that isn't tracked yet should be processed.
-  // Unlike email-watcher, there's no "seeding" — files stay in this folder
-  // precisely because they need processing. They move to Processed/ after upload.
-  const newFiles = files.filter((f) => !fileExists(db, f.id));
+    // Any file in the watch folder that isn't tracked yet should be processed.
+    // Unlike email-watcher, there's no "seeding" — files stay in this folder
+    // precisely because they need processing. They move to Processed/ after upload.
+    const newFiles = files.filter((f) => !fileExists(db, f.id));
 
-  // Poll completed successfully
-  lastSuccessfulPollAt = Date.now();
+    // Poll completed successfully
+    lastSuccessfulPollAt = Date.now();
 
-  if (newFiles.length === 0) return;
+    span.setAttribute("gdrive.files_found", files.length);
+    span.setAttribute("gdrive.new_count", newFiles.length);
 
-  // Cap to avoid flooding
-  const capped = newFiles.slice(0, MAX_NEW_PER_CYCLE);
-  if (newFiles.length > MAX_NEW_PER_CYCLE) {
-    log(`Capped new files from ${newFiles.length} to ${MAX_NEW_PER_CYCLE}`);
-  }
+    if (newFiles.length === 0) return;
 
-  for (const file of capped) {
-    // Insert as 'new'
-    insertFile(db, {
-      id: file.id,
-      filename: file.name,
-      mime_type: file.mimeType,
-      created_at: file.createdTime,
-      status: "new",
-    });
+    // Cap to avoid flooding
+    const capped = newFiles.slice(0, MAX_NEW_PER_CYCLE);
+    if (newFiles.length > MAX_NEW_PER_CYCLE) {
+      log(`Capped new files from ${newFiles.length} to ${MAX_NEW_PER_CYCLE}`);
+    }
 
-    // Derive month_tag from file creation date
-    const scanDate = new Date(file.createdTime);
-    const monthTag = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, "0")}`;
+    for (const file of capped) {
+      // Insert as 'new'
+      insertFile(db, {
+        id: file.id,
+        filename: file.name,
+        mime_type: file.mimeType,
+        created_at: file.createdTime,
+        status: "new",
+      });
 
-    // Push channel notification
-    const contentLines = [
-      "New scanned document detected in Google Drive:",
-      `Name: ${file.name}`,
-      `MIME type: ${file.mimeType}`,
-      `Scanned: ${file.createdTime}`,
-      `Month tag: ${monthTag}`,
-      `File ID: ${file.id}`,
-      `Folder: ${WATCH_FOLDER}`,
-    ];
+      // Derive month_tag from file creation date
+      const scanDate = new Date(file.createdTime);
+      const monthTag = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, "0")}`;
 
-    await channel.notification({
-      method: "notifications/claude/channel",
-      params: {
-        content: contentLines.join("\n"),
-        meta: {
-          source: "gdrive",
-          file_id: file.id,
-          name: file.name,
-          mime_type: file.mimeType,
-          created_time: file.createdTime,
-          month_tag: monthTag,
-          timestamp: new Date().toISOString(),
+      // Push channel notification
+      const contentLines = [
+        "New scanned document detected in Google Drive:",
+        `Name: ${file.name}`,
+        `MIME type: ${file.mimeType}`,
+        `Scanned: ${file.createdTime}`,
+        `Month tag: ${monthTag}`,
+        `File ID: ${file.id}`,
+        `Folder: ${WATCH_FOLDER}`,
+      ];
+
+      await channel.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: contentLines.join("\n"),
+          meta: {
+            source: "gdrive",
+            file_id: file.id,
+            name: file.name,
+            mime_type: file.mimeType,
+            created_time: file.createdTime,
+            month_tag: monthTag,
+            timestamp: new Date().toISOString(),
+          },
         },
-      },
-    });
-  }
+      });
+    }
 
-  log(`Pushed ${capped.length} new file(s)`);
+    log(`Pushed ${capped.length} new file(s)`);
+  });
 }
 
 // ---------------------------------------------------------------------------
