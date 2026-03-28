@@ -2,7 +2,7 @@
 
 Documentation index for all implemented functionality. Each implemented use case links to its detailed doc.
 
-Source of truth: [`_tasks/10-personal-assistant/USE-CASES.md`](../../../../_tasks/10-personal-assistant/USE-CASES.md)
+This file is the source of truth for all implemented functionality.
 
 ## UC-1: Invoice Processing (email → Paperless)
 
