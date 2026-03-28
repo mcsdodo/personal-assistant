@@ -1030,7 +1030,7 @@ async function moveGdriveFile(
   logger: WorkerLogger,
 ): Promise<void> {
   try {
-    // Search for the target folder
+    // Resolve target folder ID
     const searchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
       query: `name = '${targetFolder}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       user_google_email: GOOGLE_EMAIL,
@@ -1041,31 +1041,48 @@ async function moveGdriveFile(
       return;
     }
 
-    let folders: any[];
+    // Response is text format: parse ID from "ID: xxx"
+    let targetFolderId: string | undefined;
     try {
-      folders = JSON.parse(searchText);
+      const parsed = JSON.parse(searchText);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        targetFolderId = parsed[0].id ?? parsed[0].fileId;
+      }
     } catch {
-      logger.log(`Warning: could not parse folder search result, skipping move`);
-      return;
+      // Text format: extract ID
+      const idMatch = searchText.match(/ID:\s*([^,\s)]+)/);
+      if (idMatch) targetFolderId = idMatch[1].trim();
     }
 
-    if (!Array.isArray(folders) || folders.length === 0) {
-      logger.log(`Warning: target folder "${targetFolder}" not found, skipping move`);
-      return;
-    }
-
-    const targetFolderId = folders[0].id ?? folders[0].fileId;
     if (!targetFolderId) {
-      logger.log(`Warning: target folder "${targetFolder}" has no ID, skipping move`);
+      logger.log(`Warning: target folder "${targetFolder}" not found or no ID, skipping move`);
       return;
     }
 
-    const watchFolder = process.env.GDRIVE_WATCH_FOLDER ?? "Techlab/Invoice scans";
+    // Resolve watch folder ID (remove_parents needs an ID, not a name)
+    const watchFolderName = (process.env.GDRIVE_WATCH_FOLDER ?? "Techlab/Invoice scans").split("/").pop()!;
+    const watchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
+      query: `name = '${watchFolderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      user_google_email: GOOGLE_EMAIL,
+    });
+    const watchText = extractText(watchResult);
+    let watchFolderId: string | undefined;
+    if (watchText) {
+      try {
+        const parsed = JSON.parse(watchText);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          watchFolderId = parsed[0].id ?? parsed[0].fileId;
+        }
+      } catch {
+        const idMatch = watchText.match(/ID:\s*([^,\s)]+)/);
+        if (idMatch) watchFolderId = idMatch[1].trim();
+      }
+    }
 
     await callMcpTool(GMAIL_MCP_URL, "update_drive_file", {
       file_id: fileId,
       add_parents: targetFolderId,
-      remove_parents: watchFolder,
+      remove_parents: watchFolderId ?? undefined,
       user_google_email: GOOGLE_EMAIL,
     });
     logger.log(`Moved file ${fileId} to ${targetFolder}/`);
