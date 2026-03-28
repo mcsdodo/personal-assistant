@@ -805,9 +805,20 @@ export async function executeScanIntake(
       });
     }
 
-    // Step 4: Resolve tags (merge suggested_tags + month_tag)
+    // Step 4: Resolve tags — derived deterministically from classification
     addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-    const allTagNames = [...(classification.suggested_tags ?? [])];
+    const allTagNames: string[] = [];
+    // doc_type → tag mapping (business logic, not classifier's job)
+    const docType = classification.doc_type;
+    if (docType === "receipt" || docType === "invoice" || docType === "credit_note") {
+      allTagNames.push("invoicing");
+    } else if (docType === "document") {
+      allTagNames.push("documents");
+    }
+    allTagNames.push("techlab"); // all scans are business expenses
+    if (classification.is_fuel) {
+      allTagNames.push("fuel");
+    }
     if (input.month_tag && !allTagNames.includes(input.month_tag)) {
       allTagNames.push(input.month_tag);
     }
@@ -838,7 +849,19 @@ export async function executeScanIntake(
       ...uploadResult,
     });
 
-    // Step 7: Move GDrive file to Processed/
+    // Step 7: Set custom fields (total_amount, order_id) if available
+    if (classification.total_amount != null || classification.order_id) {
+      addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
+      await setDocumentCustomFields(
+        title,
+        classification.total_amount,
+        classification.order_id,
+        logger,
+      );
+      addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields" });
+    }
+
+    // Step 8: Move GDrive file to Processed/
     await moveGdriveFile(file_id, "Processed", logger);
 
     const result: InvoiceIntakeResult = {
@@ -938,6 +961,67 @@ async function downloadFromGdrive(
     content_type: contentType,
     size: fileBuffer.length,
   };
+}
+
+async function setDocumentCustomFields(
+  title: string,
+  totalAmount: number | null | undefined,
+  orderId: string | null | undefined,
+  logger: WorkerLogger,
+): Promise<void> {
+  const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
+  const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
+
+  try {
+    // Wait briefly for Paperless to consume the uploaded document
+    const { execSync } = await import("child_process");
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+
+    // Search for the document by title
+    const searchUrl = `${paperlessUrl}/api/documents/?query=${encodeURIComponent(title)}&ordering=-added&page_size=1`;
+    const searchRes = await fetch(searchUrl, {
+      headers: { "Authorization": `Token ${paperlessToken}` },
+    });
+    if (!searchRes.ok) {
+      logger.log(`Warning: could not search for document "${title}" to set custom fields`);
+      return;
+    }
+    const searchData = await searchRes.json() as { results?: Array<{ id: number }> };
+    const docId = searchData.results?.[0]?.id;
+    if (!docId) {
+      logger.log(`Warning: document "${title}" not found in Paperless after upload`);
+      return;
+    }
+
+    // Build custom_fields array for PATCH
+    const customFields: Array<{ field: number; value: unknown }> = [];
+    if (totalAmount != null) {
+      customFields.push({ field: 1, value: totalAmount }); // field 1 = total_amount
+    }
+    if (orderId) {
+      customFields.push({ field: 3, value: orderId }); // field 3 = order_id
+    }
+
+    if (customFields.length === 0) return;
+
+    const patchRes = await fetch(`${paperlessUrl}/api/documents/${docId}/`, {
+      method: "PATCH",
+      headers: {
+        "Authorization": `Token ${paperlessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ custom_fields: customFields }),
+    });
+
+    if (!patchRes.ok) {
+      const errText = await patchRes.text();
+      logger.log(`Warning: failed to set custom fields on doc #${docId}: ${errText.slice(0, 200)}`);
+    } else {
+      logger.log(`Set custom fields on doc #${docId}: ${JSON.stringify(customFields)}`);
+    }
+  } catch (e: any) {
+    logger.log(`Warning: failed to set custom fields for "${title}": ${e.message}`);
+  }
 }
 
 async function moveGdriveFile(
