@@ -63,15 +63,16 @@ export async function callMcpTool(
       }),
     });
 
-    span.setAttribute("http.status_code", response.status);
-
     if (!response.ok) {
       // If we get a 400/405, the server may need initialization first
       if (response.status === 400 || response.status === 405) {
         return callMcpToolWithSession(serverUrl, toolName, args);
       }
+      span.setAttribute("http.status_code", response.status);
       throw new Error(`MCP call failed: ${response.status} ${response.statusText}`);
     }
+
+    span.setAttribute("http.status_code", response.status);
 
     const contentType = response.headers.get("content-type") ?? "";
 

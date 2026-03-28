@@ -20,13 +20,12 @@ import {
   openWorkflowDb,
 } from "./workflow-db";
 
-import { initTracing, getTracer, withSpan, createLogger } from "./tracing";
+import { initTracing, createLogger } from "./tracing";
 
 const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
 const WORKFLOW_POLL_MS = parseInt(process.env.WORKFLOW_POLL_MS ?? "2000", 10);
 
 initTracing("workflow");
-const tracer = getTracer("workflow");
 const log = createLogger("workflow");
 
 function text(value: unknown): { type: "text"; text: string } {
@@ -44,9 +43,8 @@ async function workerTick(): Promise<void> {
   if (workerBusy) return;
   workerBusy = true;
   try {
-    await withSpan(tracer, "workflow.tick", {}, async () => {
-      await executeNextJob(db, { log }, fieldRegistry);
-    });
+    // Only create a span when there's actual work (avoids ~43k idle spans/day)
+    await executeNextJob(db, { log }, fieldRegistry);
   } finally {
     workerBusy = false;
   }

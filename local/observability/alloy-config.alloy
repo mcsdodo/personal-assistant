@@ -96,7 +96,8 @@ otelcol.exporter.otlp "tempo" {
   client {
     endpoint = "tempo:4317"
     tls {
-      insecure = true
+      insecure             = true
+      insecure_skip_verify = true
     }
   }
 }

@@ -50,12 +50,16 @@ export function initTracing(component: string): void {
 
   const exporter = new OTLPTraceExporter({ url: tracesUrl });
 
-  provider = new BasicTracerProvider({ resource });
-  provider.addSpanProcessor(new BatchSpanProcessor(exporter, {
-    maxQueueSize: 100,
-    maxExportBatchSize: 50,
-    scheduledDelayMillis: 5000,
-  }));
+  provider = new BasicTracerProvider({
+    resource,
+    spanProcessors: [
+      new BatchSpanProcessor(exporter, {
+        maxQueueSize: 100,
+        maxExportBatchSize: 50,
+        scheduledDelayMillis: 5000,
+      }),
+    ],
+  });
   provider.register();
 
   // Graceful shutdown
