@@ -13,6 +13,7 @@ import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trac
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { Resource } from "@opentelemetry/resources";
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 
 let initialized = false;
 let provider: BasicTracerProvider | null = null;
@@ -60,7 +61,9 @@ export function initTracing(component: string): void {
       }),
     ],
   });
-  provider.register();
+  provider.register({
+    contextManager: new AsyncLocalStorageContextManager(),
+  });
 
   // Graceful shutdown
   const shutdown = async () => {

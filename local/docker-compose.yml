@@ -15,9 +15,11 @@ services:
       - ${DOWNLOADS_DIR:-./local/data/downloads}:/workspace/downloads
       - ${EMAIL_WATCHER_DATA_DIR:-./local/data/email-watcher}:/data/email-watcher
       - ${GDRIVE_WATCHER_DATA_DIR:-./local/data/gdrive-watcher}:/data/gdrive-watcher
-    # Local dev: OTEL to local Alloy sidecar
+    # Local dev: OTEL to local Alloy sidecar, faster polling for testing
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4317
+      - POLL_INTERVAL_MS=10000
+      - GDRIVE_POLL_INTERVAL_MS=10000
 
   checker-mcp:
     build:
