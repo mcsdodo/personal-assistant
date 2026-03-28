@@ -53,7 +53,7 @@ Based on the classification `doc_type` and document content, determine the type:
 | `receipt`, `parking`, `toll`, `other` | null | `documents` + month + `fuel` if applicable | "{vendor} - {description}" |
 | `travel_order`, `worklog`, `attendance` | null | `documents` + month | "{company} - {doc description}" |
 
-Always add `techlab` tag if the document is a Techlab s.r.o. business expense.
+Always add `techlab` tag if the document is related to Techlab s.r.o. — this includes invoices billed to/from Techlab, bank statements for Techlab accounts, and any document where Techlab s.r.o. appears as account holder, buyer, or seller.
 
 ### 2. Check for duplicates (invoices only)
 
