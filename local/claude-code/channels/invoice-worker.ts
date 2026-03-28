@@ -993,6 +993,9 @@ async function setDocumentCustomFields(
         if (!docId && task.related_document) {
           docId = parseInt(task.related_document, 10) || undefined;
         }
+        // Wait for Paperless to finish all post-consumption processing (OCR, classification)
+        // before PATCHing custom fields — otherwise Paperless may overwrite them
+        await new Promise((resolve) => setTimeout(resolve, 10000));
         break;
       } else if (task.status === "FAILURE") {
         logger.log(`Warning: Paperless consumption failed: ${task.result?.slice(0, 200)}`);
@@ -1029,7 +1032,16 @@ async function setDocumentCustomFields(
       const errText = await patchRes.text();
       logger.log(`Warning: failed to set custom fields on doc #${docId}: ${errText.slice(0, 200)}`);
     } else {
-      logger.log(`Set custom fields on doc #${docId}: ${JSON.stringify(customFields)}`);
+      // Verify the PATCH actually stuck
+      const verifyRes = await fetch(`${paperlessUrl}/api/documents/${docId}/`, {
+        headers: { "Authorization": `Token ${paperlessToken}` },
+      });
+      if (verifyRes.ok) {
+        const verifyDoc = await verifyRes.json() as { custom_fields?: Array<{ field: number; value: unknown }> };
+        logger.log(`Set custom fields on doc #${docId}: ${JSON.stringify(customFields)} — verified: ${JSON.stringify(verifyDoc.custom_fields)}`);
+      } else {
+        logger.log(`Set custom fields on doc #${docId}: ${JSON.stringify(customFields)} — could not verify`);
+      }
     }
   } catch (e: any) {
     logger.log(`Warning: failed to set custom fields for "${title}": ${e.message}`);
