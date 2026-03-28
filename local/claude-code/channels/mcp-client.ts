@@ -10,6 +10,11 @@ import type { Span, Tracer } from "./tracing";
 
 const tracer = getTracer("mcp-client");
 
+/** Extract service name from MCP URL: "http://gmail-mcp:8000/mcp" → "gmail-mcp" */
+function serverName(url: string): string {
+  try { return new URL(url).hostname; } catch { return url; }
+}
+
 export interface McpToolResult {
   content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
   isError?: boolean;
@@ -39,8 +44,9 @@ export async function callMcpTool(
   toolName: string,
   args: Record<string, unknown> = {},
 ): Promise<McpToolResult> {
-  return withSpan(tracer, "mcp-client.call", {
-    "mcp.server_url": serverUrl,
+  const server = serverName(serverUrl);
+  return withSpan(tracer, `mcp ${server} ${toolName}`, {
+    "mcp.server": server,
     "mcp.tool": toolName,
   }, async (span) => {
     const id = ++requestId;
@@ -99,8 +105,9 @@ async function callMcpToolWithSession(
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<McpToolResult> {
-  return withSpan(tracer, "mcp-client.call_with_session", {
-    "mcp.server_url": serverUrl,
+  const server = serverName(serverUrl);
+  return withSpan(tracer, `mcp ${server} ${toolName} (session)`, {
+    "mcp.server": server,
     "mcp.tool": toolName,
   }, async (span) => {
     // Step 1: Initialize
