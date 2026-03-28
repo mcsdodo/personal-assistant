@@ -3,7 +3,7 @@ FROM node:20-slim
 ARG CLAUDE_CODE_VERSION=latest
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  git curl unzip jq procps ca-certificates tmux \
+  git curl unzip jq procps ca-certificates tmux qpdf \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install Bun (required for channel plugins) as node user
