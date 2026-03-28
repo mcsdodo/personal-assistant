@@ -247,6 +247,19 @@ export async function executeInvoiceIntake(
       ...uploadResult,
     });
 
+    // Step 7: Set custom fields (total_amount, order_id) if available
+    if (classification.total_amount != null || classification.order_id) {
+      addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
+      const cfResult = await setDocumentCustomFields(
+        uploadResult.task_uuid,
+        classification.total_amount,
+        classification.order_id,
+        logger,
+        registry,
+      );
+      addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
+    }
+
     const result: InvoiceIntakeResult = {
       outcome: "uploaded",
       title,

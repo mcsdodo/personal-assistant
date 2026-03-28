@@ -82,6 +82,10 @@ function rpcResponse(result: unknown) {
   };
 }
 
+// ── Timer mock (instant setTimeout for setDocumentCustomFields polling) ──
+
+const originalSetTimeout = globalThis.setTimeout;
+
 // ── Fetch mock infrastructure ──────────────────────────────────────────
 
 type FetchHandler = (url: string, init: RequestInit) => Response | Promise<Response>;
@@ -101,6 +105,18 @@ function mockFetch(...handlers: FetchHandler[]) {
   }) as typeof fetch;
 }
 
+/** Mock handlers for setDocumentCustomFields: task poll → PATCH → verify GET */
+function customFieldsMockHandlers(docId = 999): FetchHandler[] {
+  return [
+    // task poll → SUCCESS
+    () => jsonResponse([{ status: "SUCCESS", result: `Success. New document id ${docId} created` }]),
+    // PATCH custom fields → OK
+    () => jsonResponse({ id: docId, custom_fields: [] }),
+    // verify GET → OK
+    () => jsonResponse({ id: docId, custom_fields: [{ field: 1, value: 59.99 }] }),
+  ];
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -114,6 +130,12 @@ beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "invoice-worker-test-"));
   db = openWorkflowDb(join(tmpDir, "workflow.db"));
   fetchHandlers = [];
+
+  // Make setTimeout resolve instantly so setDocumentCustomFields polling doesn't timeout
+  globalThis.setTimeout = ((fn: Function, _ms?: number, ...args: unknown[]) => {
+    fn(...args);
+    return 0 as any;
+  }) as typeof setTimeout;
 
   // Create a pre-populated registry for tests
   const origFetch = globalThis.fetch;
@@ -135,6 +157,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  globalThis.setTimeout = originalSetTimeout;
   db.close();
   try {
     rmSync(tmpDir, { recursive: true, force: true });
@@ -255,6 +278,8 @@ describe("invoice-worker approval gates", () => {
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       // post_document
       () => jsonResponse(rpcResponse({ id: 42 })),
+      // setDocumentCustomFields: task poll, PATCH, verify
+      ...customFieldsMockHandlers(),
     );
 
     await executeInvoiceIntake(db, approvedJob, logger, registry);
@@ -298,6 +323,8 @@ describe("invoice-worker attachment download + upload", () => {
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       // 7. post_document
       () => jsonResponse(rpcResponse({ id: 42 })),
+      // 8-10. setDocumentCustomFields: task poll, PATCH, verify
+      ...customFieldsMockHandlers(),
     );
 
     await executeInvoiceIntake(db, job, logger, registry);
@@ -307,7 +334,9 @@ describe("invoice-worker attachment download + upload", () => {
     const output = JSON.parse(updated.output_json!);
     expect(output.outcome).toBe("uploaded");
     expect(output.title).toBe("Alza - FA2026030001");
-    expect(output.paperless_document_id).toBe(42);
+    // paperless_document_id is undefined: uploadToPaperless returns a task_uuid,
+    // not a document ID. The doc ID is resolved later by setDocumentCustomFields.
+    expect(output.paperless_document_id).toBeUndefined();
     expect(output.correspondent).toBe("Alza");
     expect(output.tags).toEqual(["invoicing", "2026-03"]);
 
@@ -427,6 +456,8 @@ describe("invoice-worker attachment download + upload", () => {
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       // 8. post_document
       () => jsonResponse(rpcResponse({ id: 55 })),
+      // 9-11. setDocumentCustomFields: task poll, PATCH, verify
+      ...customFieldsMockHandlers(),
     );
 
     await executeInvoiceIntake(db, job, logger, registry);
@@ -467,6 +498,8 @@ describe("invoice-worker attachment download + upload", () => {
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       // 6. post_document
       () => jsonResponse(rpcResponse({ id: 60 })),
+      // 7-9. setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
+      ...customFieldsMockHandlers(),
     );
 
     await executeInvoiceIntake(db, job, logger, registry);
@@ -517,6 +550,8 @@ describe("invoice-worker link download", () => {
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       // 6. post_document
       () => jsonResponse(rpcResponse({ id: 70 })),
+      // 7-9. setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
+      ...customFieldsMockHandlers(),
     );
 
     await executeInvoiceIntake(db, job, logger, registry);
@@ -644,6 +679,8 @@ describe("invoice-worker title building", () => {
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }, { id: 7, name: "2026-03" }])),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       () => jsonResponse(rpcResponse({ id: 1 })),
+      // setDocumentCustomFields: task poll, PATCH, verify
+      ...customFieldsMockHandlers(),
     );
 
     await executeInvoiceIntake(db, job, logger, registry);
@@ -667,6 +704,8 @@ describe("invoice-worker title building", () => {
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }, { id: 7, name: "2026-03" }])),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       () => jsonResponse(rpcResponse({ id: 1 })),
+      // setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
+      ...customFieldsMockHandlers(),
     );
 
     await executeInvoiceIntake(db, job, logger, registry);
