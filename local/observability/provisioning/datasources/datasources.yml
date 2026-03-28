@@ -1,7 +1,15 @@
 apiVersion: 1
+deleteDatasources:
+  - name: Loki
+    orgId: 1
+  - name: Prometheus
+    orgId: 1
+  - name: Tempo
+    orgId: 1
 datasources:
 - name: Loki
   type: loki
+  uid: pa-loki
   access: proxy
   orgId: 1
   url: http://loki:3100
@@ -9,8 +17,16 @@ datasources:
   isDefault: true
   version: 1
   editable: false
+  jsonData:
+    derivedFields:
+      - name: trace_id
+        matcherRegex: "trace_id=(\\w+)"
+        url: "$${__value.raw}"
+        datasourceUid: pa-tempo
+        matcherType: regex
 - name: Prometheus
   type: prometheus
+  uid: pa-prometheus
   access: proxy
   orgId: 1
   url: http://prometheus:9090
@@ -22,6 +38,7 @@ datasources:
     timeInterval: 10s
 - name: Tempo
   type: tempo
+  uid: pa-tempo
   access: proxy
   orgId: 1
   url: http://tempo:3200
@@ -31,7 +48,14 @@ datasources:
   editable: false
   jsonData:
     tracesToLogsV2:
-      datasourceUid: ''
+      datasourceUid: pa-loki
       filterByTraceID: true
+      filterBySpanID: true
+    tracesToMetrics:
+      datasourceUid: pa-prometheus
+    serviceMap:
+      datasourceUid: pa-prometheus
     nodeGraph:
       enabled: true
+    lokiSearch:
+      datasourceUid: pa-loki
