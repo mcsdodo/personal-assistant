@@ -20,6 +20,7 @@ GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 SCOPES = ["Mail.Read"]
 
 # Invoice link extraction rules: (sender_pattern, link_text_pattern, subject_pattern_or_None)
+# sender_pattern: matches sender OR subject (so forwarded/test emails work too)
 INVOICE_RULES = [
     (r"alza\.sk", r"Stiahnuť faktúru", None),
     (r"alza\.sk", r"Stiahnuť doklad", r"[Vv]rátili|[Vv]raciame"),
@@ -307,7 +308,8 @@ def _extract_links(html: str, sender: str, subject: str) -> list[dict]:
             text = urlparse(href).path.split("/")[-1] or href[:80]
 
         for sender_pat, text_pat, subject_pat in INVOICE_RULES:
-            if not re.search(sender_pat, sender, re.IGNORECASE):
+            # Match sender_pattern against sender OR subject (so forwarded/test emails work)
+            if not (re.search(sender_pat, sender, re.IGNORECASE) or re.search(sender_pat, subject or "", re.IGNORECASE)):
                 continue
             if not re.search(text_pat, text, re.IGNORECASE):
                 continue
