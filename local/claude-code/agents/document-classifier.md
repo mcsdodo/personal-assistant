@@ -72,7 +72,8 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 - `false` otherwise
 
 ### order_id
-- Extract invoice number (číslo faktúry), receipt number (číslo dokladu), or order number
+- Extract THIS document's own number — the number in the header/title, not a referenced document number
+- For credit notes: use the credit note number (e.g. "Opravný daňový doklad - 6401551319"), NOT the original invoice number it references
 - For POS receipts: use "Porad. číslo dokladu" or "číslo dokladu v eKasa" or document ID
 - Examples: "FV2026001234", "OBJ-583481365", "1475807", "0003"
 - Return `null` for bank statements and non-monetary documents (worklogs, travel orders)
