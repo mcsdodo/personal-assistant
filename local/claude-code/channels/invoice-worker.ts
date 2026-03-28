@@ -613,27 +613,21 @@ async function uploadToPaperless(
   logger.log(`Uploading to Paperless: "${params.title}"`);
 
   const toolArgs: Record<string, unknown> = {
+    file: params.file.content_base64,
+    filename: params.file.filename,
     title: params.title,
-    content: params.file.content_base64,
-    correspondent_id: params.correspondentId,
+    correspondent: params.correspondentId,
     tags: params.tagIds,
   };
 
   if (params.documentTypeId) {
-    toolArgs.document_type_id = params.documentTypeId;
+    toolArgs.document_type = params.documentTypeId;
   }
 
-  // Build custom fields
-  const customFields: Record<string, unknown> = {};
-  if (params.totalAmount != null) {
-    customFields.total_amount = params.totalAmount;
-  }
-  if (params.orderId) {
-    customFields.order_id = params.orderId;
-  }
-  if (Object.keys(customFields).length > 0) {
-    toolArgs.custom_fields = customFields;
-  }
+  // Custom fields: post_document accepts an array of field IDs.
+  // Setting field values requires a separate update after upload.
+  // For now, skip custom_fields in the upload — Paperless-AI or
+  // manual editing can set total_amount/order_id after ingestion.
 
   const result = await callMcpTool(PAPERLESS_MCP_URL, "post_document", toolArgs);
   const resultText = extractText(result);
