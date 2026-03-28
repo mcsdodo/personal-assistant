@@ -10,6 +10,7 @@ import {
   type JobRow,
 } from "./workflow-db";
 import { executeInvoiceIntake, executeScanIntake } from "./invoice-worker";
+import type { PaperlessFieldRegistry } from "./paperless-fields";
 
 export interface WorkflowLogger {
   log(message: string): void;
@@ -55,6 +56,7 @@ function executeSyntheticJob(db: Database, job: JobRow, logger: WorkflowLogger):
 export async function executeNextJob(
   db: Database,
   logger: WorkflowLogger,
+  registry: PaperlessFieldRegistry,
 ): Promise<JobRow | null> {
   const job = claimNextQueuedJob(db);
   if (!job) return null;
@@ -67,10 +69,10 @@ export async function executeNextJob(
         executeSyntheticJob(db, job, logger);
         break;
       case "invoice_intake":
-        await executeInvoiceIntake(db, job, logger);
+        await executeInvoiceIntake(db, job, logger, registry);
         break;
       case "scan_intake":
-        await executeScanIntake(db, job, logger);
+        await executeScanIntake(db, job, logger, registry);
         break;
       default:
         failJob(db, job.id, {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 
 // Mock global fetch

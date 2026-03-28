@@ -20,6 +20,7 @@ import {
   type JobRow,
 } from "./workflow-db";
 import { callMcpTool, extractJson, extractText } from "./mcp-client";
+import type { PaperlessFieldRegistry } from "./paperless-fields";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -112,6 +113,7 @@ export async function executeInvoiceIntake(
   db: Database,
   job: JobRow,
   logger: WorkerLogger,
+  registry: PaperlessFieldRegistry,
 ): Promise<void> {
   const input = parseJobJson<InvoiceIntakeInput>(job.input_json);
   if (!input) {
@@ -710,6 +712,7 @@ export async function executeScanIntake(
   db: Database,
   job: JobRow,
   logger: WorkerLogger,
+  registry: PaperlessFieldRegistry,
 ): Promise<void> {
   const input = parseJobJson<ScanIntakeInput>(job.input_json);
   if (!input) {
@@ -852,6 +855,7 @@ export async function executeScanIntake(
         classification.total_amount,
         classification.order_id,
         logger,
+        registry,
       );
       addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
     }
@@ -970,6 +974,7 @@ async function setDocumentCustomFields(
   totalAmount: number | null | undefined,
   orderId: string | null | undefined,
   logger: WorkerLogger,
+  registry: PaperlessFieldRegistry,
 ): Promise<CustomFieldResult> {
   if (!taskUuid) {
     logger.log("Warning: no task UUID from upload, cannot set custom fields");
@@ -1018,10 +1023,10 @@ async function setDocumentCustomFields(
     // Build custom_fields array for PATCH
     const customFields: Array<{ field: number; value: unknown }> = [];
     if (totalAmount != null) {
-      customFields.push({ field: 1, value: totalAmount }); // field 1 = total_amount
+      customFields.push({ field: registry.getFieldId("total_amount"), value: totalAmount });
     }
     if (orderId) {
-      customFields.push({ field: 4, value: orderId }); // field 4 = order_id
+      customFields.push({ field: registry.getFieldId("order_id"), value: orderId });
     }
 
     if (customFields.length === 0) return { doc_id: docId, error: "no fields to set" };

@@ -12,6 +12,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { executeInvoiceIntake, type InvoiceIntakeInput } from "./invoice-worker";
+import { PaperlessFieldRegistry } from "./paperless-fields";
 import {
   createJob,
   getJob,
@@ -24,6 +25,7 @@ import {
 
 let tmpDir: string;
 let db: Database;
+let registry: PaperlessFieldRegistry;
 
 const logger = { log(_msg: string) {} };
 
@@ -108,10 +110,27 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 // ── Setup / Teardown ───────────────────────────────────────────────────
 
-beforeEach(() => {
+beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "invoice-worker-test-"));
   db = openWorkflowDb(join(tmpDir, "workflow.db"));
   fetchHandlers = [];
+
+  // Create a pre-populated registry for tests
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({
+      count: 2,
+      next: null,
+      results: [
+        { id: 1, name: "total_amount", data_type: "float" },
+        { id: 4, name: "order_id", data_type: "string" },
+      ],
+    }),
+  })) as any;
+  registry = new PaperlessFieldRegistry("https://test", "tok");
+  await registry.init();
+  globalThis.fetch = origFetch;
 });
 
 afterEach(() => {
@@ -134,7 +153,7 @@ describe("invoice-worker approval gates", () => {
     });
     const job = createRunningJob(input);
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("awaiting_approval");
@@ -151,7 +170,7 @@ describe("invoice-worker approval gates", () => {
     });
     const job = createRunningJob(input);
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     expect(getJob(db, job.id)!.state).toBe("awaiting_approval");
   });
@@ -165,7 +184,7 @@ describe("invoice-worker approval gates", () => {
     });
     const job = createRunningJob(input);
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     expect(getJob(db, job.id)!.state).toBe("awaiting_approval");
   });
@@ -179,7 +198,7 @@ describe("invoice-worker approval gates", () => {
     });
     const job = createRunningJob(input);
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     expect(getJob(db, job.id)!.state).toBe("awaiting_approval");
   });
@@ -193,7 +212,7 @@ describe("invoice-worker approval gates", () => {
     });
     const job = createRunningJob(input);
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     expect(getJob(db, job.id)!.state).toBe("awaiting_approval");
   });
@@ -238,7 +257,7 @@ describe("invoice-worker approval gates", () => {
       () => jsonResponse(rpcResponse({ id: 42 })),
     );
 
-    await executeInvoiceIntake(db, approvedJob, logger);
+    await executeInvoiceIntake(db, approvedJob, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -281,7 +300,7 @@ describe("invoice-worker attachment download + upload", () => {
       () => jsonResponse(rpcResponse({ id: 42 })),
     );
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -330,7 +349,7 @@ describe("invoice-worker attachment download + upload", () => {
         ),
     );
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -369,7 +388,7 @@ describe("invoice-worker attachment download + upload", () => {
         ),
     );
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("awaiting_approval");
@@ -410,7 +429,7 @@ describe("invoice-worker attachment download + upload", () => {
       () => jsonResponse(rpcResponse({ id: 55 })),
     );
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -450,7 +469,7 @@ describe("invoice-worker attachment download + upload", () => {
       () => jsonResponse(rpcResponse({ id: 60 })),
     );
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -500,7 +519,7 @@ describe("invoice-worker link download", () => {
       () => jsonResponse(rpcResponse({ id: 70 })),
     );
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -538,7 +557,7 @@ describe("invoice-worker link download", () => {
         ),
     );
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -556,7 +575,7 @@ describe("invoice-worker error handling", () => {
       () => jsonResponse(rpcResponse([])),
     );
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -572,7 +591,7 @@ describe("invoice-worker error handling", () => {
     const runningJob = getJob(db, job.id)!;
 
     // parseJobJson will throw on invalid JSON, which gets caught
-    await executeInvoiceIntake(db, runningJob, logger);
+    await executeInvoiceIntake(db, runningJob, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -587,7 +606,7 @@ describe("invoice-worker error handling", () => {
       () => jsonResponse({ error: "Internal server error" }, 500),
     );
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -604,7 +623,7 @@ describe("invoice-worker error handling", () => {
     });
     const job = createRunningJob(input);
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -627,7 +646,7 @@ describe("invoice-worker title building", () => {
       () => jsonResponse(rpcResponse({ id: 1 })),
     );
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.title).toBe("Alza - FA2026030001");
@@ -650,7 +669,7 @@ describe("invoice-worker title building", () => {
       () => jsonResponse(rpcResponse({ id: 1 })),
     );
 
-    await executeInvoiceIntake(db, job, logger);
+    await executeInvoiceIntake(db, job, logger, registry);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     // Subject has "Fwd:" stripped
