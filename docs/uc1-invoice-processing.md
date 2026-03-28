@@ -76,28 +76,39 @@ sequenceDiagram
     note over C,TG: Step 2 — Act on classification
 
     alt action = "download_and_upload"
-        C->>G: download PDF (attachment or link)
-        G-->>C: file on disk
+        note over C,G: Download PDF to disk
+        alt strategy = "attachment"
+            C->>G: download_attachment / download-helper.ts
+        else strategy = "known_link" / "direct_url"
+            C->>G: extract_invoice_links → curl -o
+        end
+        G-->>C: file on disk (file_path)
+        opt encrypted PDF
+            C->>C: qpdf --decrypt (BANK_PDF_PASSWORD)
+        end
+
+        note over C,DC: Classify document
         C->>DC: dispatch document-classifier (Haiku)
         DC-->>C: {vendor, total_amount, doc_type, ...}
-        C->>C: merge DC results over email-classifier
+        C->>C: merge: DC non-null values override email-classifier
+
+        note over C,WF: Create job (file_path + month_tag + merged classification)
         C->>WF: create_invoice_intake_job
         WF->>IW: execute job
         IW->>IW: read file from disk (file_path)
-        IW->>P: search (dedup check)
-        P-->>IW: no duplicate
-        IW->>P: post_document
-        P-->>IW: document ID
-        IW-->>WF: completed
+        IW->>P: dedup check (order_id + correspondent)
 
-        alt "Uploaded ..."
-            C->>TG: reply("Uploaded {vendor} invoice")
-        else "DUPLICATE: ..."
-            note over C: Skip silently (no notification)
-        else "DUPLICATE_LIKELY: ..."
-            C->>TG: reply("Ask user: proceed?")
-        else "FAILED: ..."
-            C->>TG: reply("{vendor} failed: {reason}")
+        alt exact duplicate (same amount)
+            IW-->>WF: completed (outcome: duplicate)
+            note over C: Skip silently
+        else duplicate_likely (amount mismatch)
+            IW-->>WF: awaiting_approval
+            C->>TG: reply("Possible duplicate, approve?")
+        else no duplicate
+            IW->>P: post_document + custom fields
+            IW->>IW: delete local file
+            IW-->>WF: completed (outcome: uploaded)
+            C->>TG: reply("Uploaded {vendor} — {amount} EUR")
         end
 
     else action = "notify_user"
