@@ -1020,8 +1020,9 @@ async function setDocumentCustomFields(
     if (totalAmount != null) {
       customFields.push({ field: 1, value: totalAmount }); // field 1 = total_amount
     }
-    // order_id: field does not exist in Paperless yet — skip for now
-    // Create the custom field in Paperless first if you need order_id tracking
+    if (orderId) {
+      customFields.push({ field: 4, value: orderId }); // field 4 = order_id
+    }
 
     if (customFields.length === 0) return { doc_id: docId, error: "no fields to set" };
 
