@@ -63,6 +63,8 @@ services:
       # Paperless direct API (for large file uploads bypassing MCP)
       - PAPERLESS_URL=${PAPERLESS_URL}
       - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}
+      # PDF decryption (bank account statements)
+      - BANK_PDF_PASSWORD=${BANK_PDF_PASSWORD:-}
       # gdrive-watcher channel
       - GDRIVE_POLL_INTERVAL_MS=${GDRIVE_POLL_INTERVAL_MS:-30000}
       - GDRIVE_WATCH_FOLDER=${GDRIVE_WATCH_FOLDER:-Techlab/Invoice scans}

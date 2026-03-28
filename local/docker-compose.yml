@@ -34,6 +34,8 @@ services:
     volumes:
       - ${GMAIL_CREDS_DIR:-./local/data/gmail}:/app/store_creds
       - ${GMAIL_CLIENT_SECRET:-./local/data/gmail/client_secret.json}:/app/client_secret.json:ro
+    environment:
+      - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8000/oauth2callback}
     entrypoint: ["uv", "run", "main.py"]
     command: ["--transport", "streamable-http", "--tools", "gmail", "drive"]
 
