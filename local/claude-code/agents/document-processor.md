@@ -20,20 +20,20 @@ You will receive:
 
 **Tags** (use by name):
 - Month tags: `2024-12`, `2025-01`, ..., `2026-03` (YYYY-MM format, new months get created by the system)
-- `invoicing` — apply to ALL invoices, credit notes, AND bank statements (part of invoicing workflow)
-- `documents` — apply to non-invoice, non-statement documents (receipts, parking tickets, highway tolls, travel orders, worklogs)
+- `invoicing` — apply to ALL monetary/accounting documents: invoices, credit notes, bank statements, receipts, fuel bloky, parking tickets, highway tolls — anything with a monetary value that goes to the accountant
+- `documents` — apply to non-monetary documents ONLY: travel orders, worklogs, attendance records, vacation logs
 - `techlab` — apply to Techlab s.r.o. business expenses only
 - `fuel` — apply when classifier sets `is_fuel: true` (gas station receipts/invoices)
 
 **Document types** (use by name):
-- `invoice` — for invoices and credit notes
+- `invoice` — for all monetary documents: invoices, credit notes, receipts, parking tickets, toll tickets
 - `account_statement` — for bank statements
 
-Use null for document types that don't fit either (receipts, parking tickets, travel orders, worklogs, etc.)
+Use null only for non-monetary documents (travel orders, worklogs, attendance records)
 
 **Custom fields** (set on upload):
-- `total_amount` (float) — total invoice amount including VAT, in EUR. For credit notes use negative. Do NOT set for bank statements or non-invoice documents.
-- `order_id` (string) — invoice number, order number, or document reference. Do NOT set for bank statements.
+- `total_amount` (float) — total amount including VAT, in EUR. Set for invoices, credit notes (negative), and receipts. Do NOT set for bank statements, travel orders, or worklogs.
+- `order_id` (string) — invoice number, order number, receipt number, or document reference. Do NOT set for bank statements, travel orders, or worklogs.
 - `total_amount_alt` — do NOT set this, it's managed manually for split-payment cases
 
 **Correspondents**:
@@ -48,9 +48,8 @@ Based on the classification `doc_type` and document content, determine the type:
 
 | Classification doc_type | Document type | Tags | Title format |
 |------------------------|---------------|------|-------------|
-| `invoice`, `credit_note` | `invoice` | `invoicing` + month + `fuel` if applicable | "{vendor} - {invoice/order number}" |
+| `invoice`, `credit_note`, `receipt`, `parking`, `toll` | `invoice` | `invoicing` + month + `fuel` if applicable | "{vendor} - {receipt/invoice number}" |
 | `account_statement` | `account_statement` | `invoicing` + month | "{bank} - Výpis {MM/YYYY}" |
-| `receipt`, `parking`, `toll`, `other` | null | `documents` + month + `fuel` if applicable | "{vendor} - {description}" |
 | `travel_order`, `worklog`, `attendance` | null | `documents` + month | "{company} - {doc description}" |
 
 Always add `techlab` tag if the document is related to Techlab s.r.o. — this includes invoices billed to/from Techlab, bank statements for Techlab accounts, and any document where Techlab s.r.o. appears as account holder, buyer, or seller.
@@ -86,9 +85,12 @@ Skip this step for bank statements and non-invoice documents.
 - Do NOT extract total_amount or order_id
 - Extract the statement period/number for the title
 
-**For receipts and other documents:**
-- Extract total amount if clearly visible, otherwise null
-- Extract any reference number for order_id if available
+**For receipts (fuel bloky, parking tickets, tolls):**
+- Extract total amount including VAT
+- Extract receipt/document number for order_id
+
+**For non-monetary documents (travel orders, worklogs):**
+- Do NOT extract total_amount or order_id
 
 ### 5. Resolve correspondent
 
@@ -104,7 +106,7 @@ Use the paperless MCP `post_document` tool with metadata determined in step 1:
 - **Document type**: per the step 1 table
 - **Tags**: per the step 1 table
 - **Correspondent**: the resolved correspondent
-- **Custom fields**: `total_amount` and `order_id` for invoices only; skip for statements and other docs
+- **Custom fields**: `total_amount` and `order_id` for invoices and receipts; skip for statements, travel orders, and worklogs
 
 ### 7. Return result
 

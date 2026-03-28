@@ -580,11 +580,11 @@ async function resolveDocumentType(
   logger: WorkerLogger,
 ): Promise<number | undefined> {
   // Map classifier doc_type to Paperless document type name
+  // Only types that exist in Paperless: "invoice", "account_statement"
   const typeMap: Record<string, string> = {
     invoice: "invoice",
-    credit_note: "invoice", // credit notes use same type
-    receipt: "invoice",
-    statement: "account_statement",
+    credit_note: "invoice",
+    account_statement: "account_statement",
   };
 
   const paperlessTypeName = typeMap[docType];
@@ -821,7 +821,7 @@ export async function executeScanIntake(
     const allTagNames: string[] = [];
     // doc_type → tag mapping (business logic, not classifier's job)
     const docType = classification.doc_type;
-    if (docType === "receipt" || docType === "invoice" || docType === "credit_note") {
+    if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
       allTagNames.push("invoicing");
     } else if (docType === "document") {
       allTagNames.push("documents");
