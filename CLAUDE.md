@@ -247,6 +247,47 @@ docker exec -it personal-assistant-claude tmux attach -t claude
 docker exec personal-assistant-claude sh -c "env | grep -E 'OTEL|TELEMETRY'"
 ```
 
+## Testing
+
+### E2E Pipeline Tests
+
+`tests/` contains a pytest suite that exercises the full email processing pipeline end-to-end (Gmail, Outlook, download link flows). Tests send real emails, wait for the pipeline to process them, and verify results in Paperless.
+
+**Location:** `compose.stacks/infra/personal-assistant/tests/`
+
+| File | Purpose |
+|------|---------|
+| `test_email_gmail.py` | Gmail attachment pipeline (invoice, fuel, credit note, bank statement, ignore) |
+| `test_email_outlook.py` | Outlook attachment pipeline (same set) |
+| `test_email_link.py` | Outlook download link pipeline (Alza-style HTML email with invoice URL) |
+| `helpers.py` | Gmail sending, Paperless API verification, email-watcher DB polling |
+| `conftest.py` | Fixtures for pipeline reset (stop claude-code, wipe DBs + Paperless, restart, seed) |
+| `test_data/` | Committed test PDFs: invoice.pdf, fuel_invoice.pdf, refund.pdf, account_statement_locked.pdf |
+
+**Running:**
+```bash
+cd compose.stacks/infra/personal-assistant
+
+# All tests (11 tests, ~5-10 min total)
+python -m pytest tests/ -v --timeout=300
+
+# Single module
+python -m pytest tests/test_email_gmail.py -v -x --timeout=300
+
+# By marker
+python -m pytest tests/ -v -m gmail --timeout=300
+```
+
+**Prerequisites:** Local compose stack running (personal-assistant + Paperless), Gmail OAuth token, Outlook auth active. See `tests/README.md` for full setup.
+
+### Unit Tests (invoice-worker)
+
+The invoice-worker has 68 unit tests with mocked MCP calls:
+```bash
+cd local/claude-code
+bun test
+```
+
 ## Observability
 
 Claude Code exports native OpenTelemetry metrics and events via OTLP to an Alloy instance, which forwards to Prometheus (metrics) and Loki (logs/events).
