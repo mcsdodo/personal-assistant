@@ -123,7 +123,7 @@ def list_emails(top: int = 20, sender: str | None = None, folder: str | None = N
 
     params = {
         "$top": top,
-        "$select": "id,subject,from,receivedDateTime,hasAttachments,bodyPreview",
+        "$select": "id,subject,from,toRecipients,receivedDateTime,hasAttachments,bodyPreview",
         "$orderby": "receivedDateTime desc",
     }
     if sender:
@@ -136,6 +136,10 @@ def list_emails(top: int = 20, sender: str | None = None, folder: str | None = N
         {
             "id": m["id"],
             "sender": m.get("from", {}).get("emailAddress", {}).get("address", ""),
+            "to": ", ".join(
+                r.get("emailAddress", {}).get("address", "")
+                for r in m.get("toRecipients", [])
+            ) or None,
             "subject": m.get("subject", ""),
             "received_at": m.get("receivedDateTime", ""),
             "has_attachments": m.get("hasAttachments", False),

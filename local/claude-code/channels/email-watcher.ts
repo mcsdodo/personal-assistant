@@ -599,6 +599,7 @@ async function pollOutlook(): Promise<EmailInfo[]> {
       id: String(item.id),
       source: "outlook" as const,
       sender: item.sender ?? undefined,
+      to: item.to ?? undefined,
       subject: item.subject ?? undefined,
       preview: item.preview ?? undefined,
       hasAttachments: item.has_attachments ?? false,
