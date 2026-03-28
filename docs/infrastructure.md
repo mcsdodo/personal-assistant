@@ -12,11 +12,13 @@ flowchart TB
         subgraph cc["claude-code (node:20-slim)"]
             tmux["tmux session → Claude CLI<br/>(Sonnet, --remote-control)"]
             ew["email-watcher (channel, stdio)"]
+            gw["gdrive-watcher (channel, stdio)"]
             tg["telegram (channel, stdio)"]
             wf["workflow-mcp (stdio, durable jobs)"]
             metrics[":9465 metrics + health"]
 
             tmux --- ew
+            tmux --- gw
             tmux --- tg
             tmux --- wf
         end
@@ -39,7 +41,7 @@ flowchart TB
 
 Single Dockerfile builds the `claude-code` container.
 
-**Base:** `node:20-slim` with git, curl, tmux, jq.
+**Base:** `node:20-slim` with git, curl, tmux, jq, qpdf.
 
 **Layers:**
 1. Install Bun as `node` user (channels runtime)
@@ -148,6 +150,7 @@ All state persists on NAS at `/mnt/shared_configs/personal-assistant/`:
 | `claude-config/` | Claude credentials, settings, Telegram state |
 | `downloads/` | Downloaded invoice files |
 | `email-watcher/` | `emails.db` (audit trail), `workflow.db` (job queue) |
+| `gdrive-watcher/` | `gdrive.db` (GDrive file audit trail) |
 | `gmail/` | Gmail OAuth tokens |
 | `outlook/` | Outlook MSAL token cache |
 
@@ -188,4 +191,4 @@ Channels are stdio subprocesses of Claude Code — they MUST run in the same con
 - **Main session:** Sonnet — handles orchestration, Telegram conversation, complex decisions
 - **Subagents:** Haiku — fast/cheap classification and processing
   - `email-classifier.md` — classifies email intent, vendor, download strategy
-  - `scan-classifier.md` — classifies scanned documents (extracts vendor, amount, doc_type from PDF)
+  - `document-classifier.md` — classifies documents from both email and GDrive paths (extracts vendor, amount, doc_type from PDF via vision)

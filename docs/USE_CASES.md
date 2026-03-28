@@ -15,9 +15,9 @@ Source of truth: [`_tasks/10-personal-assistant/USE-CASES.md`](../../../../_task
 | 1.3 | [Classify and tag invoice](./uc1-invoice-processing.md#uc-13-classification) | DONE |
 | 1.4 | [Upload invoice to Paperless-ngx](./uc1-invoice-processing.md#uc-14-upload-to-paperless) | DONE |
 | 1.5 | [Notify on new invoice](./uc1-invoice-processing.md#uc-15-telegram-notification) | DONE |
-| 1.6 | [Alert on unknown vendor / unusual amount](./uc1-invoice-processing.md#uc-16-approval-gates) | DONE |
+| 1.6 | [Alert on duplicate detection](./uc1-invoice-processing.md#uc-16-approval-gates) | DONE |
 | 1.7 | [Query invoice status](./uc1-invoice-processing.md#uc-17-query-invoice-status) | DONE |
-| 1.8 | GDrive scan auto-upload (scan → GDrive → classify → Paperless) | DONE |
+| 1.8 | GDrive scan + email PDF auto-upload | DONE |
 
 ## UC-1A: Email Workflow Observability
 
