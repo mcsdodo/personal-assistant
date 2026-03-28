@@ -603,6 +603,7 @@ interface UploadParams {
 
 interface UploadResult {
   document_id?: number;
+  task_uuid?: string;
   title: string;
 }
 
@@ -676,16 +677,10 @@ async function uploadToPaperless(
   const resultText = await response.text();
   logger.log(`Upload response: ${resultText}`);
 
-  // post_document returns a task UUID string
-  let documentId: number | undefined;
-  try {
-    const parsed = JSON.parse(resultText);
-    documentId = parsed.id ?? parsed.document_id ?? parsed.pk;
-  } catch {
-    // Response is typically just a UUID string — document ID assigned async
-  }
+  // post_document returns a task UUID string (e.g. "abc-123-def")
+  const taskUuid = resultText.replace(/^["'\s]+|["'\s]+$/g, "");
 
-  return { document_id: documentId, title: params.title };
+  return { task_uuid: taskUuid, title: params.title };
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -853,7 +848,7 @@ export async function executeScanIntake(
     if (classification.total_amount != null || classification.order_id) {
       addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
       await setDocumentCustomFields(
-        title,
+        uploadResult.task_uuid,
         classification.total_amount,
         classification.order_id,
         logger,
@@ -964,32 +959,49 @@ async function downloadFromGdrive(
 }
 
 async function setDocumentCustomFields(
-  title: string,
+  taskUuid: string | undefined,
   totalAmount: number | null | undefined,
   orderId: string | null | undefined,
   logger: WorkerLogger,
 ): Promise<void> {
+  if (!taskUuid) {
+    logger.log("Warning: no task UUID from upload, cannot set custom fields");
+    return;
+  }
+
   const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
   const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
 
   try {
-    // Wait briefly for Paperless to consume the uploaded document
-    const { execSync } = await import("child_process");
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // Poll Paperless task API until consumption completes and returns the document ID
+    let docId: number | undefined;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      const taskRes = await fetch(`${paperlessUrl}/api/tasks/?task_id=${taskUuid}`, {
+        headers: { "Authorization": `Token ${paperlessToken}` },
+      });
+      if (!taskRes.ok) continue;
+      const tasks = await taskRes.json() as Array<{ status: string; result?: string; related_document?: string }>;
+      const task = tasks[0];
+      if (!task) continue;
 
-    // Search for the document by title
-    const searchUrl = `${paperlessUrl}/api/documents/?query=${encodeURIComponent(title)}&ordering=-added&page_size=1`;
-    const searchRes = await fetch(searchUrl, {
-      headers: { "Authorization": `Token ${paperlessToken}` },
-    });
-    if (!searchRes.ok) {
-      logger.log(`Warning: could not search for document "${title}" to set custom fields`);
-      return;
+      if (task.status === "SUCCESS") {
+        // Extract document ID from result string: "Success. New document id 379 created"
+        const idMatch = task.result?.match(/document id (\d+)/i);
+        if (idMatch) docId = parseInt(idMatch[1], 10);
+        // Also check related_document field
+        if (!docId && task.related_document) {
+          docId = parseInt(task.related_document, 10) || undefined;
+        }
+        break;
+      } else if (task.status === "FAILURE") {
+        logger.log(`Warning: Paperless consumption failed: ${task.result?.slice(0, 200)}`);
+        return;
+      }
+      logger.log(`Waiting for Paperless consumption (attempt ${attempt + 1}/12, status: ${task.status})`);
     }
-    const searchData = await searchRes.json() as { results?: Array<{ id: number }> };
-    const docId = searchData.results?.[0]?.id;
     if (!docId) {
-      logger.log(`Warning: document "${title}" not found in Paperless after upload`);
+      logger.log(`Warning: could not resolve document ID from task ${taskUuid}`);
       return;
     }
 
