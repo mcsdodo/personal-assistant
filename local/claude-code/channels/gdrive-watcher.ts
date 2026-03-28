@@ -235,7 +235,51 @@ async function resolveWatchFolderId(): Promise<string> {
 
   watchFolderId = folderId;
   log(`Resolved watch folder "${WATCH_FOLDER}" → ${folderId}`);
+
+  // Ensure Processed and Errors subfolders exist
+  await ensureSubfolder(client, folderId, "Processed");
+  await ensureSubfolder(client, folderId, "Errors");
+
   return folderId;
+}
+
+async function ensureSubfolder(
+  client: Client,
+  parentId: string,
+  name: string,
+): Promise<void> {
+  try {
+    // Check if subfolder already exists
+    const result = await client.callTool({
+      name: "search_drive_files",
+      arguments: {
+        query: `name = '${name}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        user_google_email: GOOGLE_EMAIL,
+      },
+    });
+    const data = parseToolResult(result);
+    const hasResults =
+      (typeof data === "string" && data.includes("ID:")) ||
+      (Array.isArray(data) && data.length > 0);
+
+    if (hasResults) {
+      log(`Subfolder "${name}" already exists`);
+      return;
+    }
+
+    // Create it
+    await client.callTool({
+      name: "create_drive_folder",
+      arguments: {
+        name,
+        parent_id: parentId,
+        user_google_email: GOOGLE_EMAIL,
+      },
+    });
+    log(`Created subfolder "${name}" in watch folder`);
+  } catch (e: any) {
+    log(`Warning: could not ensure subfolder "${name}": ${e.message}`);
+  }
 }
 
 interface DriveFile {

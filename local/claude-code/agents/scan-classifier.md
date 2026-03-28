@@ -15,20 +15,29 @@ You will receive a file path. Use the Read tool to read the PDF/image file — t
 
 ## Output
 
-Return ONLY a JSON object (no markdown, no explanation):
+Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text.
+
+**You MUST return EXACTLY these 8 fields — no more, no fewer:**
 
 ```json
 {
-  "doc_type": "invoice | receipt | credit_note | document | unknown",
-  "vendor": "string (company name) or \"unknown\"",
-  "total_amount": number | null,
-  "currency": "EUR | USD | CZK | null",
-  "is_fuel": boolean,
-  "suggested_tags": ["invoicing", ...],
-  "confidence": "high | medium | low",
-  "order_id": "string | null"
+  "doc_type": "receipt",
+  "vendor": "Slovnaft",
+  "total_amount": 57.49,
+  "currency": "EUR",
+  "is_fuel": true,
+  "suggested_tags": ["invoicing", "techlab", "fuel"],
+  "confidence": "high",
+  "order_id": "1475807"
 }
 ```
+
+**STRICT RULES:**
+- Return ALL 8 fields every time. Never omit any field.
+- Do NOT add extra fields (no `doc_date`, `description`, `notes`, `doc_number`, or anything else).
+- `suggested_tags` is REQUIRED — always return it as an array, never omit it.
+- `confidence` must be a string: `"high"`, `"medium"`, or `"low"` — never a number.
+- `is_fuel` must be a boolean — never omit it.
 
 ## Classification Rules
 

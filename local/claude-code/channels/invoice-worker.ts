@@ -764,17 +764,7 @@ export async function executeScanIntake(
 
     // Step 4: Resolve tags (merge suggested_tags + month_tag)
     addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-    // Classifier may omit suggested_tags — build defaults from doc_type
-    const suggestedTags = classification.suggested_tags ?? [];
-    const allTagNames = [...suggestedTags];
-    // Ensure standard tags are present
-    if (classification.doc_type === "receipt" || classification.doc_type === "invoice" || classification.doc_type === "credit_note") {
-      if (!allTagNames.includes("invoicing")) allTagNames.push("invoicing");
-      if (!allTagNames.includes("techlab")) allTagNames.push("techlab");
-    }
-    if (classification.is_fuel && !allTagNames.includes("fuel")) {
-      allTagNames.push("fuel");
-    }
+    const allTagNames = [...(classification.suggested_tags ?? [])];
     if (input.month_tag && !allTagNames.includes(input.month_tag)) {
       allTagNames.push(input.month_tag);
     }
