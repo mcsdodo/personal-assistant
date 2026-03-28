@@ -90,15 +90,14 @@ Each event has these meta fields:
 
 **Processing pipeline:**
 1. **Download to disk** — use gmail MCP `get_drive_file_download_url` with the `file_id` and `user_google_email` set to the `GMAIL_EMAIL` env var (read it once at start). Then use Bash `curl -o /workspace/downloads/{name} "{url}"` to save the file locally. This preserves the visual content for classification. **Always pass `user_google_email` on every Gmail/Drive MCP call.**
-2. **Classify** — invoke the `scan-classifier` subagent with the local file path (e.g., `/workspace/downloads/20260325_blok_tankovanie.pdf`). The subagent uses the Read tool to visually inspect the PDF/image and returns vendor, total_amount, doc_type, etc.
-3. **Create job** — call `create_scan_intake_job` on workflow MCP with the classification result, file_id, and `month_tag`. The worker handles dedup, upload, and file move automatically.
+2. **Classify** — invoke the `document-classifier` subagent with the local file path (e.g., `/workspace/downloads/20260325_blok_tankovanie.pdf`). The subagent uses the Read tool to visually inspect the PDF/image and returns vendor, total_amount, doc_type, etc.
+3. **Create job** — call `create_scan_intake_job` on workflow MCP with the classification result, file_id, `month_tag`, and `file_path` (the local download path). The worker reads from disk, handles dedup, upload, and file move.
 4. **Monitor job** — poll with `get_job(job_id)`:
    - `state: completed` with `outcome: uploaded` → notify via Telegram: "✓ Uploaded {vendor} scan to Paperless ({amount} EUR)"
    - `state: completed` with `outcome: duplicate` → silently skip
    - `state: awaiting_approval` → notify user via Telegram, wait for response
    - `state: failed` → notify user via Telegram with error
 5. **Record** — call `update_gdrive_scan_status` with the outcome
-6. **Cleanup** — delete the local file from `/workspace/downloads/` after processing is complete (success or failure)
 
 The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `Processed/`. On failure, it moves to `Errors/`.
 
@@ -108,8 +107,16 @@ Process emails using the Haiku subagents and durable workflow jobs:
 
 1. **Classify** — dispatch to `email-classifier` agent with the email metadata (sender, subject, body excerpt). It returns a JSON classification including `download_strategy`.
 
+1b. **Download PDF** (if action = download_and_upload) — get the PDF to disk:
+   - `attachment` strategy: run `bun run /app/channels/download-helper.ts <source> download_attachment <message_id> <attachment_id> /workspace/downloads/<filename>` via Bash. The helper downloads to disk and prints the file path.
+   - `known_link` / `direct_url` strategy: call `extract_invoice_links(message_id)` on the email MCP to get URLs, then `curl -o /workspace/downloads/<filename> "<url>"` to save to disk. If the file is encrypted, run: `qpdf --is-encrypted <path> && qpdf --password="$BANK_PDF_PASSWORD" --decrypt <path> --replace-input`
+
+1c. **Classify PDF** — invoke the `document-classifier` subagent with the local file path. Merge results: document-classifier non-null values override email-classifier values (vendor, total_amount, order_id, doc_type, is_fuel, currency, confidence). If the classifier fails, fall back to email-classifier metadata only.
+
+1d. **Infer month_tag** — determine the YYYY-MM tag from email context (subject line billing period, document date from classifier, or received_at as fallback).
+
 2. **Act on classification:**
-   - `action: download_and_upload` — create a durable workflow job using `create_invoice_intake_job` with the email source, message ID, and full classification JSON. The worker handles download, dedup, and upload automatically.
+   - `action: download_and_upload` — create a durable workflow job using `create_invoice_intake_job` with the email source, message ID, merged classification JSON, `file_path`, and `month_tag`.
      - After creating the job, poll with `get_job(job_id)` to check status:
        - `state: completed` with `outcome: uploaded` → success, notify via Telegram
        - `state: completed` with `outcome: duplicate` → silently skip, no notification
