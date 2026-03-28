@@ -69,7 +69,7 @@ Always respond with ONLY this JSON (no markdown, no explanation):
 Fields:
 - `is_invoice`: boolean (true for invoices, credit notes, receipts, statements)
 - `confidence`: "high" (clear invoice signals) | "medium" (likely but unsure) | "low" (probably not)
-- `vendor`: vendor name or "unknown"
+- `vendor`: company name from the email sender/footer. Use the most complete name available (e.g., "Alza.sk s.r.o." from footer rather than just "Alza" from sender). If only a short name is visible, use that.
 - `doc_type`: "invoice" | "credit_note" | "receipt" | "statement" | "other"
 - `is_fuel`: boolean — true if this is a fuel/gas station receipt or invoice (for kniha-jazd integration later)
 - `suggested_tags`: array of EXISTING Paperless tags only. Use: `invoicing` (for all invoices/credit notes), `documents` (for non-invoice docs), `techlab` (for Techlab business expenses), and the YYYY-MM month tag. Never invent new tags like vendor names — vendors are tracked as correspondents, not tags.
@@ -84,7 +84,7 @@ Fields:
 - `strategy_confidence`: "high" | "medium" | "low" — how certain you are about the download strategy
 - `requires_review`: boolean — true if the case needs human review before processing (unknown vendor, low confidence, ambiguous)
 - `order_id`: extracted order/reference/invoice number if present, null otherwise
-- `total_amount`: float amount if visible in subject/body (e.g., "156,68 €" → 156.68), null if unknown
+- `total_amount`: float amount if visible in subject/body (e.g., "156,68 €" → 156.68), null if unknown. Return `null` if currency is NOT EUR — we only track EUR amounts
 - `currency`: "EUR", "USD", "CZK", etc. if amount found, null otherwise
 
 ## Download Strategy Rules

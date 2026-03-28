@@ -49,8 +49,8 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 - `unknown` — cannot determine
 
 ### vendor
-- Extract the company/business name from the document header or stamp
-- Common vendors: Shell, MOL, OMV, Slovnaft (fuel); Alza, Tesco, Lidl (retail); Orange, O2, Telekom (telecom)
+- Extract the full legal company name as printed on the document (e.g., "SLOVNAFT, a.s.", not "Slovnaft"; "Alza.sk s.r.o.", not "Alza")
+- Look for the name near IČO/DIČ/IČ DPH fields — that's the official name
 - If unclear, return `"unknown"`
 
 ### total_amount
@@ -58,6 +58,7 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 - For fuel receipts: look for the total paid amount (SUMA, UHRADENÉ)
 - For credit notes: use negative value
 - Return as a number (e.g., 45.50), not a string
+- Return `null` if currency is NOT EUR — we only track EUR amounts
 - Return `null` for bank statements and non-monetary documents (worklogs, travel orders)
 - If unreadable, return `null`
 
