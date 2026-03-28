@@ -119,7 +119,11 @@ sequenceDiagram
 
 Polls Gmail via the community `google_workspace_mcp` image (pinned `1.14.3`).
 
-**Flow:** `search_gmail_messages` → extract IDs → `get_gmail_messages_content_batch` → parse metadata.
+**Flow:** `search_gmail_messages` (page_size=50) → extract IDs (deduplicated via `Set`) → `get_gmail_messages_content_batch` → parse metadata.
+
+`parseGmailEmails` checks whether search results contain actual metadata (Subject/From/To headers). Gmail search often returns sparse results with only Message IDs and no headers — when this happens, `parseGmailEmails` falls through to the batch-fetch path instead of short-circuiting with incomplete data.
+
+`extractGmailIds` deduplicates IDs with `new Set()` because Gmail search results can return the same message as Message ID, Thread ID, and URL hex — without dedup, batch-fetch would process the same email multiple times.
 
 **Code:**
 - [`email-watcher.ts:498-560`](../local/claude-code/channels/email-watcher.ts#L498) — `pollGmail()`: search + batch-fetch + parse
@@ -151,6 +155,8 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 Haiku subagent classifies each new email by sender, subject, and body excerpt.
 
 **Output fields:** `is_invoice`, `confidence` (high/medium/low), `vendor`, `doc_type`, `is_fuel`, `suggested_tags`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`.
+
+**`has_attachments` override:** The classifier prompt is aware of the `has_attachments` field from the email metadata. When `has_attachments` is true, the `attachment` download strategy overrides all other guesses — this prevents emails with actual PDF attachments (e.g., bank statements, fuel receipts) from being misclassified as `browser_required`.
 
 **Code:**
 - [`agents/email-classifier.md`](../local/claude-code/agents/email-classifier.md) — Haiku classifier prompt defining all output fields and decision rules
