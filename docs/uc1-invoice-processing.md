@@ -1,6 +1,6 @@
 # UC-1: Invoice Processing (email → Paperless)
 
-Automated pipeline: poll Gmail + Outlook → classify with Haiku → process via durable workflow → upload to Paperless-ngx → notify via Telegram.
+Automated pipeline: poll Gmail + Outlook → classify email with Haiku → download PDF → classify document with Haiku → process via durable workflow → upload to Paperless-ngx → notify via Telegram.
 
 ## Architecture
 
@@ -39,6 +39,7 @@ sequenceDiagram
     participant DB as SQLite
     participant C as Claude (Sonnet)
     participant CL as email-classifier<br/>(Haiku)
+    participant DC as document-classifier<br/>(Haiku)
     participant WF as workflow-mcp
     participant IW as invoice-worker
     participant P as Paperless MCP
@@ -75,10 +76,14 @@ sequenceDiagram
     note over C,TG: Step 2 — Act on classification
 
     alt action = "download_and_upload"
+        C->>G: download PDF (attachment or link)
+        G-->>C: file on disk
+        C->>DC: dispatch document-classifier (Haiku)
+        DC-->>C: {vendor, total_amount, doc_type, ...}
+        C->>C: merge DC results over email-classifier
         C->>WF: create_invoice_intake_job
         WF->>IW: execute job
-        IW->>G: download attachment/link
-        G-->>IW: base64 file
+        IW->>IW: read file from disk (file_path)
         IW->>P: search (dedup check)
         P-->>IW: no duplicate
         IW->>P: post_document
@@ -151,6 +156,8 @@ Haiku subagent classifies each new email by sender, subject, and body excerpt.
 - [`agents/email-classifier.md`](../local/claude-code/agents/email-classifier.md) — Haiku classifier prompt defining all output fields and decision rules
 - [`invoice-worker.ts:33-89`](../local/claude-code/channels/invoice-worker.ts#L33) — `InvoiceIntakeInput` type definition with all classification fields
 
+**Document classification (post-download):** After downloading the PDF, Claude runs the `document-classifier` Haiku subagent ([`agents/document-classifier.md`](../local/claude-code/agents/document-classifier.md)) which visually inspects the PDF and returns 7 fields: `doc_type`, `vendor`, `total_amount`, `currency`, `is_fuel`, `confidence`, `order_id`. Non-null values override the email-classifier's guesses. This same classifier handles GDrive scans.
+
 **Status recording:** After classification, Claude calls `update_email_status` with the classification JSON, action, vendor, and confidence.
 
 ## UC-1.4: Upload to Paperless
@@ -159,7 +166,7 @@ The invoice-worker uploads documents via the Paperless MCP's `post_document` too
 
 **Steps:**
 1. **Resolve correspondent** — match vendor name to existing Paperless correspondent (case-insensitive), create if missing
-2. **Resolve tags** — map `suggested_tags` to Paperless tag IDs, create missing tags
+2. **Resolve tags** — derive tags deterministically from classification fields (`doc_type` → invoicing/documents, `is_fuel` → fuel, always techlab, `month_tag` from job input), create missing tags
 3. **Resolve document type** — map `doc_type` to Paperless type (invoice → "invoice", statement → "account_statement")
 4. **Build title** — `{vendor} - {order_id}` or `{vendor} - {subject}`
 5. **Upload** — `post_document` with base64 content, correspondent, tags, type, custom fields (total_amount, order_id)
@@ -191,22 +198,19 @@ Claude notifies the user via the Telegram channel's `reply` tool after processin
 
 The invoice-worker pauses automatically for edge cases and waits for human approval via Telegram.
 
-**Approval triggers:**
-1. `download_strategy === "browser_required" || "manual_review"` — can't auto-download
-2. `vendor === "unknown"` — classifier couldn't identify sender
-3. `confidence === "low"` — low classification confidence
-4. `requires_review === true` — classifier flagged for review
-5. Dedup: amount mismatch on matching order_id (`duplicate_likely`)
+**Approval triggers (post-Task 16 simplification):**
+1. Dedup: amount mismatch on matching order_id (`duplicate_likely`)
+
+Gates for unknown vendor, low confidence, browser_required, and requires_review were removed — triage now happens in Claude before job creation, using the document-classifier's higher-quality PDF analysis.
 
 **Code:**
-- [`invoice-worker.ts:107-148`](../local/claude-code/channels/invoice-worker.ts#L107) — four approval gates (strategy, unknown vendor, low confidence, requires_review)
 - [`invoice-worker.ts:189-195`](../local/claude-code/channels/invoice-worker.ts#L189) — `duplicate_likely` approval gate
 
 **Workflow tools for approval:**
 - [`workflow-mcp.ts:150-161`](../local/claude-code/channels/workflow-mcp.ts#L150) — `approve_job` tool definition
 - [`workflow-mcp.ts:163-174`](../local/claude-code/channels/workflow-mcp.ts#L163) — `cancel_job` tool definition
 
-**Status:** Approval gates implemented and tested (19 unit tests). Deployed.
+**Status:** Simplified to single dedup gate. Deployed.
 
 ## UC-1.7: Query Invoice Status
 
@@ -215,6 +219,21 @@ Claude can query Paperless directly using `search_documents` from the community 
 **Also available:** email-watcher audit trail queries:
 - [`email-watcher.ts:759-769`](../local/claude-code/channels/email-watcher.ts#L759) — `get_recent_emails` tool (filter by status, source, limit)
 - [`email-watcher.ts:771-777`](../local/claude-code/channels/email-watcher.ts#L771) — `get_email_stats` tool (counts by status, last 24h breakdown)
+
+## UC-1.8: GDrive Scan Auto-Upload
+
+Scanned documents dropped into Google Drive are automatically classified and uploaded to Paperless.
+
+**Pipeline:** gdrive-watcher polls `Techlab/Invoice scans/` → Claude downloads file via `curl` → document-classifier (Haiku) extracts metadata → `create_scan_intake_job` with `file_path` + `month_tag` → worker reads from disk, uploads to Paperless, moves file to `Processed/`.
+
+**Unified classifier:** Both email PDFs and GDrive scans use the same `document-classifier` agent. The email path adds an email-classifier triage step before download; the GDrive path skips it.
+
+**PDF decryption:** Password-protected PDFs (e.g., bank statements) are decrypted via `qpdf` before classification. Password from `BANK_PDF_PASSWORD` env var.
+
+**Code:**
+- [`agents/document-classifier.md`](../local/claude-code/agents/document-classifier.md) — Haiku classifier prompt (7-field output)
+- [`channels/download-helper.ts`](../local/claude-code/channels/download-helper.ts) — CLI helper for attachment downloads + qpdf decryption
+- [`channels/gdrive-watcher.ts`](../local/claude-code/channels/gdrive-watcher.ts) — GDrive polling channel
 
 ## Download Strategies
 
@@ -229,6 +248,8 @@ The classifier assigns a `download_strategy` that determines how the worker gets
 | `manual_review` | Pauses for approval | Classifier unsure, needs human review |
 
 **Outlook vendor rules** for link extraction: [`outlook-mcp/server.py:22-26`](../local/outlook-mcp/server.py#L22) — regex patterns matching sender + link text + subject (e.g., Alza.sk).
+
+**Pre-job download (email path):** Claude now downloads the PDF *before* creating the intake job (using `curl` for links, `download-helper.ts` for attachments). The job receives a `file_path` and the worker reads from disk. The worker's MCP-based download functions are kept as fallback when `file_path` is missing (e.g., legacy jobs or manual retries).
 
 ## Durable Workflow Layer
 
