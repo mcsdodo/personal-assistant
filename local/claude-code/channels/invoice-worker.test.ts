@@ -7,7 +7,7 @@ import {
   test,
 } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -166,39 +166,8 @@ afterEach(() => {
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
-describe("invoice-worker approval gates", () => {
-  test("pauses for browser_required strategy", async () => {
-    const input = makeInput({
-      classification: {
-        ...makeInput().classification,
-        download_strategy: "browser_required",
-      },
-    });
-    const job = createRunningJob(input);
-
-    await executeInvoiceIntake(db, job, logger, registry);
-
-    const updated = getJob(db, job.id)!;
-    expect(updated.state).toBe("awaiting_approval");
-    const events = getJobEvents(db, job.id);
-    expect(events.some((e) => e.event_type === "approval_requested")).toBe(true);
-  });
-
-  test("pauses for manual_review strategy", async () => {
-    const input = makeInput({
-      classification: {
-        ...makeInput().classification,
-        download_strategy: "manual_review",
-      },
-    });
-    const job = createRunningJob(input);
-
-    await executeInvoiceIntake(db, job, logger, registry);
-
-    expect(getJob(db, job.id)!.state).toBe("awaiting_approval");
-  });
-
-  test("pauses for unknown vendor", async () => {
+describe("invoice-worker approval gates (removed)", () => {
+  test("unknown vendor proceeds without pausing", async () => {
     const input = makeInput({
       classification: {
         ...makeInput().classification,
@@ -207,12 +176,26 @@ describe("invoice-worker approval gates", () => {
     });
     const job = createRunningJob(input);
 
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "invoice.pdf", content_type: "application/pdf", size: 1024 }])),
+      () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 1024, content_base64: "AAAA" })),
+      () => jsonResponse(rpcResponse([])),
+      () => jsonResponse(rpcResponse({ id: 99, name: "unknown" })),
+      () => jsonResponse(rpcResponse([])),
+      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      () => jsonResponse(rpcResponse({ id: 2 })),
+      () => jsonResponse(rpcResponse({ id: 3 })),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      () => new Response('"task-uuid"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
     await executeInvoiceIntake(db, job, logger, registry);
 
-    expect(getJob(db, job.id)!.state).toBe("awaiting_approval");
+    expect(getJob(db, job.id)!.state).toBe("completed");
   });
 
-  test("pauses for low confidence", async () => {
+  test("low confidence proceeds without pausing", async () => {
     const input = makeInput({
       classification: {
         ...makeInput().classification,
@@ -221,71 +204,42 @@ describe("invoice-worker approval gates", () => {
     });
     const job = createRunningJob(input);
 
-    await executeInvoiceIntake(db, job, logger, registry);
-
-    expect(getJob(db, job.id)!.state).toBe("awaiting_approval");
-  });
-
-  test("pauses for requires_review flag", async () => {
-    const input = makeInput({
-      classification: {
-        ...makeInput().classification,
-        requires_review: true,
-      },
-    });
-    const job = createRunningJob(input);
-
-    await executeInvoiceIntake(db, job, logger, registry);
-
-    expect(getJob(db, job.id)!.state).toBe("awaiting_approval");
-  });
-
-  test("skips unknown vendor gate if already approved", async () => {
-    const input = makeInput({
-      classification: {
-        ...makeInput().classification,
-        vendor: "unknown",
-        confidence: "high",
-        requires_review: false,
-      },
-    });
-    const job = createRunningJob(input);
-    // Simulate prior approval
-    db.prepare("UPDATE jobs SET approved_by = 'tester' WHERE id = ?").run(job.id);
-    const approvedJob = getJob(db, job.id)!;
-
-    // Mock the fetch calls for download path
-    // Even with unknown vendor, after approval it should try to download
     mockFetch(
-      // get_attachments
-      () => jsonResponse(rpcResponse([{ id: "att-1", name: "invoice.pdf", content_type: "application/pdf", size: 1024 }])),
-      // download_attachment
-      () =>
-        jsonResponse(
-          rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 1024, content_base64: "AAAA" }),
-        ),
-      // list_correspondents (resolve correspondent)
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 100 }])),
+      () => jsonResponse(rpcResponse({ name: "inv.pdf", content_type: "application/pdf", size: 100, content_base64: "AA" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       () => jsonResponse(rpcResponse([])),
-      // create_correspondent
-      () => jsonResponse(rpcResponse({ id: 99, name: "unknown" })),
-      // search_documents (dedup — order_id is FA2026030001 from makeInput)
-      () => jsonResponse(rpcResponse([])),
-      // list_tags (resolve tags)
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
-      // create_tag for "2026-03"
       () => jsonResponse(rpcResponse({ id: 2 })),
-      // list_document_types
+      () => jsonResponse(rpcResponse({ id: 3 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
-      // post_document
-      () => jsonResponse(rpcResponse({ id: 42 })),
-      // setDocumentCustomFields: task poll, PATCH, verify
+      () => new Response('"task-uuid"', { status: 200 }),
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, approvedJob, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry);
 
-    const updated = getJob(db, job.id)!;
-    expect(updated.state).toBe("completed");
+    expect(getJob(db, job.id)!.state).toBe("completed");
+  });
+
+  test("duplicate_likely still pauses (only remaining gate)", async () => {
+    const input = makeInput();
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 512 }])),
+      () => jsonResponse(rpcResponse({ name: "inv.pdf", content_type: "application/pdf", size: 512, content_base64: "AA" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse(rpcResponse([{
+        id: 77,
+        title: "Alza - FA2026030001",
+        custom_fields: { order_id: "FA2026030001", total_amount: 100.0 },
+      }])),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry);
+
+    expect(getJob(db, job.id)!.state).toBe("awaiting_approval");
   });
 });
 
@@ -316,14 +270,16 @@ describe("invoice-worker attachment download + upload", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // 4. search_documents (dedup check)
       () => jsonResponse(rpcResponse([])),
-      // 5. list_tags
+      // 5. list_tags (now derived: ["invoicing", "techlab"])
       () =>
-        jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }, { id: 7, name: "2026-03" }])),
-      // 6. list_document_types
+        jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      // 6. create_tag for "techlab"
+      () => jsonResponse(rpcResponse({ id: 2 })),
+      // 7. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
-      // 7. post_document
-      () => jsonResponse(rpcResponse({ id: 42 })),
-      // 8-10. setDocumentCustomFields: task poll, PATCH, verify
+      // 8. post_document
+      () => new Response('"task-uuid"', { status: 200 }),
+      // 9-11. setDocumentCustomFields: task poll, PATCH, verify
       ...customFieldsMockHandlers(),
     );
 
@@ -338,7 +294,7 @@ describe("invoice-worker attachment download + upload", () => {
     // not a document ID. The doc ID is resolved later by setDocumentCustomFields.
     expect(output.paperless_document_id).toBeUndefined();
     expect(output.correspondent).toBe("Alza");
-    expect(output.tags).toEqual(["invoicing", "2026-03"]);
+    expect(output.tags).toEqual(["invoicing", "techlab"]);
 
     // Verify events were recorded
     const events = getJobEvents(db, job.id);
@@ -448,14 +404,15 @@ describe("invoice-worker attachment download + upload", () => {
       () => jsonResponse(rpcResponse([{ id: 1, name: "Alza" }, { id: 2, name: "Orange" }])),
       // 4. create_correspondent
       () => jsonResponse(rpcResponse({ id: 50, name: "NewVendor" })),
-      // 5. list_tags
+      // NO dedup (order_id is null)
+      // 5. list_tags (derived: ["invoicing", "techlab"])
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
-      // 6. create_tag for "2026-03"
+      // 6. create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 88 })),
       // 7. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       // 8. post_document
-      () => jsonResponse(rpcResponse({ id: 55 })),
+      () => new Response('"task-uuid"', { status: 200 }),
       // 9-11. setDocumentCustomFields: task poll, PATCH, verify
       ...customFieldsMockHandlers(),
     );
@@ -492,13 +449,15 @@ describe("invoice-worker attachment download + upload", () => {
       // 3. list_correspondents → match
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // NO dedup call — order_id is null
-      // 4. list_tags
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }, { id: 7, name: "2026-03" }])),
-      // 5. list_document_types
+      // 4. list_tags (derived: ["invoicing", "techlab"])
+      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      // 5. create_tag for "techlab"
+      () => jsonResponse(rpcResponse({ id: 2 })),
+      // 6. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
-      // 6. post_document
-      () => jsonResponse(rpcResponse({ id: 60 })),
-      // 7-9. setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
+      // 7. post_document
+      () => new Response('"task-uuid"', { status: 200 }),
+      // 8-10. setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
       ...customFieldsMockHandlers(),
     );
 
@@ -544,13 +503,16 @@ describe("invoice-worker link download", () => {
         ),
       // 3. list_correspondents
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      // 4. list_tags
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }, { id: 7, name: "2026-03" }])),
-      // 5. list_document_types
+      // NO dedup (order_id is null)
+      // 4. list_tags (derived: ["invoicing", "techlab"])
+      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      // 5. create_tag for "techlab"
+      () => jsonResponse(rpcResponse({ id: 2 })),
+      // 6. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
-      // 6. post_document
-      () => jsonResponse(rpcResponse({ id: 70 })),
-      // 7-9. setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
+      // 7. post_document
+      () => new Response('"task-uuid"', { status: 200 }),
+      // 8-10. setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
       ...customFieldsMockHandlers(),
     );
 
@@ -676,9 +638,12 @@ describe("invoice-worker title building", () => {
       () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 100, content_base64: "X" })),
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       () => jsonResponse(rpcResponse([])), // no duplicate
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }, { id: 7, name: "2026-03" }])),
+      // list_tags (derived: ["invoicing", "techlab"])
+      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      // create_tag for "techlab"
+      () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
-      () => jsonResponse(rpcResponse({ id: 1 })),
+      () => new Response('"task-uuid"', { status: 200 }),
       // setDocumentCustomFields: task poll, PATCH, verify
       ...customFieldsMockHandlers(),
     );
@@ -701,9 +666,12 @@ describe("invoice-worker title building", () => {
       () => jsonResponse(rpcResponse({ name: "bill.pdf", content_type: "application/pdf", size: 100, content_base64: "X" })),
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // no dedup (no order_id)
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }, { id: 7, name: "2026-03" }])),
+      // list_tags (derived: ["invoicing", "techlab"])
+      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      // create_tag for "techlab"
+      () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
-      () => jsonResponse(rpcResponse({ id: 1 })),
+      () => new Response('"task-uuid"', { status: 200 }),
       // setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
       ...customFieldsMockHandlers(),
     );
@@ -713,5 +681,142 @@ describe("invoice-worker title building", () => {
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     // Subject has "Fwd:" stripped
     expect(output.title).toBe("Alza - Monthly billing statement");
+  });
+});
+
+describe("invoice-worker file_path from disk", () => {
+  test("reads file from disk when file_path is present and file exists", async () => {
+    const filePath = join(tmpDir, "test-invoice.pdf");
+    writeFileSync(filePath, Buffer.from("JVBER-fake-pdf"));
+
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse(rpcResponse([])),
+      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      () => jsonResponse(rpcResponse({ id: 2 })),
+      () => jsonResponse(rpcResponse({ id: 3 })),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      () => new Response('"task-uuid-123"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    expect(JSON.parse(updated.output_json!).outcome).toBe("uploaded");
+  });
+
+  test("falls back to MCP download when file_path is missing", async () => {
+    const input = makeInput();
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "invoice.pdf", content_type: "application/pdf", size: 2048 }])),
+      () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 2048, content_base64: "JVBER" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse(rpcResponse([])),
+      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      () => jsonResponse(rpcResponse({ id: 2 })),
+      () => jsonResponse(rpcResponse({ id: 3 })),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      () => new Response('"task-uuid-456"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry);
+
+    expect(getJob(db, job.id)!.state).toBe("completed");
+  });
+
+  test("falls back to MCP download when file_path file doesn't exist", async () => {
+    const input = makeInput({ file_path: "/nonexistent/path/invoice.pdf" });
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "invoice.pdf", content_type: "application/pdf", size: 100 }])),
+      () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 100, content_base64: "AA" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse(rpcResponse([])),
+      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      () => jsonResponse(rpcResponse({ id: 2 })),
+      () => jsonResponse(rpcResponse({ id: 3 })),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      () => new Response('"task-uuid-789"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry);
+
+    expect(getJob(db, job.id)!.state).toBe("completed");
+  });
+});
+
+describe("invoice-worker unified tag derivation", () => {
+  test("derives tags from classification fields, not suggested_tags", async () => {
+    const input = makeInput({
+      month_tag: "2026-02",
+      file_path: join(tmpDir, "tagged.pdf"),
+      classification: {
+        ...makeInput().classification,
+        is_fuel: true,
+        doc_type: "receipt",
+        suggested_tags: ["wrong-tag-1", "wrong-tag-2"],
+      },
+    });
+    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse(rpcResponse([])),
+      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }, { id: 3, name: "techlab" }])),
+      () => jsonResponse(rpcResponse({ id: 10 })),
+      () => jsonResponse(rpcResponse({ id: 11 })),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      () => new Response('"task-uuid"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry);
+
+    const output = JSON.parse(getJob(db, job.id)!.output_json!);
+    expect(output.tags).toContain("invoicing");
+    expect(output.tags).toContain("techlab");
+    expect(output.tags).toContain("fuel");
+    expect(output.tags).toContain("2026-02");
+    expect(output.tags).not.toContain("wrong-tag-1");
+  });
+
+  test("document doc_type produces documents tag, not invoicing", async () => {
+    const input = makeInput({
+      month_tag: "2026-03",
+      file_path: join(tmpDir, "worklog.pdf"),
+      classification: {
+        ...makeInput().classification,
+        doc_type: "document",
+        is_fuel: false,
+        order_id: null,
+        total_amount: null,
+      },
+    });
+    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse(rpcResponse([{ id: 2, name: "documents" }, { id: 3, name: "techlab" }, { id: 7, name: "2026-03" }])),
+      () => jsonResponse(rpcResponse([])),
+      () => new Response('"task-uuid"', { status: 200 }),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry);
+
+    const output = JSON.parse(getJob(db, job.id)!.output_json!);
+    expect(output.tags).toContain("documents");
+    expect(output.tags).not.toContain("invoicing");
   });
 });

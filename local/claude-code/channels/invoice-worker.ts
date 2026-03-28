@@ -10,6 +10,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { existsSync } from "fs";
 
 import {
   addJobEvent,
@@ -21,6 +22,7 @@ import {
 } from "./workflow-db";
 import { callMcpTool, extractJson, extractText } from "./mcp-client";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
+import { readFileAsDownload } from "./download-helper";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -58,6 +60,10 @@ export interface InvoiceIntakeInput {
   sender?: string;
   /** Email received date ISO */
   received_at?: string;
+  /** Path to pre-downloaded file on disk (set by Claude, worker reads instead of downloading) */
+  file_path?: string;
+  /** YYYY-MM tag for Paperless (Claude infers from email context) */
+  month_tag?: string;
 }
 
 export interface ScanIntakeInput {
@@ -65,6 +71,8 @@ export interface ScanIntakeInput {
   file_id: string;
   filename?: string;
   month_tag?: string;
+  /** Path to pre-downloaded file on disk */
+  file_path?: string;
   classification: {
     doc_type: string;
     vendor: string;
@@ -124,59 +132,27 @@ export async function executeInvoiceIntake(
   const { classification } = input;
   const strategy = classification.download_strategy;
 
-  // ── Gate: strategies that require approval ──
-  if (strategy === "browser_required" || strategy === "manual_review") {
-    requestJobApproval(db, job.id, {
-      reason: `Download strategy "${strategy}" requires human review`,
-      vendor: classification.vendor,
-      subject: input.subject,
-    });
-    logger.log(`Job ${job.id} paused: strategy=${strategy}`);
-    return;
-  }
-
-  // ── Gate: unknown vendor requires approval (unless already approved) ──
-  if (classification.vendor === "unknown" && !job.approved_by) {
-    requestJobApproval(db, job.id, {
-      reason: "Unknown vendor — cannot process without human confirmation",
-      subject: input.subject,
-      sender: input.sender,
-    });
-    logger.log(`Job ${job.id} paused: unknown vendor`);
-    return;
-  }
-
-  // ── Gate: low confidence requires approval ──
-  if (classification.confidence === "low" && !job.approved_by) {
-    requestJobApproval(db, job.id, {
-      reason: `Low classification confidence for "${classification.vendor}"`,
-      subject: input.subject,
-    });
-    logger.log(`Job ${job.id} paused: low confidence`);
-    return;
-  }
-
-  // ── Gate: requires_review flag ──
-  if (classification.requires_review && !job.approved_by) {
-    requestJobApproval(db, job.id, {
-      reason: "Classifier flagged this email for human review",
-      vendor: classification.vendor,
-      subject: input.subject,
-    });
-    logger.log(`Job ${job.id} paused: requires_review`);
-    return;
-  }
-
   try {
-    // Step 1: Download
-    addJobEvent(db, job.id, "step_started", { step: "download", strategy });
-    const file = await downloadInvoice(input, logger);
-    addJobEvent(db, job.id, "step_completed", {
-      step: "download",
-      filename: file.filename,
-      size: file.size,
-      content_type: file.content_type,
-    });
+    // Step 1: Get file — prefer disk, fallback to MCP download
+    let file: DownloadedFile;
+    if (input.file_path && existsSync(input.file_path)) {
+      addJobEvent(db, job.id, "step_started", { step: "read_from_disk", file_path: input.file_path });
+      file = readFileAsDownload(input.file_path);
+      addJobEvent(db, job.id, "step_completed", {
+        step: "read_from_disk",
+        filename: file.filename,
+        size: file.size,
+      });
+    } else {
+      addJobEvent(db, job.id, "step_started", { step: "download", strategy });
+      file = await downloadInvoice(input, logger);
+      addJobEvent(db, job.id, "step_completed", {
+        step: "download",
+        filename: file.filename,
+        size: file.size,
+        content_type: file.content_type,
+      });
+    }
 
     // Step 2: Resolve correspondent
     addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
@@ -222,9 +198,23 @@ export async function executeInvoiceIntake(
       });
     }
 
-    // Step 4: Resolve tags
+    // Step 4: Resolve tags — derived deterministically from classification
     addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-    const tagIds = await resolveTags(classification.suggested_tags, logger);
+    const allTagNames: string[] = [];
+    const docType = classification.doc_type;
+    if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
+      allTagNames.push("invoicing");
+    } else if (docType === "document") {
+      allTagNames.push("documents");
+    }
+    allTagNames.push("techlab");
+    if (classification.is_fuel) {
+      allTagNames.push("fuel");
+    }
+    if (input.month_tag && !allTagNames.includes(input.month_tag)) {
+      allTagNames.push(input.month_tag);
+    }
+    const tagIds = await resolveTags(allTagNames, logger);
     addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
 
     // Step 5: Resolve document type
@@ -265,7 +255,7 @@ export async function executeInvoiceIntake(
       title,
       paperless_document_id: uploadResult.document_id,
       correspondent: correspondent.name,
-      tags: classification.suggested_tags,
+      tags: allTagNames,
       total_amount: classification.total_amount,
     };
     completeJob(db, job.id, result);
@@ -735,38 +725,27 @@ export async function executeScanIntake(
 
   const { classification, file_id } = input;
 
-  // ── Gate: unknown vendor requires approval (unless already approved) ──
-  if (classification.vendor === "unknown" && !job.approved_by) {
-    requestJobApproval(db, job.id, {
-      reason: "Unknown vendor — cannot process scan without human confirmation",
-      filename: input.filename,
-      file_id,
-    });
-    logger.log(`Job ${job.id} paused: unknown vendor`);
-    return;
-  }
-
-  // ── Gate: low confidence requires approval ──
-  if (classification.confidence === "low" && !job.approved_by) {
-    requestJobApproval(db, job.id, {
-      reason: `Low classification confidence for "${classification.vendor}"`,
-      filename: input.filename,
-      file_id,
-    });
-    logger.log(`Job ${job.id} paused: low confidence`);
-    return;
-  }
-
   try {
-    // Step 1: Download from GDrive
-    addJobEvent(db, job.id, "step_started", { step: "download", source: "gdrive" });
-    const file = await downloadFromGdrive(file_id, input.filename, logger);
-    addJobEvent(db, job.id, "step_completed", {
-      step: "download",
-      filename: file.filename,
-      size: file.size,
-      content_type: file.content_type,
-    });
+    // Step 1: Get file — prefer disk, fallback to GDrive download
+    let file: DownloadedFile;
+    if (input.file_path && existsSync(input.file_path)) {
+      addJobEvent(db, job.id, "step_started", { step: "read_from_disk", file_path: input.file_path });
+      file = readFileAsDownload(input.file_path);
+      addJobEvent(db, job.id, "step_completed", {
+        step: "read_from_disk",
+        filename: file.filename,
+        size: file.size,
+      });
+    } else {
+      addJobEvent(db, job.id, "step_started", { step: "download", source: "gdrive" });
+      file = await downloadFromGdrive(file_id, input.filename, logger);
+      addJobEvent(db, job.id, "step_completed", {
+        step: "download",
+        filename: file.filename,
+        size: file.size,
+        content_type: file.content_type,
+      });
+    }
 
     // Step 2: Resolve correspondent
     addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
