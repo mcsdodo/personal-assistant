@@ -612,34 +612,77 @@ async function uploadToPaperless(
 ): Promise<UploadResult> {
   logger.log(`Uploading to Paperless: "${params.title}"`);
 
-  const toolArgs: Record<string, unknown> = {
-    file: params.file.content_base64,
-    filename: params.file.filename,
-    title: params.title,
-    correspondent: params.correspondentId,
-    tags: params.tagIds,
-  };
+  // Upload directly to Paperless API (bypasses paperless-mcp to avoid
+  // 413 Payload Too Large on base64-encoded files over ~200KB).
+  const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
+  const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
+  const fileBuffer = Buffer.from(params.file.content_base64, "base64");
 
-  if (params.documentTypeId) {
-    toolArgs.document_type = params.documentTypeId;
+  // Build multipart form data manually
+  const boundary = `----FormBoundary${Date.now()}`;
+  const parts: Buffer[] = [];
+
+  // File field
+  parts.push(Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${params.file.filename}"\r\nContent-Type: ${params.file.content_type}\r\n\r\n`
+  ));
+  parts.push(fileBuffer);
+  parts.push(Buffer.from("\r\n"));
+
+  // Title
+  parts.push(Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n${params.title}\r\n`
+  ));
+
+  // Correspondent
+  if (params.correspondentId) {
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="correspondent"\r\n\r\n${params.correspondentId}\r\n`
+    ));
   }
 
-  // Custom fields: post_document accepts an array of field IDs.
-  // Setting field values requires a separate update after upload.
-  // For now, skip custom_fields in the upload — Paperless-AI or
-  // manual editing can set total_amount/order_id after ingestion.
+  // Document type
+  if (params.documentTypeId) {
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="document_type"\r\n\r\n${params.documentTypeId}\r\n`
+    ));
+  }
 
-  const result = await callMcpTool(PAPERLESS_MCP_URL, "post_document", toolArgs);
-  const resultText = extractText(result);
+  // Tags (one field per tag)
+  for (const tagId of params.tagIds) {
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="tags"\r\n\r\n${tagId}\r\n`
+    ));
+  }
 
-  // post_document may return the document ID or a task ID
+  parts.push(Buffer.from(`--${boundary}--\r\n`));
+
+  const body = Buffer.concat(parts);
+
+  const response = await fetch(`${paperlessUrl}/api/documents/post_document/`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Token ${paperlessToken}`,
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Paperless upload failed (${response.status}): ${errText.slice(0, 200)}`);
+  }
+
+  const resultText = await response.text();
+  logger.log(`Upload response: ${resultText}`);
+
+  // post_document returns a task UUID string
   let documentId: number | undefined;
   try {
     const parsed = JSON.parse(resultText);
     documentId = parsed.id ?? parsed.document_id ?? parsed.pk;
   } catch {
-    // Response might be a success message string
-    logger.log(`Upload response: ${resultText}`);
+    // Response is typically just a UUID string — document ID assigned async
   }
 
   return { document_id: documentId, title: params.title };

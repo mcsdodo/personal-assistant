@@ -60,6 +60,9 @@ services:
       - STARTUP_DELAY_MS=${STARTUP_DELAY_MS:-15000}
       - MAX_NEW_PER_CYCLE=${MAX_NEW_PER_CYCLE:-5}
       - EMAIL_WATCHER_METRICS_PORT=${EMAIL_WATCHER_METRICS_PORT:-9465}
+      # Paperless direct API (for large file uploads bypassing MCP)
+      - PAPERLESS_URL=${PAPERLESS_URL}
+      - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}
       # gdrive-watcher channel
       - GDRIVE_POLL_INTERVAL_MS=${GDRIVE_POLL_INTERVAL_MS:-30000}
       - GDRIVE_WATCH_FOLDER=${GDRIVE_WATCH_FOLDER:-Techlab/Invoice scans}
