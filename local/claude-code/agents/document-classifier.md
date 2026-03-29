@@ -62,7 +62,7 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 - For credit notes: use negative value
 - Return as a number (e.g., 45.50), not a string
 - Return `null` if currency is NOT EUR — we only track EUR amounts
-- Return `null` for bank statements and non-monetary documents (worklogs, travel orders)
+- If `doc_type` is `"document"` or `"account_statement"`: always return `null` — no exceptions
 - If unreadable, return `null`
 
 ### currency
@@ -77,9 +77,8 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 ### order_id
 - Extract THIS document's own number — the number in the header/title, not a referenced document number
 - For credit notes: use the credit note number (e.g. "Opravný daňový doklad - 6401551319"), NOT the original invoice number it references
-- For receipts (`doc_type: "receipt"`): return `null` — POS sequence numbers and eKasa IDs are not useful for identification
+- If `doc_type` is `"receipt"`, `"account_statement"`, or `"document"`: always return `null` — no exceptions
 - Examples: "FV2026001234", "OBJ-583481365", "5000009409"
-- Return `null` for bank statements and non-monetary documents (worklogs, travel orders)
 - Return `null` if not found
 
 ### subtitle

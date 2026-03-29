@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 
 # PAPERLESS_URL = "http://localhost:8010"
 PAPERLESS_URL = "https://documents.lacny.me"
-DOCUMENT_TYPE_STATEMENT = "account_statement"
+DOCUMENT_TYPE_STATEMENT = "Account Statement"
 INVOICING_TAG_NAME = "invoicing"  # only docs with this tag are matched
 MONTH_WINDOW = 1  # +/- months for cross-matching
 TOTAL_AMOUNT_FIELD_NAME = "total_amount"  # Paperless custom field name
