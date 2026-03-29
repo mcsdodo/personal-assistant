@@ -97,6 +97,7 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | `local/claude-code/channels/db.ts` | Email-watcher SQLite module |
 | `local/claude-code/channels/gdrive-watcher.ts` | GDrive-watcher channel (polls Google Drive, SQLite audit) |
 | `local/claude-code/channels/gdrive-db.ts` | GDrive-watcher SQLite module |
+| `local/claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice-worker) |
 | `local/claude-code/agents/` | Haiku subagents (email-classifier, document-classifier) |
 | `local/checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
 | `local/checker-mcp/webapp.py` | Flask web UI (matching view + P&L view) |

@@ -24,7 +24,7 @@ Outlook email access via Microsoft Graph:
 - `get_email(message_id)` — full email with body
 - `get_attachments(message_id)` — list attachments
 - `download_attachment(message_id, attachment_id)` — download attachment (base64)
-- `extract_invoice_links(message_id)` — find invoice download links in email body
+- `extract_invoice_links(message_id)` — find invoice download links in email body (legacy; canonical vendor rules now live in `channels/invoice-links.ts`)
 - `download_invoice_link(url)` — download file from invoice link (base64)
 
 ### email-watcher (channel + tools)

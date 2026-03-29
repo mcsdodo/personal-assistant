@@ -154,7 +154,7 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 **Code:**
 - [`email-watcher.ts:581-612`](../local/claude-code/channels/email-watcher.ts#L581) — `pollOutlook()`: call `list_emails`, parse array
 - [`outlook-mcp/server.py`](../local/outlook-mcp/server.py) — 6 tools: `list_emails`, `get_email`, `get_attachments`, `download_attachment`, `extract_invoice_links`, `download_invoice_link`
-- [`outlook-mcp/server.py:22-26`](../local/outlook-mcp/server.py#L22) — `INVOICE_RULES`: regex patterns for invoice link extraction (e.g., Alza.sk "Stiahnuť faktúru")
+- [`outlook-mcp/server.py:22-26`](../local/outlook-mcp/server.py#L22) — `INVOICE_RULES`: legacy regex patterns for invoice link extraction (superseded by `channels/invoice-links.ts`)
 
 **Auth:** MSAL device code flow. On first start (no cached token), prints URL + code in container logs. Tokens persist in `/mnt/shared_configs/personal-assistant/outlook/token_cache.json`.
 
@@ -264,7 +264,7 @@ The classifier assigns a `download_strategy` that determines how the worker gets
 | `browser_required` | Pauses for approval | Requires browser interaction (e.g., login-gated portal) |
 | `manual_review` | Pauses for approval | Classifier unsure, needs human review |
 
-**Outlook vendor rules** for link extraction: [`outlook-mcp/server.py:22-26`](../local/outlook-mcp/server.py#L22) — regex patterns matching sender + link text + subject (e.g., Alza.sk).
+**Vendor rules** for link extraction: [`channels/invoice-links.ts`](../local/claude-code/channels/invoice-links.ts) — `INVOICE_LINK_RULES` is the single source of truth for vendor-specific patterns (sender + link text + subject). Used by both email-watcher (Gmail HTML) and invoice-worker (Outlook `body_html`). The legacy `INVOICE_RULES` in `outlook-mcp/server.py` is superseded.
 
 **Pre-job download (email path):** Claude now downloads the PDF *before* creating the intake job (using `curl` for links, `download-helper.ts` for attachments). The job receives a `file_path` and the worker reads from disk. The worker's MCP-based download functions are kept as fallback when `file_path` is missing (e.g., legacy jobs or manual retries).
 
