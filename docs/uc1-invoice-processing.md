@@ -252,7 +252,7 @@ Claude can query Paperless directly using `search_documents` from the community 
 
 Scanned documents dropped into Google Drive are automatically classified and uploaded to Paperless.
 
-**Pipeline:** gdrive-watcher polls `Techlab/Invoice scans/` → Claude downloads file via `curl` → document-classifier (Haiku) extracts metadata → `create_scan_intake_job` with `file_path` + `month_tag` → worker reads from disk, uploads to Paperless, moves file to `Processed/`.
+**Pipeline:** gdrive-watcher polls `techlab/invoices/` → Claude downloads file via `curl` → document-classifier (Haiku) extracts metadata → `create_scan_intake_job` with `file_path` + `month_tag` → worker reads from disk, uploads to Paperless, moves file to `processed/`.
 
 **Unified classifier:** Both email PDFs and GDrive scans use the same `document-classifier` agent. The email path adds an email-classifier triage step before download; the GDrive path skips it.
 

@@ -36,7 +36,7 @@ Use these for debugging ("show me recent emails"), status checks ("how many proc
 
 ### gdrive-watcher (channel + tools)
 
-The gdrive-watcher polls a Google Drive folder (`Techlab/Invoice scans/`) every 30 seconds for new scanned documents and pushes events here.
+The gdrive-watcher polls a Google Drive folder (`techlab/invoices/`) every 30 seconds for new scanned documents and pushes events here.
 
 Tools:
 - `update_gdrive_scan_status(id, status, classification?, action?, job_id?, process_result?, error?)` — record processing results
@@ -76,7 +76,7 @@ On first startup, existing emails are seeded into the database without processin
 
 ## When you receive a gdrive-watcher channel event
 
-The gdrive-watcher polls `Techlab/Invoice scans/` on Google Drive every 30 seconds for new files and pushes events here.
+The gdrive-watcher polls `techlab/invoices/` on Google Drive every 30 seconds for new files and pushes events here.
 
 Each event has these meta fields:
 - `source`: always `"gdrive"`
@@ -97,7 +97,7 @@ Each event has these meta fields:
    - `state: failed` → notify user via Telegram with error
 5. **Record** — call `update_gdrive_scan_status` with the outcome
 
-The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `Processed/`. On failure, it moves to `Errors/`.
+The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `processed/`. On failure, it moves to `errors/`.
 
 ## Email Processing Pipeline
 

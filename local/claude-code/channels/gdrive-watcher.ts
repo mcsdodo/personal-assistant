@@ -55,7 +55,7 @@ const HEALTH_STALE_MULTIPLIER = 5;
 const GDRIVE_MCP_URL =
   process.env.GDRIVE_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const WATCH_FOLDER =
-  process.env.GDRIVE_WATCH_FOLDER ?? "Techlab/Invoice scans";
+  process.env.GDRIVE_WATCH_FOLDER ?? "techlab/invoices";
 const GOOGLE_EMAIL =
   process.env.GMAIL_EMAIL ?? "";
 
@@ -243,9 +243,9 @@ async function resolveWatchFolderId(): Promise<string> {
   watchFolderId = folderId;
   log(`Resolved watch folder "${WATCH_FOLDER}" → ${folderId}`);
 
-  // Ensure Processed and Errors subfolders exist
-  await ensureSubfolder(client, folderId, "Processed");
-  await ensureSubfolder(client, folderId, "Errors");
+  // Ensure processed and errors subfolders exist
+  await ensureSubfolder(client, folderId, "processed");
+  await ensureSubfolder(client, folderId, "errors");
 
   return folderId;
 }
@@ -373,7 +373,7 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
 
     // Any file in the watch folder that isn't tracked yet should be processed.
     // Unlike email-watcher, there's no "seeding" — files stay in this folder
-    // precisely because they need processing. They move to Processed/ after upload.
+    // precisely because they need processing. They move to processed/ after upload.
     const newFiles = files.filter((f) => !fileExists(db, f.id));
 
     // Poll completed successfully

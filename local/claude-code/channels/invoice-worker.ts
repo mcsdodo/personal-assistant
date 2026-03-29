@@ -915,7 +915,7 @@ export async function executeScanIntake(
             duplicate_message: dedupeResult.message,
           };
           completeJob(db, job.id, result);
-          await moveGdriveFile(file_id, "Processed", logger);
+          await moveGdriveFile(file_id, "processed", logger);
           logger.log(`Job ${job.id} completed: duplicate of doc #${dedupeResult.existing_id}`);
           span.setAttribute("invoice.outcome", "duplicate");
           span.setStatus({ code: SpanStatusCode.OK });
@@ -1003,7 +1003,7 @@ export async function executeScanIntake(
       }
 
       // Step 8: Move GDrive file to Processed/
-      await moveGdriveFile(file_id, "Processed", logger);
+      await moveGdriveFile(file_id, "processed", logger);
 
       const result: InvoiceIntakeResult = {
         outcome: "uploaded",
@@ -1021,8 +1021,8 @@ export async function executeScanIntake(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       failJob(db, job.id, { code: "scan_intake_error", message, step: "unknown" });
-      await moveGdriveFile(file_id, "Errors", logger).catch((moveErr) => {
-        logger.log(`Failed to move file to Errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
+      await moveGdriveFile(file_id, "errors", logger).catch((moveErr) => {
+        logger.log(`Failed to move file to errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
       });
       logger.log(`Job ${job.id} failed: ${message}`);
       span.setAttribute("invoice.outcome", "failed");
@@ -1256,7 +1256,7 @@ async function moveGdriveFile(
       }
 
       // Resolve watch folder ID (needed as parent for folder creation + remove_parents for move)
-      const watchFolderName = (process.env.GDRIVE_WATCH_FOLDER ?? "Techlab/Invoice scans").split("/").pop()!;
+      const watchFolderName = (process.env.GDRIVE_WATCH_FOLDER ?? "techlab/invoices").split("/").pop()!;
       const watchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
         query: `name = '${watchFolderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         user_google_email: GOOGLE_EMAIL,
