@@ -44,7 +44,7 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 
 ### doc_type
 - `invoice` — formal invoice (faktúra) with company details, VAT, line items
-- `receipt` — POS receipt (pokladničný blok) from retail/fuel station, parking ticket, highway toll ticket — any monetary document that is not a formal invoice
+- `receipt` — POS receipt (pokladničný blok) from retail/fuel station, parking ticket/proof of payment of parking, highway toll ticket/vignette — any payment confirmation or monetary document that is not a formal invoice
 - `credit_note` — dobropis, refund document
 - `account_statement` — bank statement (výpis z účtu)
 - `document` — worklogs (dochádzka), vacation logs, travel orders (cestovný príkaz), business trip logs, contracts, attendance records — non-monetary documents
@@ -89,19 +89,21 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 ### owner
 Determines whether this document belongs to the business entity or is personal.
 
-**Business identifiers** — if ANY of these appear on the document as the buyer/recipient/account owner, return `"techlab"`:
-- Company name containing: ${BUSINESS_COMPANY_NAME}
+**Business identifiers** — if ANY of these appear ANYWHERE on the document, return `"techlab"`:
+- Company name on buyer/recipient side: ${BUSINESS_COMPANY_NAME}
   (Match fuzzy — ignore spacing/punctuation differences, e.g., "Techlab s.r.o." matches "Techlab s. r. o.")
-- Tax/VAT ID matching: ${BUSINESS_TAX_IDS}
+- Tax/VAT ID on buyer/recipient side: ${BUSINESS_TAX_IDS}
   (Look for: IČ DPH, DIČ, VAT ID, VAT number, Tax ID, or equivalent in any language)
-- Company registration number matching: ${BUSINESS_CRN}
+- Company registration number on buyer/recipient side: ${BUSINESS_CRN}
   (Look for: IČO, CRN, Company reg. no., Registration number, or equivalent in any language)
-- Vehicle license plate: ${BUSINESS_LICENSE_PLATES}
+- Vehicle license plate ANYWHERE on document: ${BUSINESS_LICENSE_PLATES}
+  (On parking tickets appears as "LP:", on fuel receipts may appear on the receipt body. Check the entire document.)
 - Business account indicators (e.g., "Podnikateľský účet", "Business account")
 
-**Default:** If no business identifiers are found on the buyer/recipient side, return `"personal"`.
+**Default:** If no business identifiers are found, return `"personal"`.
 
 Important:
-- Match identifiers on the **buyer/recipient** side of the document, not the seller/vendor side.
+- For company name, tax IDs, and registration numbers: match on the **buyer/recipient** side, not the seller/vendor side.
+- For license plates: match **anywhere** on the document (parking tickets, toll receipts have no buyer section — the plate IS the identifier).
 - A personal name appearing alongside a company name does NOT make it personal — the company name takes precedence.
 - Empty IČO/DIČ/IČ DPH fields (as on personal invoices) are NOT a match — they confirm the absence of business identifiers.
