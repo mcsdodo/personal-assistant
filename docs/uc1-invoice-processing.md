@@ -182,10 +182,22 @@ The invoice-worker uploads documents via the Paperless MCP's `post_document` too
 
 **Steps:**
 1. **Resolve correspondent** — match vendor name to existing Paperless correspondent (case-insensitive), create if missing
-2. **Resolve tags** — derive tags deterministically from classification fields (`doc_type` → invoicing/documents, `is_fuel` → fuel, always techlab, `month_tag` from job input), create missing tags
+2. **Resolve tags** — derive tags from the `owner` field set by the document-classifier (see owner-aware logic below), create missing tags
 3. **Resolve document type** — map `doc_type` to Paperless type (invoice → "invoice", statement → "account_statement")
 4. **Build title** — `{vendor} - {order_id}` or `{vendor} - {subject}`
 5. **Upload** — `post_document` with base64 content, correspondent, tags, type, custom fields (total_amount, order_id)
+
+**Owner-aware tag derivation:**
+
+The `owner` field from the document-classifier determines the tag set. The classifier inspects the PDF for business identifiers (company name, VAT/ICO/DIC, license plates, "Podnikatelsky ucet") and returns `owner: "techlab"` or `owner: "personal"`.
+
+| Owner | Tags applied |
+|-------|-------------|
+| `techlab` (business) | `techlab` + `invoicing`/`documents` (from `doc_type`) + `fuel` (if `is_fuel`) + `YYYY-MM` |
+| `personal` | `personal` + `YYYY-MM` only |
+| missing/null (backward compat) | Defaults to `techlab` behavior |
+
+Previously, `techlab` was hardcoded on all documents and there was no personal/business distinction.
 
 **Code:**
 - [`invoice-worker.ts:445-475`](../local/claude-code/channels/invoice-worker.ts#L445) — `resolveCorrespondent()`: list → match → create if needed

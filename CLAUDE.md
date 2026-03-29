@@ -23,7 +23,7 @@ claude-code container (node:20-slim, user: node, --model sonnet)
 ├── email-watcher channel+tools (stdio, polls gmail+outlook every 30s, SQLite audit trail)
 ├── gdrive-watcher channel+tools (stdio, polls GDrive folder every 30s, SQLite audit trail)
 ├── telegram channel (official plugin, cloned at build, two-way)
-├── subagents: email-classifier (haiku), document-classifier (haiku)
+├── subagents: email-classifier (haiku), document-classifier (haiku, returns owner field)
 └── connects to MCP tool servers via Streamable HTTP
 
 paperless-mcp container (ghcr.io/baruchiro/paperless-mcp:latest)
@@ -98,7 +98,7 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | `local/claude-code/channels/gdrive-watcher.ts` | GDrive-watcher channel (polls Google Drive, SQLite audit) |
 | `local/claude-code/channels/gdrive-db.ts` | GDrive-watcher SQLite module |
 | `local/claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice-worker) |
-| `local/claude-code/agents/` | Haiku subagents (email-classifier, document-classifier) |
+| `local/claude-code/agents/` | Haiku subagents (email-classifier, document-classifier — classifier returns `owner` field for personal/business tag routing) |
 | `local/checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
 | `local/checker-mcp/webapp.py` | Flask web UI (matching view + P&L view) |
 | `local/checker-mcp/entrypoint.sh` | Two-process entrypoint (MCP background + Flask PID 1) |
