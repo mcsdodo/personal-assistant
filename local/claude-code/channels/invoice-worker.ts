@@ -27,6 +27,7 @@ import { callMcpTool, extractJson, extractText } from "./mcp-client";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
 import { readFileAsDownload } from "./download-helper";
 import { extractInvoiceLinks, type InvoiceLink } from "./invoice-links";
+import { findBestCorrespondentMatch } from "./fuzzy-match";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -550,13 +551,13 @@ async function resolveCorrespondent(
     // Paperless MCP returns paginated object { results: [...] }, not a raw array
     const correspondents = (Array.isArray(parsed) ? parsed : parsed.results ?? []) as Array<{ id: number; name: string }>;
 
-    // Case-insensitive match
-    const match = correspondents.find(
-      (c) => c.name.toLowerCase() === vendor.toLowerCase(),
-    );
+    // Fuzzy match (handles legal suffix spacing variants from LLM output)
+    const match = findBestCorrespondentMatch(vendor, correspondents);
     if (match) {
+      logger.log(`Fuzzy matched "${vendor}" → "${match.name}" (score: ${match.score.toFixed(3)})`);
       span.setAttribute("correspondent.id", match.id);
       span.setAttribute("correspondent.name", match.name);
+      span.setAttribute("correspondent.match_score", match.score);
       return { id: match.id, name: match.name };
     }
 
