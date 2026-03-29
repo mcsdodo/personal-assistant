@@ -107,7 +107,7 @@ All 5 services have Docker health checks. `claude-code` depends on all MCPs via 
 
 **Staleness detection:** email-watcher `/health` returns 503 if no successful poll in `POLL_INTERVAL_MS * 5` (default 2.5 min). Catches MCP connectivity loss and email-watcher hangs.
 
-**Code:** [`email-watcher.ts:309-322`](../local/claude-code/channels/email-watcher.ts#L309) — health endpoint with staleness check.
+**Code:** [`email-watcher.ts:322-340`](../local/claude-code/channels/email-watcher.ts#L322) — health endpoint with staleness check.
 
 ## Restart Resilience
 
