@@ -518,7 +518,7 @@ function parseGmailEmails(data: any, ids: string[]): EmailInfo[] {
   return [];
 }
 
-async function pollGmail(): Promise<EmailInfo[]> {
+async function pollGmail(db: Database): Promise<EmailInfo[]> {
   if (!gmailEnabled) return [];
 
   try {
@@ -540,8 +540,8 @@ async function pollGmail(): Promise<EmailInfo[]> {
       return [];
     }
 
-    const ids = [...new Set(extractGmailIds(searchData))];
-    if (ids.length === 0) {
+    const allIds = [...new Set(extractGmailIds(searchData))];
+    if (allIds.length === 0) {
       return [];
     }
 
@@ -550,6 +550,14 @@ async function pollGmail(): Promise<EmailInfo[]> {
     const hasMetadata = fromSearch.some((e) => e.subject || e.sender);
     if (fromSearch.length > 0 && hasMetadata) {
       return fromSearch;
+    }
+
+    // Skip emails already in the DB — only fetch details for unknown IDs.
+    // This avoids ~50 sequential Gmail API calls per poll when nothing is new.
+    const ids = allIds.filter((id) => !emailExists(db, id));
+    if (ids.length === 0) {
+      // All emails already known — return minimal info for seeding/dedup logic
+      return allIds.map((id) => ({ id, source: "gmail" as const }));
     }
 
     // Step 2: Fetch full content per message (includes attachment info)
@@ -596,7 +604,10 @@ async function pollGmail(): Promise<EmailInfo[]> {
         log(`Gmail fetch failed for ${id}: ${e.message}`);
       }
     }
-    if (emails.length > 0) return emails;
+    // Return fetched new emails + minimal stubs for known IDs (needed for seeding logic)
+    const knownIds = allIds.filter((id) => emailExists(db, id));
+    const knownStubs: EmailInfo[] = knownIds.map((id) => ({ id, source: "gmail" as const }));
+    return [...emails, ...knownStubs];
   } catch (e: any) {
     log(`Gmail poll error: ${e.message}`);
     resetGmailClient();
@@ -608,7 +619,7 @@ async function pollGmail(): Promise<EmailInfo[]> {
 // Outlook polling
 // ---------------------------------------------------------------------------
 
-async function pollOutlook(): Promise<EmailInfo[]> {
+async function pollOutlook(db: Database): Promise<EmailInfo[]> {
   if (!OUTLOOK_ENABLED) return [];
 
   try {
@@ -649,8 +660,8 @@ async function pollOutlook(): Promise<EmailInfo[]> {
 async function pollCycle(db: Database, channel: Server): Promise<void> {
   return withSpan(tracer, "email-watcher.poll", {}, async (span) => {
     const [gmailEmails, outlookEmails] = await Promise.all([
-      pollGmail(),
-      pollOutlook(),
+      pollGmail(db),
+      pollOutlook(db),
     ]);
 
     // Per-source seeding: each source seeds independently on its first

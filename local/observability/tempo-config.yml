@@ -43,7 +43,7 @@ storage:
 overrides:
   defaults:
     metrics_generator:
-      processors: [service-graphs, span-metrics]
+      processors: [service-graphs, span-metrics, local-blocks]
 
 usage_report:
   reporting_enabled: false
