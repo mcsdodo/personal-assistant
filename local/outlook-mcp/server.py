@@ -5,26 +5,16 @@ in container logs. User enters the code at the URL, server continues automatical
 """
 
 import os
-import re
 import threading
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 import msal
 import requests
 import uvicorn
-from bs4 import BeautifulSoup
 from mcp.server.fastmcp import FastMCP
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 SCOPES = ["Mail.Read"]
-
-# Invoice link extraction rules: (sender_pattern, link_text_pattern, subject_pattern_or_None)
-# sender_pattern: matches sender OR subject (so forwarded/test emails work too)
-INVOICE_RULES = [
-    (r"alza\.sk", r"Stiahnuť faktúru", None),
-    (r"alza\.sk", r"Stiahnuť doklad", r"[Vv]rátili|[Vv]raciame"),
-]
 
 mcp_server = FastMCP("outlook")
 
@@ -214,75 +204,6 @@ def download_attachment(message_id: str, attachment_id: str) -> dict:
     }
 
 
-@mcp_server.tool()
-def extract_invoice_links(message_id: str) -> list[dict]:
-    """Extract invoice download links from an email's HTML body using vendor rules.
-
-    Args:
-        message_id: Outlook message ID.
-    """
-    s = _session()
-    resp = s.get(f"{GRAPH_BASE}/me/messages/{message_id}",
-                 params={"$select": "from,subject,body"})
-    resp.raise_for_status()
-    msg = resp.json()
-
-    sender = msg.get("from", {}).get("emailAddress", {}).get("address", "")
-    subject = msg.get("subject", "")
-    html = msg.get("body", {}).get("content", "")
-
-    return _extract_links(html, sender, subject)
-
-
-@mcp_server.tool()
-def download_invoice_link(url: str) -> dict:
-    """Download a file from an invoice link URL. Returns base64-encoded content.
-
-    Tries plain requests first, then with browser-like headers. Returns an error
-    dict with details if both fail (e.g., expired link).
-
-    Args:
-        url: Direct download URL from extract_invoice_links.
-    """
-    import base64
-
-    # Attempt 1: plain request (works for fresh links)
-    resp = requests.get(url, timeout=30, allow_redirects=True)
-
-    # Attempt 2: browser-like headers if plain request got blocked
-    if resp.status_code in (403, 409, 429):
-        resp = requests.get(url, timeout=30, allow_redirects=True, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,*/*;q=0.8",
-        })
-
-    if resp.status_code in (403, 409, 429):
-        return {
-            "error": f"Download failed: HTTP {resp.status_code}. Link may have expired.",
-            "url": url,
-            "status_code": resp.status_code,
-        }
-
-    resp.raise_for_status()
-
-    filename = None
-    cd = resp.headers.get("Content-Disposition", "")
-    if "filename=" in cd:
-        names = re.findall(r'filename[*]?=["\']?([^"\';]+)', cd)
-        filename = names[0] if names else None
-    if not filename:
-        filename = Path(urlparse(url).path).name or "download.pdf"
-        if resp.content[:5] == b"%PDF-" and not filename.lower().endswith(".pdf"):
-            filename += ".pdf"
-
-    return {
-        "filename": filename,
-        "content_type": resp.headers.get("Content-Type", ""),
-        "size": len(resp.content),
-        "content_base64": base64.b64encode(resp.content).decode(),
-    }
-
-
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 def _find_folder(s: requests.Session, name: str) -> str | None:
@@ -293,32 +214,6 @@ def _find_folder(s: requests.Session, name: str) -> str | None:
             return f["id"]
     return None
 
-
-def _extract_links(html: str, sender: str, subject: str) -> list[dict]:
-    soup = BeautifulSoup(html, "html.parser")
-    links = []
-    seen = set()
-    for a in soup.find_all("a", href=True):
-        href = a.get("href", "").strip()
-        if href in seen or not href.startswith("http"):
-            continue
-        seen.add(href)
-        text = a.get_text(strip=True).replace("\xa0", " ")[:80]
-        if not text:
-            text = urlparse(href).path.split("/")[-1] or href[:80]
-
-        for sender_pat, text_pat, subject_pat in INVOICE_RULES:
-            # Match sender_pattern against sender OR subject (so forwarded/test emails work)
-            if not (re.search(sender_pat, sender, re.IGNORECASE) or re.search(sender_pat, subject or "", re.IGNORECASE)):
-                continue
-            if not re.search(text_pat, text, re.IGNORECASE):
-                continue
-            if subject_pat and not re.search(subject_pat, subject or ""):
-                continue
-            params = parse_qs(urlparse(href).query)
-            links.append({"url": href, "text": text, "doc_id": params.get("d", [None])[0]})
-            break
-    return links
 
 
 # ── Startup ───────────────────────────────────────────────────────────────

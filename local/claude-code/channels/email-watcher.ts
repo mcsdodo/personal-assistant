@@ -30,6 +30,7 @@ import {
 } from "./db";
 
 import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId } from "./tracing";
+import { extractInvoiceLinks } from "./invoice-links";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,6 +45,7 @@ interface EmailInfo {
   preview?: string;
   hasAttachments?: boolean;
   receivedAt?: string;
+  invoiceLinks?: Array<{ url: string; text: string; docId?: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -722,6 +724,34 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
       log(`Capped new emails from ${newEmails.length} to ${MAX_NEW_PER_CYCLE}`);
     }
 
+    // Extract invoice links from Gmail HTML for new emails
+    for (const email of capped) {
+      if (email.source === "gmail" && email.sender) {
+        try {
+          const client = await getGmailClient();
+          const htmlResult = await client.callTool({
+            name: "get_gmail_message_content",
+            arguments: {
+              message_id: email.id,
+              user_google_email: GMAIL_EMAIL,
+              body_format: "html",
+            },
+          });
+          const html = parseToolResult(htmlResult);
+          if (typeof html === "string") {
+            const links = extractInvoiceLinks(html, email.sender, email.subject ?? "");
+            if (links.length > 0) {
+              email.invoiceLinks = links;
+              log(`Found ${links.length} invoice link(s) in Gmail ${email.id}`);
+            }
+          }
+        } catch (e: any) {
+          // body_format not supported or MCP error — skip link extraction
+          log(`Gmail HTML fetch failed for ${email.id}: ${e.message}`);
+        }
+      }
+    }
+
     for (const email of capped) {
       // Insert as 'new'
       insertEmail(db, {
@@ -746,20 +776,28 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
       contentLines.push(`Has attachments: ${email.hasAttachments ? "yes" : "no"}`);
       if (email.preview) contentLines.push(`Preview: ${email.preview}`);
       contentLines.push(`Message ID: ${email.id}`);
+      if (email.invoiceLinks?.length) {
+        contentLines.push(`Invoice links: ${email.invoiceLinks.map(l => l.url).join(", ")}`);
+      }
+
+      const meta: Record<string, string> = {
+        email_source: email.source,
+        sender: email.sender ?? "",
+        subject: email.subject ?? "",
+        has_attachments: String(email.hasAttachments ?? false),
+        message_id: email.id,
+        received_at: email.receivedAt ?? "",
+        timestamp: new Date().toISOString(),
+      };
+      if (email.invoiceLinks?.length) {
+        meta.invoice_links = JSON.stringify(email.invoiceLinks);
+      }
 
       await channel.notification({
         method: "notifications/claude/channel",
         params: {
           content: contentLines.join("\n"),
-          meta: {
-            email_source: email.source,
-            sender: email.sender ?? "",
-            subject: email.subject ?? "",
-            has_attachments: String(email.hasAttachments ?? false),
-            message_id: email.id,
-            received_at: email.receivedAt ?? "",
-            timestamp: new Date().toISOString(),
-          },
+          meta,
         },
       });
     }

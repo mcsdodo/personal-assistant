@@ -115,7 +115,7 @@ services:
       - FASTMCP_STATELESS_HTTP=true
 
   gmail-mcp:
-    image: ghcr.io/taylorwilsdon/google_workspace_mcp:1.14.3  # pinned 2026-03
+    image: ghcr.io/taylorwilsdon/google_workspace_mcp:1.16.2  # pinned 2026-03, body_format support
     container_name: personal-assistant-gmail-mcp
     restart: unless-stopped
     labels:

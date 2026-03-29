@@ -3,7 +3,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir \
     mcp[cli] uvicorn \
-    requests beautifulsoup4 msal
+    requests msal
 
 COPY server.py ./
 

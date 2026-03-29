@@ -80,7 +80,7 @@ sequenceDiagram
         alt strategy = "attachment"
             C->>G: download_attachment / download-helper.ts
         else strategy = "known_link" / "direct_url"
-            C->>G: extract_invoice_links → curl -o
+            C->>G: invoice_links from event or extractInvoiceLinks() → curl -o
         end
         G-->>C: file on disk (file_path)
         opt encrypted PDF
@@ -128,7 +128,7 @@ sequenceDiagram
 
 ## UC-1.1: Gmail Polling
 
-Polls Gmail via the community `google_workspace_mcp` image (pinned `1.14.3`).
+Polls Gmail via the community `google_workspace_mcp` image (pinned `1.16.2`, supports `body_format: "html"`).
 
 **Flow:** `search_gmail_messages` (page_size=50) → extract IDs (deduplicated via `Set`) → `get_gmail_messages_content_batch` → parse metadata.
 
@@ -153,8 +153,7 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 
 **Code:**
 - [`email-watcher.ts:581-612`](../local/claude-code/channels/email-watcher.ts#L581) — `pollOutlook()`: call `list_emails`, parse array
-- [`outlook-mcp/server.py`](../local/outlook-mcp/server.py) — 6 tools: `list_emails`, `get_email`, `get_attachments`, `download_attachment`, `extract_invoice_links`, `download_invoice_link`
-- [`outlook-mcp/server.py:22-26`](../local/outlook-mcp/server.py#L22) — `INVOICE_RULES`: legacy regex patterns for invoice link extraction (superseded by `channels/invoice-links.ts`)
+- [`outlook-mcp/server.py`](../local/outlook-mcp/server.py) — 4 tools: `list_emails`, `get_email`, `get_attachments`, `download_attachment`
 
 **Auth:** MSAL device code flow. On first start (no cached token), prints URL + code in container logs. Tokens persist in `/mnt/shared_configs/personal-assistant/outlook/token_cache.json`.
 

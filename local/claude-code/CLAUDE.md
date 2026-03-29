@@ -21,11 +21,9 @@ Drive tools: `list_drive_items`, `search_drive_files`, `get_drive_file_content`,
 ### outlook (outlook-mcp — read-only)
 Outlook email access via Microsoft Graph:
 - `list_emails(top?, sender?, folder?)` — list recent emails
-- `get_email(message_id)` — full email with body
+- `get_email(message_id)` — full email with body (includes `body_html`)
 - `get_attachments(message_id)` — list attachments
 - `download_attachment(message_id, attachment_id)` — download attachment (base64)
-- `extract_invoice_links(message_id)` — find invoice download links in email body (legacy; canonical vendor rules now live in `channels/invoice-links.ts`)
-- `download_invoice_link(url)` — download file from invoice link (base64)
 
 ### email-watcher (channel + tools)
 
@@ -109,7 +107,7 @@ Process emails using the Haiku subagents and durable workflow jobs:
 
 1b. **Download PDF** (if action = download_and_upload) — get the PDF to disk:
    - `attachment` strategy: run `bun run /app/channels/download-helper.ts <source> download_attachment <message_id> <attachment_id> /workspace/downloads/<filename>` via Bash. The helper downloads to disk and prints the file path.
-   - `known_link` / `direct_url` strategy: call `extract_invoice_links(message_id)` on the email MCP to get URLs, then `curl -o /workspace/downloads/<filename> "<url>"` to save to disk. If the file is encrypted, run: `qpdf --is-encrypted <path> && qpdf --password="$BANK_PDF_PASSWORD" --decrypt <path> --replace-input`
+   - `known_link` / `direct_url` strategy: use the `invoice_links` from the channel event meta (if present), or `curl -o /workspace/downloads/<filename> "<url>"` to save to disk. The workflow worker also handles link extraction automatically from email HTML. If the file is encrypted, run: `qpdf --is-encrypted <path> && qpdf --password="$BANK_PDF_PASSWORD" --decrypt <path> --replace-input`
 
 1c. **Classify PDF** — invoke the `document-classifier` subagent with the local file path. Merge results: document-classifier non-null values override email-classifier values (vendor, total_amount, order_id, doc_type, is_fuel, currency, confidence). If the classifier fails, fall back to email-classifier metadata only.
 

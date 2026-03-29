@@ -26,6 +26,7 @@ import {
 import { callMcpTool, extractJson, extractText } from "./mcp-client";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
 import { readFileAsDownload } from "./download-helper";
+import { extractInvoiceLinks, type InvoiceLink } from "./invoice-links";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -67,6 +68,8 @@ export interface InvoiceIntakeInput {
   file_path?: string;
   /** YYYY-MM tag for Paperless (Claude infers from email context) */
   month_tag?: string;
+  /** Pre-extracted invoice links from email-watcher (Gmail) or Claude */
+  invoice_links?: InvoiceLink[];
 }
 
 export interface ScanIntakeInput {
@@ -316,7 +319,7 @@ async function downloadInvoice(
 
       case "known_link":
       case "direct_url":
-        file = await downloadViaLink(mcpUrl, email_source, message_id, logger);
+        file = await downloadViaLink(input, mcpUrl, logger);
         break;
 
       default:
@@ -419,59 +422,99 @@ async function downloadAttachment(
 }
 
 async function downloadViaLink(
+  input: InvoiceIntakeInput,
   mcpUrl: string,
-  source: string,
-  messageId: string,
   logger: WorkerLogger,
 ): Promise<DownloadedFile> {
+  const { email_source: source, message_id: messageId, sender, subject } = input;
   logger.log(`Downloading via link extraction from ${source} message ${messageId}`);
 
-  if (source === "outlook") {
-    // Extract invoice links from email body
-    const linksResult = await callMcpTool(mcpUrl, "extract_invoice_links", {
-      message_id: messageId,
-    });
-    const linksText = extractText(linksResult);
-    const links = JSON.parse(linksText) as Array<{
-      url: string;
-      text: string;
-      doc_id?: string;
-    }>;
+  // 1. Get invoice links — prefer pre-extracted, otherwise extract from HTML
+  let links: InvoiceLink[] = input.invoice_links ?? [];
 
-    if (!links.length) {
-      throw new Error("No invoice download links found in email");
+  if (links.length === 0) {
+    let html: string | undefined;
+
+    if (source === "outlook") {
+      const emailResult = await callMcpTool(mcpUrl, "get_email", {
+        message_id: messageId,
+      });
+      const emailData = extractText(emailResult);
+      const parsed = JSON.parse(emailData);
+      html = parsed.body_html ?? "";
+    } else if (source === "gmail") {
+      const contentResult = await callMcpTool(mcpUrl, "get_gmail_message_content", {
+        message_id: messageId,
+        user_google_email: process.env.GMAIL_EMAIL ?? "",
+        body_format: "html",
+      });
+      html = extractText(contentResult);
     }
 
-    // Download the first link
-    const downloadResult = await callMcpTool(mcpUrl, "download_invoice_link", {
-      url: links[0].url,
-    });
-    const downloadData = extractText(downloadResult);
-    const parsed = JSON.parse(downloadData) as {
-      filename: string;
-      content_type: string;
-      size: number;
-      content_base64: string;
-      error?: string;
-      status_code?: number;
-    };
-
-    if (parsed.error) {
-      throw new Error(`Download failed: ${parsed.error} (HTTP ${parsed.status_code})`);
+    if (html) {
+      links = extractInvoiceLinks(html, sender ?? "", subject ?? "");
     }
-
-    return {
-      filename: parsed.filename,
-      content_base64: parsed.content_base64,
-      content_type: parsed.content_type,
-      size: parsed.size,
-    };
   }
 
-  // Gmail: extract links from email body and download
-  // Gmail MCP doesn't have extract_invoice_links — we'd need to get the body
-  // and parse it ourselves. For now, fall back to error.
-  throw new Error(`Link extraction not yet supported for ${source} — use attachment strategy`);
+  if (!links.length) {
+    throw new Error("No invoice download links found in email");
+  }
+
+  // 2. Download the first matching link
+  logger.log(`Downloading invoice from: ${links[0].url}`);
+  return downloadInvoiceUrl(links[0].url);
+}
+
+/** Download a file from an invoice URL. Retries with browser headers on 403/409/429. */
+async function downloadInvoiceUrl(url: string): Promise<DownloadedFile> {
+  let resp = await fetch(url, { redirect: "follow" });
+
+  // Retry with browser-like headers if blocked
+  if (resp.status === 403 || resp.status === 409 || resp.status === 429) {
+    resp = await fetch(url, {
+      redirect: "follow",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,*/*;q=0.8",
+      },
+    });
+  }
+
+  if (resp.status === 403 || resp.status === 409 || resp.status === 429) {
+    throw new Error(`Download failed: HTTP ${resp.status}. Link may have expired.`);
+  }
+
+  if (!resp.ok) {
+    throw new Error(`Download failed: HTTP ${resp.status}`);
+  }
+
+  const buffer = await resp.arrayBuffer();
+  const content_base64 = Buffer.from(buffer).toString("base64");
+
+  // Extract filename from Content-Disposition or URL
+  let filename: string | undefined;
+  const cd = resp.headers.get("content-disposition") ?? "";
+  if (cd.includes("filename=")) {
+    const names = cd.match(/filename[*]?=["']?([^"';]+)/);
+    filename = names?.[1];
+  }
+  if (!filename) {
+    filename = new URL(url).pathname.split("/").pop() || "download.pdf";
+    if (buffer.byteLength > 4) {
+      const header = new Uint8Array(buffer.slice(0, 5));
+      const isPdf = header[0] === 0x25 && header[1] === 0x50 && header[2] === 0x44 && header[3] === 0x46;
+      if (isPdf && !filename.toLowerCase().endsWith(".pdf")) {
+        filename += ".pdf";
+      }
+    }
+  }
+
+  return {
+    filename: filename!,
+    content_base64,
+    content_type: resp.headers.get("content-type") ?? "application/pdf",
+    size: buffer.byteLength,
+  };
 }
 
 // ── Paperless operations ───────────────────────────────────────────────

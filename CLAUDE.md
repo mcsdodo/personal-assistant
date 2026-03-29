@@ -38,7 +38,7 @@ gmail-mcp container (ghcr.io/taylorwilsdon/google_workspace_mcp)
 └── Google Drive tools (list, download, move files)
 
 outlook-mcp container (python:3.12-slim)
-└── 6 Outlook read-only tools on :8002/mcp (custom, MSAL device code auth)
+└── 4 Outlook read-only tools on :8002/mcp (custom, MSAL device code auth)
 ```
 
 Channels are stdio subprocesses of Claude Code — they MUST run inside the same container. MCP tool servers CAN be separate containers via Streamable HTTP (`"type": "http"` in `.mcp.json`).
@@ -79,7 +79,7 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | Image | Pin strategy |
 |-------|-------------|
 | `checker-mcp`, `outlook-mcp`, `claude-code` | Local builds via Komodo, tagged by git commit |
-| `gmail-mcp` | Pinned to `1.14.3` (semver available on GHCR) |
+| `gmail-mcp` | Pinned to `1.16.2` (semver available on GHCR) |
 | `paperless-mcp` | `:latest` (no semver tags; Watchtower excluded, `auto_pull=false`) |
 
 ## Key Files

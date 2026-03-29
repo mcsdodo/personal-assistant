@@ -55,7 +55,7 @@ Single Dockerfile builds the `claude-code` container.
 **Other images:**
 - `checker-mcp` and `outlook-mcp` — local Python builds via Komodo
 - `paperless-mcp` — community image `ghcr.io/baruchiro/paperless-mcp:latest`
-- `gmail-mcp` — community image `ghcr.io/taylorwilsdon/google_workspace_mcp:1.14.3`
+- `gmail-mcp` — community image `ghcr.io/taylorwilsdon/google_workspace_mcp:1.16.2`
 
 ## Komodo Deployment
 
