@@ -63,6 +63,11 @@ services:
       # Email filtering (whitelist/blacklist by recipient address)
       - EMAIL_FILTER_INCLUDE=${EMAIL_FILTER_INCLUDE:-}
       - EMAIL_FILTER_EXCLUDE=${EMAIL_FILTER_EXCLUDE:-}
+      # Business identifiers (for document-classifier owner field)
+      - BUSINESS_COMPANY_NAME=${BUSINESS_COMPANY_NAME}
+      - BUSINESS_TAX_IDS=${BUSINESS_TAX_IDS}
+      - BUSINESS_CRN=${BUSINESS_CRN}
+      - BUSINESS_LICENSE_PLATES=${BUSINESS_LICENSE_PLATES}
       # Paperless direct API (for large file uploads bypassing MCP)
       - PAPERLESS_URL=${PAPERLESS_URL}
       - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}

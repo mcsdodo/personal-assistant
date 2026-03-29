@@ -88,7 +88,7 @@ Each event has these meta fields:
 
 **Processing pipeline:**
 1. **Download to disk** — use gmail MCP `get_drive_file_download_url` with the `file_id` and `user_google_email` set to the `GMAIL_EMAIL` env var (read it once at start). Then use Bash `curl -o /workspace/downloads/{name} "{url}"` to save the file locally. This preserves the visual content for classification. **Always pass `user_google_email` on every Gmail/Drive MCP call.**
-2. **Classify** — invoke the `document-classifier` subagent with the local file path (e.g., `/workspace/downloads/20260325_blok_tankovanie.pdf`). The subagent uses the Read tool to visually inspect the PDF/image and returns vendor, total_amount, doc_type, etc.
+2. **Classify** — invoke the `document-classifier` subagent with the local file path (e.g., `/workspace/downloads/20260325_blok_tankovanie.pdf`). Before invoking, replace the `${...}` placeholders in the prompt with business identifier env vars (`BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`). The subagent uses the Read tool to visually inspect the PDF/image and returns vendor, total_amount, doc_type, owner, etc.
 3. **Create job** — call `create_scan_intake_job` on workflow MCP with the classification result, file_id, `month_tag`, and `file_path` (the local download path). The worker reads from disk, handles dedup, upload, and file move.
 4. **Monitor job** — poll with `get_job(job_id)`:
    - `state: completed` with `outcome: uploaded` → notify via Telegram: "✓ Uploaded {vendor} scan to Paperless ({amount} EUR)"
@@ -109,7 +109,7 @@ Process emails using the Haiku subagents and durable workflow jobs:
    - `attachment` strategy: run `bun run /app/channels/download-helper.ts <source> download_attachment <message_id> <attachment_id> /workspace/downloads/<filename>` via Bash. The helper downloads to disk and prints the file path.
    - `known_link` / `direct_url` strategy: use the `invoice_links` from the channel event meta (if present), or `curl -o /workspace/downloads/<filename> "<url>"` to save to disk. The workflow worker also handles link extraction automatically from email HTML. If the file is encrypted, run: `qpdf --is-encrypted <path> && qpdf --password="$BANK_PDF_PASSWORD" --decrypt <path> --replace-input`
 
-1c. **Classify PDF** — invoke the `document-classifier` subagent with the local file path. Merge results: document-classifier non-null values override email-classifier values (vendor, total_amount, order_id, doc_type, is_fuel, currency, confidence). If the classifier fails, fall back to email-classifier metadata only.
+1c. **Classify PDF** — invoke the `document-classifier` subagent with the local file path. Before invoking, replace the `${...}` placeholders in the prompt with business identifier env vars (`BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`). Merge results: document-classifier non-null values override email-classifier values (vendor, total_amount, order_id, doc_type, is_fuel, currency, confidence, owner). If the classifier fails, fall back to email-classifier metadata only.
 
 1d. **Infer month_tag** — determine the YYYY-MM tag from email context (subject line billing period, document date from classifier, or received_at as fallback).
 
