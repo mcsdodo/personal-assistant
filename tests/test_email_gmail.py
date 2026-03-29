@@ -91,6 +91,23 @@ class TestGmailAttachments:
         assert doc is not None, "Bank statement not found in Paperless"
         assert "invoicing" in doc["tags"]
 
+    def test_personal_invoice(self, reset_pipeline_gmail_only, clean_paperless):
+        """Personal Alza invoice: gets personal tag, no techlab or invoicing."""
+        send_test_pdf("personal.pdf", GMAIL_TO)
+
+        result = poll_email_status(
+            "5419358935", {"processed", "ignored"}, source="gmail", timeout=240
+        )
+        if result.status == "processed":
+            doc = paperless_find_by_title("5419358935")
+            assert doc is not None, "Personal invoice not found in Paperless"
+            assert "personal" in doc["tags"], f"Missing 'personal' tag, got: {doc['tags']}"
+            assert "techlab" not in doc["tags"], f"Should not have 'techlab' tag, got: {doc['tags']}"
+            assert "invoicing" not in doc["tags"], f"Should not have 'invoicing' tag, got: {doc['tags']}"
+        else:
+            assert "duplicate" in (result.process_result or "").lower() or \
+                   "already" in (result.process_result or "").lower()
+
     def test_non_invoice_ignored(self, reset_pipeline_gmail_only):
         """Non-invoice email: classified as ignore, no Paperless upload."""
         send_email(
