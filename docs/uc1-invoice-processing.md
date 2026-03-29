@@ -164,7 +164,7 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 
 Haiku subagent classifies each new email by sender, subject, and body excerpt.
 
-**Output fields:** `is_invoice`, `confidence` (high/medium/low), `vendor`, `doc_type`, `is_fuel`, `suggested_tags`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`.
+**Output fields:** `is_invoice`, `confidence` (high/medium/low), `vendor`, `doc_type`, `is_fuel`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`.
 
 **`has_attachments` override:** The classifier prompt is aware of the `has_attachments` field from the email metadata. When `has_attachments` is true, the `attachment` download strategy overrides all other guesses — this prevents emails with actual PDF attachments (e.g., bank statements, fuel receipts) from being misclassified as `browser_required`.
 
