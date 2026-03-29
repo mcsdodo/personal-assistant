@@ -550,30 +550,51 @@ async function pollGmail(): Promise<EmailInfo[]> {
       return fromSearch;
     }
 
-    // Step 2: Batch-fetch content for the IDs
-    try {
-      const contentResult = await client.callTool({
-        name: "get_gmail_messages_content_batch",
-        arguments: {
-          message_ids: ids,
-          user_google_email: GMAIL_EMAIL,
-          format: "metadata",
-        },
-      });
+    // Step 2: Fetch full content per message (includes attachment info)
+    // The batch endpoint omits --- ATTACHMENTS --- section, so we must
+    // call get_gmail_message_content individually to detect attachments.
+    const emails: EmailInfo[] = [];
+    for (const id of ids) {
+      try {
+        const contentResult = await client.callTool({
+          name: "get_gmail_message_content",
+          arguments: {
+            message_id: id,
+            user_google_email: GMAIL_EMAIL,
+          },
+        });
 
-      const contentData = parseToolResult(contentResult);
-      if (contentData) {
-        const fromContent = parseGmailEmails(contentData, ids);
-        if (fromContent.length > 0) return fromContent;
+        const text = parseToolResult(contentResult);
+        if (typeof text === "string") {
+          const subjectMatch = text.match(/Subject:\s*(.+)/);
+          const fromMatch = text.match(/From:\s*(.+)/);
+          const toMatch = text.match(/To:\s*(.+)/);
+          const dateMatch = text.match(/Date:\s*(.+)/);
+          const rawFrom = fromMatch?.[1]?.trim() ?? "";
+          const emailMatch = rawFrom.match(/<([^>]+)>/);
+          const rawTo = toMatch?.[1]?.trim() ?? "";
+          const toEmailMatch = rawTo.match(/<([^>]+)>/);
+          // Detect attachments from --- ATTACHMENTS --- section
+          const hasAttachments = /--- ATTACHMENTS ---/.test(text);
+          // Extract body preview (between --- BODY --- and next ---)
+          const bodyMatch = text.match(/--- BODY ---\s*([\s\S]*?)(?:---|$)/);
+          const preview = bodyMatch?.[1]?.trim().substring(0, 200) ?? undefined;
+          emails.push({
+            id,
+            source: "gmail",
+            sender: emailMatch ? emailMatch[1] : rawFrom,
+            to: toEmailMatch ? toEmailMatch[1] : rawTo || undefined,
+            subject: subjectMatch?.[1]?.trim(),
+            hasAttachments,
+            preview,
+            receivedAt: dateMatch?.[1]?.trim(),
+          });
+        }
+      } catch (e: any) {
+        log(`Gmail fetch failed for ${id}: ${e.message}`);
       }
-    } catch (e: any) {
-      log(`Gmail batch-fetch failed, skipping until next poll: ${e.message}`);
-      return [];
     }
-
-    // No fallback — IDs without metadata can't be classified.
-    // They'll reappear on the next poll when the MCP is healthy.
-    return [];
+    if (emails.length > 0) return emails;
   } catch (e: any) {
     log(`Gmail poll error: ${e.message}`);
     resetGmailClient();
@@ -689,6 +710,7 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
     span.setAttribute("email.found", totalFound);
     span.setAttribute("email.new", newEmails.length);
     span.setAttribute("email.seeded", seededCount);
+    span.setAttribute("email.with_attachments", newEmails.filter(e => e.hasAttachments).length);
 
     if (newEmails.length === 0) {
       return;
