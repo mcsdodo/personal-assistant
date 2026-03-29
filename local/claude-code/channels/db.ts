@@ -13,6 +13,7 @@ export interface InsertEmail {
   hasAttachments?: boolean;
   receivedAt?: string | null;
   status: "new" | "seed";
+  traceId?: string | null;
 }
 
 export interface EmailRow {
@@ -92,6 +93,8 @@ export function openDb(path: string): Database {
   const db = new Database(path, { create: true });
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
+  // Migration: add trace_id column if missing
+  try { db.exec("ALTER TABLE emails ADD COLUMN trace_id TEXT;"); } catch { /* already exists */ }
   return db;
 }
 
@@ -102,9 +105,9 @@ export function openDb(path: string): Database {
 export function insertEmail(db: Database, email: InsertEmail): void {
   db.prepare(
     `INSERT OR IGNORE INTO emails
-       (id, source, sender, subject, preview, has_attachments, received_at, status)
+       (id, source, sender, subject, preview, has_attachments, received_at, status, trace_id)
      VALUES
-       (?, ?, ?, ?, ?, ?, ?, ?)`
+       (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     email.id,
     email.source,
@@ -114,7 +117,19 @@ export function insertEmail(db: Database, email: InsertEmail): void {
     email.hasAttachments ? 1 : 0,
     email.receivedAt ?? null,
     email.status,
+    email.traceId ?? null,
   );
+}
+
+/**
+ * Get the trace_id for an email by its source and message ID.
+ * Used by workflow-core to continue the trace from email-watcher.
+ */
+export function getEmailTraceId(db: Database, emailId: string): string | null {
+  const row = db
+    .prepare("SELECT trace_id FROM emails WHERE id = ? LIMIT 1")
+    .get(emailId) as { trace_id: string | null } | null;
+  return row?.trace_id ?? null;
 }
 
 /**

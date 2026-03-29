@@ -29,7 +29,7 @@ import {
   type InsertEmail,
 } from "./db";
 
-import { initTracing, getTracer, withSpan, createLogger } from "./tracing";
+import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId } from "./tracing";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -711,6 +711,7 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
         hasAttachments: email.hasAttachments ?? false,
         receivedAt: email.receivedAt ?? null,
         status: "new",
+        traceId: getActiveTraceId(),
       });
 
       // Push channel notification

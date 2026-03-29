@@ -12,10 +12,13 @@ import {
 import { executeInvoiceIntake, executeScanIntake } from "./invoice-worker";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
 
-import { getTracer, SpanStatusCode } from "./tracing";
+import { getTracer, SpanStatusCode, remoteParentContext } from "./tracing";
 import type { Span } from "./tracing";
+import { getEmailTraceId } from "./db";
 
 const tracer = getTracer("workflow");
+
+const EMAIL_DB_PATH = process.env.DB_PATH ?? "/data/email-watcher/emails.db";
 
 export interface WorkflowLogger {
   log(message: string): void;
@@ -58,6 +61,29 @@ function executeSyntheticJob(db: Database, job: JobRow, logger: WorkflowLogger):
   logger.log(`Job ${job.id} completed synthetically`);
 }
 
+/**
+ * Look up the trace_id from the email DB for a given source_ref.
+ * Returns a parent context to continue the email-watcher trace, or undefined.
+ */
+function resolveEmailTraceParent(sourceRef: string | null) {
+  if (!sourceRef) return undefined;
+  const colonIdx = sourceRef.indexOf(":");
+  if (colonIdx < 0) return undefined;
+  const messageId = sourceRef.slice(colonIdx + 1);
+
+  try {
+    // Open email DB read-only to look up the trace_id stored by email-watcher
+    const { Database: BunDb } = require("bun:sqlite");
+    const emailDb = new BunDb(EMAIL_DB_PATH, { readonly: true });
+    const traceId = getEmailTraceId(emailDb, messageId);
+    emailDb.close();
+    if (traceId) return remoteParentContext(traceId);
+  } catch {
+    // Email DB not available — no parent trace
+  }
+  return undefined;
+}
+
 export async function executeNextJob(
   db: Database,
   logger: WorkflowLogger,
@@ -66,12 +92,13 @@ export async function executeNextJob(
   const job = claimNextQueuedJob(db);
   if (!job) return null;
 
-  return tracer.startActiveSpan("workflow.execute_job", {
-    attributes: {
-      "job.id": job.id,
-      "job.type": job.workflow_type,
-    },
-  }, async (span: Span) => {
+  const spanOpts = { attributes: { "job.id": job.id, "job.type": job.workflow_type } };
+
+  // Try to link to the email-watcher trace via the email DB
+  const parentCtx = resolveEmailTraceParent(job.source_ref);
+
+  // Use 4-arg form with parent context if available, otherwise 3-arg form
+  const spanFn = async (span: Span) => {
     logger.log(`Claimed job ${job.id} (${job.workflow_type})`);
 
     try {
@@ -110,5 +137,10 @@ export async function executeNextJob(
     }
 
     return job;
-  });
+  };
+
+  if (parentCtx) {
+    return tracer.startActiveSpan("workflow.execute_job", spanOpts, parentCtx, spanFn);
+  }
+  return tracer.startActiveSpan("workflow.execute_job", spanOpts, spanFn);
 }

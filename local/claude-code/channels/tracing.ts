@@ -7,7 +7,7 @@
  *   const tracer = getTracer("email-watcher");
  */
 
-import { trace, context, SpanStatusCode, propagation } from "@opentelemetry/api";
+import { trace, context, SpanStatusCode, propagation, TraceFlags } from "@opentelemetry/api";
 import type { Span, Tracer, SpanOptions } from "@opentelemetry/api";
 import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -139,6 +139,35 @@ export function createLogger(channel: string): (msg: string) => void {
       console.error(`[${channel}] ${msg}`);
     }
   };
+}
+
+/**
+ * Get the current active trace ID, or undefined if no span is active.
+ */
+export function getActiveTraceId(): string | undefined {
+  const span = trace.getActiveSpan();
+  if (!span) return undefined;
+  const ctx = span.spanContext();
+  // All zeros = invalid/noop trace
+  if (ctx.traceId === "00000000000000000000000000000000") return undefined;
+  return ctx.traceId;
+}
+
+/**
+ * Create an OTel context with a remote parent from a trace ID.
+ * Use this to continue a trace started in another process.
+ * The new span will be a child of the given trace ID.
+ */
+export function remoteParentContext(traceId: string) {
+  // Generate a non-zero span ID (all-zeros is invalid and causes no-op spans)
+  const spanId = traceId.slice(0, 16);
+  const remoteSpanContext = {
+    traceId,
+    spanId,
+    traceFlags: TraceFlags.SAMPLED,
+    isRemote: true,
+  };
+  return trace.setSpanContext(context.active(), remoteSpanContext);
 }
 
 // Re-export commonly used OTel types
