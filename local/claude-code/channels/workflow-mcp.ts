@@ -146,6 +146,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Path to pre-downloaded file on disk",
           },
+          watch_folder: {
+            type: "string",
+            description: "Watch folder path (e.g. techlab/invoicing) — segments become Paperless tags",
+          },
         },
         required: ["file_id", "classification"],
       },
@@ -276,6 +280,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           file_id: fileId,
           filename: (args?.filename as string | undefined) ?? undefined,
           month_tag: (args?.month_tag as string | undefined) ?? undefined,
+          watch_folder: (args?.watch_folder as string | undefined) ?? undefined,
           classification,
           file_path: (args?.file_path as string | undefined) ?? undefined,
         };

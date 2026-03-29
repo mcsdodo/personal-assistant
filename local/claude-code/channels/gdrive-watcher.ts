@@ -54,8 +54,14 @@ const HEALTH_STALE_MULTIPLIER = 5;
 
 const GDRIVE_MCP_URL =
   process.env.GDRIVE_MCP_URL ?? "http://gmail-mcp:8000/mcp";
-const WATCH_FOLDER =
-  process.env.GDRIVE_WATCH_FOLDER ?? "techlab/invoices";
+const GDRIVE_LEVEL1 = (process.env.GDRIVE_LEVEL1 ?? "techlab")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const GDRIVE_LEVEL2 = (process.env.GDRIVE_LEVEL2 ?? "invoicing")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const GOOGLE_EMAIL =
   process.env.GMAIL_EMAIL ?? "";
 
@@ -202,52 +208,83 @@ function parseToolResult(result: any): any {
 // Google Drive polling
 // ---------------------------------------------------------------------------
 
-let watchFolderId: string | null = null;
+interface WatchedFolder {
+  path: string;     // e.g. "techlab/invoicing"
+  level2: string;   // e.g. "invoicing"
+  folderId: string;
+}
 
-async function resolveWatchFolderId(): Promise<string> {
-  if (watchFolderId) return watchFolderId;
+let watchedFolders: WatchedFolder[] | null = null;
+
+function extractFolderId(data: unknown): string | undefined {
+  if (!data) return undefined;
+  if (Array.isArray(data) && data.length > 0) {
+    return (data[0] as Record<string, string>).id ?? (data[0] as Record<string, string>).fileId;
+  }
+  if (typeof data === "string") {
+    const idMatch = data.match(/ID:\s*([^,\s)]+)/);
+    if (idMatch) return idMatch[1].trim();
+  }
+  if (typeof data === "object" && data !== null) {
+    return (data as Record<string, string>).id ?? (data as Record<string, string>).fileId;
+  }
+  return undefined;
+}
+
+async function resolveWatchFolders(): Promise<WatchedFolder[]> {
+  if (watchedFolders) return watchedFolders;
 
   const client = await getDriveClient();
-  const folderParts = WATCH_FOLDER.split("/");
-  const leafName = folderParts[folderParts.length - 1];
+  const folders: WatchedFolder[] = [];
 
-  const result = await client.callTool({
-    name: "search_drive_files",
-    arguments: {
-      query: `name = '${leafName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-      user_google_email: GOOGLE_EMAIL,
-    },
-  });
+  for (const level1 of GDRIVE_LEVEL1) {
+    // Resolve level1 folder
+    const level1Result = await client.callTool({
+      name: "search_drive_files",
+      arguments: {
+        query: `name = '${level1}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        user_google_email: GOOGLE_EMAIL,
+      },
+    });
+    const level1Id = extractFolderId(parseToolResult(level1Result));
+    if (!level1Id) {
+      log(`Warning: level1 folder "${level1}" not found, skipping`);
+      continue;
+    }
+    log(`Resolved level1 "${level1}" → ${level1Id}`);
 
-  const data = parseToolResult(result);
-  if (!data) {
-    throw new Error(`Watch folder not found: ${WATCH_FOLDER}`);
+    // Resolve each level2 subfolder within this level1
+    for (const level2 of GDRIVE_LEVEL2) {
+      const result = await client.callTool({
+        name: "search_drive_files",
+        arguments: {
+          query: `name = '${level2}' and '${level1Id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+          user_google_email: GOOGLE_EMAIL,
+        },
+      });
+      const folderId = extractFolderId(parseToolResult(result));
+      if (!folderId) {
+        log(`Warning: level2 folder "${level2}" not found under "${level1}", skipping`);
+        continue;
+      }
+
+      const path = `${level1}/${level2}`;
+      log(`Resolved "${path}" → ${folderId}`);
+
+      // Ensure processed and errors subfolders exist
+      await ensureSubfolder(client, folderId, "processed");
+      await ensureSubfolder(client, folderId, "errors");
+
+      folders.push({ path, level2, folderId });
+    }
   }
 
-  // Try structured data first, fall back to text parsing
-  let folderId: string | undefined;
-  if (Array.isArray(data) && data.length > 0) {
-    folderId = data[0].id ?? data[0].fileId;
-  } else if (typeof data === "string") {
-    // Parse "ID: xxx" from text output
-    const idMatch = data.match(/ID:\s*([^,\s)]+)/);
-    if (idMatch) folderId = idMatch[1].trim();
-  } else if (typeof data === "object") {
-    folderId = data.id ?? data.fileId;
+  if (folders.length === 0) {
+    throw new Error(`No watch folders resolved (level1: ${GDRIVE_LEVEL1.join(",")}, level2: ${GDRIVE_LEVEL2.join(",")})`);
   }
 
-  if (!folderId) {
-    throw new Error(`Could not resolve folder ID for: ${WATCH_FOLDER} (response: ${typeof data === "string" ? data.slice(0, 200) : JSON.stringify(data).slice(0, 200)})`);
-  }
-
-  watchFolderId = folderId;
-  log(`Resolved watch folder "${WATCH_FOLDER}" → ${folderId}`);
-
-  // Ensure processed and errors subfolders exist
-  await ensureSubfolder(client, folderId, "processed");
-  await ensureSubfolder(client, folderId, "errors");
-
-  return folderId;
+  watchedFolders = folders;
+  return folders;
 }
 
 async function ensureSubfolder(
@@ -295,6 +332,7 @@ interface DriveFile {
   mimeType: string;
   createdTime: string;
   modifiedTime: string;
+  watchFolder: string;
 }
 
 /**
@@ -304,7 +342,7 @@ interface DriveFile {
  * Format per line:
  *   - Name: "filename" (ID: xxx, Type: mime, Size: n, Modified: iso) Link: url
  */
-function parseDriveTextOutput(text: string): DriveFile[] {
+function parseDriveTextOutput(text: string, watchFolder: string): DriveFile[] {
   const files: DriveFile[] = [];
   const lineRegex =
     /Name:\s*"([^"]+)"\s*\(ID:\s*([^,]+),\s*Type:\s*([^,]+)(?:,\s*Size:\s*\d+)?,\s*Modified:\s*([^)]+)\)/g;
@@ -318,6 +356,7 @@ function parseDriveTextOutput(text: string): DriveFile[] {
       mimeType: mimeType.trim(),
       createdTime: modified.trim(),
       modifiedTime: modified.trim(),
+      watchFolder,
     });
   }
   return files;
@@ -325,37 +364,37 @@ function parseDriveTextOutput(text: string): DriveFile[] {
 
 async function pollGdrive(): Promise<DriveFile[]> {
   try {
-    const folderId = await resolveWatchFolderId();
+    const folders = await resolveWatchFolders();
     const client = await getDriveClient();
+    const allFiles: DriveFile[] = [];
 
-    const result = await client.callTool({
-      name: "list_drive_items",
-      arguments: { folder_id: folderId, user_google_email: GOOGLE_EMAIL },
-    });
+    for (const folder of folders) {
+      const result = await client.callTool({
+        name: "list_drive_items",
+        arguments: { folder_id: folder.folderId, user_google_email: GOOGLE_EMAIL },
+      });
 
-    const data = parseToolResult(result);
-    if (!data) return [];
+      const data = parseToolResult(result);
+      if (!data) continue;
 
-    // google_workspace_mcp returns human-readable text, not JSON objects.
-    // Try structured data first (array of objects), fall back to text parsing.
-    if (Array.isArray(data)) {
-      return data
-        .filter((item: any) => item.mimeType !== "application/vnd.google-apps.folder")
-        .map((item: any) => ({
-          id: String(item.id ?? item.fileId),
-          name: item.name ?? "(unknown)",
-          mimeType: item.mimeType ?? "application/octet-stream",
-          createdTime: item.createdTime ?? item.modifiedTime ?? new Date().toISOString(),
-          modifiedTime: item.modifiedTime ?? new Date().toISOString(),
-        }));
+      if (Array.isArray(data)) {
+        const files = data
+          .filter((item: any) => item.mimeType !== "application/vnd.google-apps.folder")
+          .map((item: any) => ({
+            id: String(item.id ?? item.fileId),
+            name: item.name ?? "(unknown)",
+            mimeType: item.mimeType ?? "application/octet-stream",
+            createdTime: item.createdTime ?? item.modifiedTime ?? new Date().toISOString(),
+            modifiedTime: item.modifiedTime ?? new Date().toISOString(),
+            watchFolder: folder.path,
+          }));
+        allFiles.push(...files);
+      } else if (typeof data === "string") {
+        allFiles.push(...parseDriveTextOutput(data, folder.path));
+      }
     }
 
-    // Text format: parse line-by-line
-    if (typeof data === "string") {
-      return parseDriveTextOutput(data);
-    }
-
-    return [];
+    return allFiles;
   } catch (e: any) {
     log(`GDrive poll error: ${e.message}`);
     resetDriveClient();
@@ -397,6 +436,7 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
         filename: file.name,
         mime_type: file.mimeType,
         created_at: file.createdTime,
+        watch_folder: file.watchFolder,
         status: "new",
       });
 
@@ -412,7 +452,7 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
         `Scanned: ${file.createdTime}`,
         `Month tag: ${monthTag}`,
         `File ID: ${file.id}`,
-        `Folder: ${WATCH_FOLDER}`,
+        `Folder: ${file.watchFolder}`,
       ];
 
       await channel.notification({
@@ -426,6 +466,7 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
             mime_type: file.mimeType,
             created_time: file.createdTime,
             month_tag: monthTag,
+            watch_folder: file.watchFolder,
             timestamp: new Date().toISOString(),
           },
         },
@@ -460,6 +501,7 @@ async function retryStuck(db: Database, channel: Server): Promise<void> {
   for (const file of capped) {
     const scanDate = new Date(file.created_at ?? new Date().toISOString());
     const monthTag = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, "0")}`;
+    const watchFolder = file.watch_folder ?? `${GDRIVE_LEVEL1[0]}/${GDRIVE_LEVEL2[0]}`;
 
     await channel.notification({
       method: "notifications/claude/channel",
@@ -469,6 +511,7 @@ async function retryStuck(db: Database, channel: Server): Promise<void> {
           `Name: ${file.filename ?? "(unknown)"}`,
           `File ID: ${file.id}`,
           `Month tag: ${monthTag}`,
+          `Folder: ${watchFolder}`,
           `Status: ${file.status}`,
         ].join("\n"),
         meta: {
@@ -477,6 +520,7 @@ async function retryStuck(db: Database, channel: Server): Promise<void> {
           name: file.filename ?? "",
           created_time: file.created_at ?? "",
           month_tag: monthTag,
+          watch_folder: watchFolder,
           timestamp: new Date().toISOString(),
           retry: "true",
         },
@@ -505,10 +549,11 @@ const mcp = new Server(
       "When you receive a gdrive-watcher event:",
       "1. Download the file using the gmail MCP's get_drive_file_content or get_drive_file_download_url tool (use the file_id from meta)",
       "2. Classify using the scan-classifier subagent (pass the file content for vision-based analysis)",
-      "3. Create a workflow job via create_scan_intake_job with the classification result",
+      "3. Create a workflow job via create_scan_intake_job with the classification result and watch_folder from meta",
       "4. After the job completes, call update_gdrive_scan_status to record the outcome",
       "",
       "The month_tag meta field contains the YYYY-MM tag derived from scan date. Use this as-is for tagging.",
+      "The watch_folder meta field identifies which folder the file came from (e.g. techlab/invoicing). Pass it to create_scan_intake_job.",
       "",
       "IMPORTANT: After processing, call update_gdrive_scan_status to record the result.",
     ].join("\n"),
@@ -667,8 +712,9 @@ async function main(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, STARTUP_DELAY_MS));
 
   // 5. Log config
+  const folderPaths = GDRIVE_LEVEL1.flatMap((l1) => GDRIVE_LEVEL2.map((l2) => `${l1}/${l2}`)).join(", ");
   log(
-    `Config: watch=${WATCH_FOLDER}, mcp=${GDRIVE_MCP_URL}, poll=${POLL_INTERVAL_MS}ms`
+    `Config: watch=[${folderPaths}], mcp=${GDRIVE_MCP_URL}, poll=${POLL_INTERVAL_MS}ms`
   );
 
   // 6. Run first poll cycle

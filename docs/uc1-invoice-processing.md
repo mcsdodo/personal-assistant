@@ -187,17 +187,40 @@ The invoice-worker uploads documents via the Paperless MCP's `post_document` too
 4. **Build title** — `{vendor} - {order_id}` or `{vendor} - {subject}`
 5. **Upload** — `post_document` with base64 content, correspondent, tags, type, custom fields (total_amount, order_id)
 
-**Owner-aware tag derivation:**
+**Tag derivation (by source):**
 
-The `owner` field from the document-classifier determines the tag set. The classifier inspects the PDF for business identifiers (company name, VAT/ICO/DIC, license plates, "Podnikatelsky ucet") and returns `owner: "techlab"` or `owner: "personal"`.
+Tags are derived deterministically from the document source and classification. The logic differs by source:
 
-| Owner | Tags applied |
-|-------|-------------|
-| `techlab` (business) | `techlab` + `invoicing`/`documents` (from `doc_type`) + `fuel` (if `is_fuel`) + `YYYY-MM` |
-| `personal` | `personal` + `YYYY-MM` only |
-| missing/null (backward compat) | Defaults to `techlab` behavior |
+- **GDrive** — tags derived from the `watch_folder` path carried per-file (e.g. `techlab/invoicing` → `[techlab, invoicing]`, `techlab/documents` → `[techlab, documents]`). Each path segment becomes a tag. Classifier `owner` and `doc_type` are ignored for tagging.
+- **Email** — tags derived from the document-classifier's `owner` field and `doc_type`. The classifier inspects the PDF for business identifiers (company name, VAT/ICO/DIC, license plates, "Podnikatelsky ucet"). Falls back to `techlab` if `owner` is missing (backward compat).
 
-Previously, `techlab` was hardcoded on all documents and there was no personal/business distinction.
+```mermaid
+flowchart TD
+    A[Document arrives] --> B{Source?}
+
+    B -->|GDrive| C["tags from watch_folder path segments:<br/>e.g. [techlab, invoicing] or [techlab, documents]"]
+
+    B -->|Email| D{"classifier.owner?"}
+    D -->|techlab / missing| F{doc_type?}
+    D -->|personal| E["tags = [personal]"]
+
+    F -->|invoice / receipt /<br/>credit_note / account_statement| G["tags = [techlab, invoicing]"]
+    F -->|document| H["tags = [techlab, documents]"]
+    F -->|other / unknown| I["tags = [techlab]"]
+
+    C --> J{is_fuel?}
+    G --> J
+    H --> J
+    I --> J
+    E --> J
+
+    J -->|yes| K["+ fuel"]
+    J -->|no| L[skip]
+    K --> M["+ YYYY-MM (month_tag)"]
+    L --> M
+```
+
+**`month_tag` source** also differs: email path infers it from email context (subject, document date, `received_at` fallback); GDrive path uses the file's `created_time` (hard rule — always scan date, not document content date).
 
 **Code:**
 - [`invoice-worker.ts:534-570`](../local/claude-code/channels/invoice-worker.ts#L534) — `resolveCorrespondent()`: list → match → create if needed
@@ -252,7 +275,15 @@ Claude can query Paperless directly using `search_documents` from the community 
 
 Scanned documents dropped into Google Drive are automatically classified and uploaded to Paperless.
 
-**Pipeline:** gdrive-watcher polls `techlab/invoices/` → Claude downloads file via `curl` → document-classifier (Haiku) extracts metadata → `create_scan_intake_job` with `file_path` + `month_tag` → worker reads from disk, uploads to Paperless, moves file to `processed/`.
+**Pipeline:** gdrive-watcher polls multiple level2 folders under a level1 parent → Claude downloads file via `curl` → document-classifier (Haiku) extracts metadata → `create_scan_intake_job` with `file_path`, `month_tag`, and `watch_folder` → worker reads from disk, uploads to Paperless with tags derived from the folder path, moves file to `processed/`.
+
+**Multi-folder config:**
+```env
+GDRIVE_LEVEL1=techlab              # parent folder(s), comma-separated
+GDRIVE_LEVEL2=invoicing,documents  # subfolders to watch, comma-separated
+```
+
+At startup, the watcher resolves every level1 × level2 combination (e.g. `techlab/invoicing`, `techlab/documents`). Both levels support comma-separated values, so `GDRIVE_LEVEL1=techlab,personal` with `GDRIVE_LEVEL2=invoicing,documents` would watch 4 folders. Each leaf folder gets `processed/` and `errors/` subfolders ensured. Files are polled from all folders every cycle. The `watch_folder` (e.g. `techlab/invoicing`) flows through the channel notification → job input → worker, where it determines both tags and file move destination.
 
 **Unified classifier:** Both email PDFs and GDrive scans use the same `document-classifier` agent. The email path adds an email-classifier triage step before download; the GDrive path skips it.
 
@@ -261,7 +292,7 @@ Scanned documents dropped into Google Drive are automatically classified and upl
 **Code:**
 - [`agents/document-classifier.md`](../local/claude-code/agents/document-classifier.md) — Haiku classifier prompt (7-field output)
 - [`channels/download-helper.ts`](../local/claude-code/channels/download-helper.ts) — CLI helper for attachment downloads + qpdf decryption
-- [`channels/gdrive-watcher.ts`](../local/claude-code/channels/gdrive-watcher.ts) — GDrive polling channel
+- [`channels/gdrive-watcher.ts`](../local/claude-code/channels/gdrive-watcher.ts) — GDrive polling channel (multi-folder)
 
 ## Download Strategies
 

@@ -75,9 +75,8 @@ services:
       - BANK_PDF_PASSWORD=${BANK_PDF_PASSWORD:-}
       # gdrive-watcher channel
       - GDRIVE_POLL_INTERVAL_MS=${GDRIVE_POLL_INTERVAL_MS:-30000}
-      - GDRIVE_WATCH_FOLDER=${GDRIVE_WATCH_FOLDER:-techlab/invoices}
-      - GDRIVE_PROCESSED_FOLDER=${GDRIVE_PROCESSED_FOLDER:-techlab/invoices/processed}
-      - GDRIVE_ERRORS_FOLDER=${GDRIVE_ERRORS_FOLDER:-techlab/invoices/errors}
+      - GDRIVE_LEVEL1=${GDRIVE_LEVEL1:-techlab}
+      - GDRIVE_LEVEL2=${GDRIVE_LEVEL2:-invoicing,documents}
       - GDRIVE_MCP_URL=${GDRIVE_MCP_URL:-http://gmail-mcp:8000/mcp}
       - GDRIVE_WATCHER_METRICS_PORT=${GDRIVE_WATCHER_METRICS_PORT:-9466}
 

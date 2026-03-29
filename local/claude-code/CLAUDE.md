@@ -36,7 +36,7 @@ Use these for debugging ("show me recent emails"), status checks ("how many proc
 
 ### gdrive-watcher (channel + tools)
 
-The gdrive-watcher polls a Google Drive folder (`techlab/invoices/`) every 30 seconds for new scanned documents and pushes events here.
+The gdrive-watcher polls a Google Drive folder (`techlab/invoicing/`) every 30 seconds for new scanned documents and pushes events here.
 
 Tools:
 - `update_gdrive_scan_status(id, status, classification?, action?, job_id?, process_result?, error?)` — record processing results
@@ -76,7 +76,7 @@ On first startup, existing emails are seeded into the database without processin
 
 ## When you receive a gdrive-watcher channel event
 
-The gdrive-watcher polls `techlab/invoices/` on Google Drive every 30 seconds for new files and pushes events here.
+The gdrive-watcher polls multiple Google Drive folders every 30 seconds for new files and pushes events here. Folders are configured via `GDRIVE_LEVEL1` × `GDRIVE_LEVEL2` (e.g. `techlab/invoicing`, `techlab/documents`).
 
 Each event has these meta fields:
 - `source`: always `"gdrive"`
@@ -85,11 +85,12 @@ Each event has these meta fields:
 - `mime_type`: file MIME type
 - `created_time`: when the file was uploaded (scan date)
 - `month_tag`: `YYYY-MM` tag derived from scan date — use this for tagging (hard rule)
+- `watch_folder`: which folder the file came from (e.g. `techlab/invoicing`) — pass to `create_scan_intake_job`
 
 **Processing pipeline:**
 1. **Download to disk** — use gmail MCP `get_drive_file_download_url` with the `file_id` and `user_google_email` set to the `GMAIL_EMAIL` env var (read it once at start). Then use Bash `curl -o /workspace/downloads/{name} "{url}"` to save the file locally. This preserves the visual content for classification. **Always pass `user_google_email` on every Gmail/Drive MCP call.**
 2. **Classify** — invoke the `document-classifier` subagent with the local file path (e.g., `/workspace/downloads/20260325_blok_tankovanie.pdf`). Before invoking, replace the `${...}` placeholders in the prompt with business identifier env vars (`BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`). The subagent uses the Read tool to visually inspect the PDF/image and returns vendor, total_amount, doc_type, owner, etc.
-3. **Create job** — call `create_scan_intake_job` on workflow MCP with the classification result, file_id, `month_tag`, and `file_path` (the local download path). The worker reads from disk, handles dedup, upload, and file move.
+3. **Create job** — call `create_scan_intake_job` on workflow MCP with the classification result, file_id, `month_tag`, `watch_folder`, and `file_path` (the local download path). The worker reads from disk, handles dedup, upload, and file move. Tags are derived from `watch_folder` path segments (e.g. `techlab/invoicing` → tags `[techlab, invoicing]`).
 4. **Monitor job** — poll with `get_job(job_id)`:
    - `state: completed` with `outcome: uploaded` → notify via Telegram: "✓ Uploaded {vendor} scan to Paperless ({amount} EUR)"
    - `state: completed` with `outcome: duplicate` → silently skip
@@ -97,7 +98,7 @@ Each event has these meta fields:
    - `state: failed` → notify user via Telegram with error
 5. **Record** — call `update_gdrive_scan_status` with the outcome
 
-The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `processed/`. On failure, it moves to `errors/`.
+The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure, it moves to `errors/`.
 
 ## Email Processing Pipeline
 

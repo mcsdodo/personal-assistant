@@ -77,6 +77,8 @@ export interface ScanIntakeInput {
   file_id: string;
   filename?: string;
   month_tag?: string;
+  /** Watch folder path (e.g. "techlab/invoicing") — segments become Paperless tags */
+  watch_folder?: string;
   /** Path to pre-downloaded file on disk */
   file_path?: string;
   classification: {
@@ -855,6 +857,7 @@ export async function executeScanIntake(
   }
 
   const { classification, file_id } = input;
+  const watchFolder = input.watch_folder ?? "techlab/invoicing";
 
   await tracer.startActiveSpan("invoice-worker.execute", {
     attributes: {
@@ -862,6 +865,7 @@ export async function executeScanIntake(
       "job.type": "scan_intake",
       "invoice.vendor": classification.vendor,
       "source": "gdrive",
+      "gdrive.watch_folder": watchFolder,
     },
   }, async (span: Span) => {
     try {
@@ -915,7 +919,7 @@ export async function executeScanIntake(
             duplicate_message: dedupeResult.message,
           };
           completeJob(db, job.id, result);
-          await moveGdriveFile(file_id, "processed", logger);
+          await moveGdriveFile(file_id, "processed", watchFolder, logger);
           logger.log(`Job ${job.id} completed: duplicate of doc #${dedupeResult.existing_id}`);
           span.setAttribute("invoice.outcome", "duplicate");
           span.setStatus({ code: SpanStatusCode.OK });
@@ -939,22 +943,11 @@ export async function executeScanIntake(
         });
       }
 
-      // Step 4: Resolve tags — derived deterministically from classification
+      // Step 4: Resolve tags — from watch folder path segments (e.g. techlab/invoicing → [techlab, invoicing])
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-      const allTagNames: string[] = [];
-      const docType = classification.doc_type;
-      const owner = classification.owner ?? "techlab"; // backward compat default
-
-      if (owner === "techlab") {
-        allTagNames.push("techlab");
-        if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
-          allTagNames.push("invoicing");
-        } else if (docType === "document") {
-          allTagNames.push("documents");
-        }
-      } else {
-        allTagNames.push("personal");
-      }
+      const allTagNames: string[] = (input.watch_folder ?? "techlab/invoicing")
+        .split("/")
+        .filter(Boolean);
 
       if (classification.is_fuel) {
         allTagNames.push("fuel");
@@ -1003,7 +996,7 @@ export async function executeScanIntake(
       }
 
       // Step 8: Move GDrive file to Processed/
-      await moveGdriveFile(file_id, "processed", logger);
+      await moveGdriveFile(file_id, "processed", watchFolder, logger);
 
       const result: InvoiceIntakeResult = {
         outcome: "uploaded",
@@ -1021,7 +1014,7 @@ export async function executeScanIntake(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       failJob(db, job.id, { code: "scan_intake_error", message, step: "unknown" });
-      await moveGdriveFile(file_id, "errors", logger).catch((moveErr) => {
+      await moveGdriveFile(file_id, "errors", watchFolder, logger).catch((moveErr) => {
         logger.log(`Failed to move file to errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
       });
       logger.log(`Job ${job.id} failed: ${message}`);
@@ -1221,80 +1214,70 @@ async function setDocumentCustomFields(
   });
 }
 
+function extractDriveFolderId(text: string): string | undefined {
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed[0].id ?? parsed[0].fileId;
+    }
+    if (typeof parsed === "object" && parsed !== null) {
+      return parsed.id ?? parsed.fileId;
+    }
+  } catch {
+    const idMatch = text.match(/ID:\s*([^,\s)]+)/);
+    if (idMatch) return idMatch[1].trim();
+  }
+  return undefined;
+}
+
 async function moveGdriveFile(
   fileId: string,
   targetFolder: string,
+  watchFolder: string,
   logger: WorkerLogger,
 ): Promise<void> {
   return withSpan(tracer, "invoice-worker.move_file", {
     "gdrive.file_id": fileId,
     "gdrive.target_folder": targetFolder,
+    "gdrive.watch_folder": watchFolder,
   }, async (_span) => {
     try {
-      // Resolve target folder ID
-      const searchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
-        query: `name = '${targetFolder}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-        user_google_email: GOOGLE_EMAIL,
-      });
-      const searchText = extractText(searchResult);
-      if (!searchText) {
-        logger.log(`Warning: target folder "${targetFolder}" not found, skipping move`);
-        return;
-      }
-
-      // Response is text format: parse ID from "ID: xxx"
-      let targetFolderId: string | undefined;
-      try {
-        const parsed = JSON.parse(searchText);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          targetFolderId = parsed[0].id ?? parsed[0].fileId;
-        }
-      } catch {
-        // Text format: extract ID
-        const idMatch = searchText.match(/ID:\s*([^,\s)]+)/);
-        if (idMatch) targetFolderId = idMatch[1].trim();
-      }
-
-      // Resolve watch folder ID (needed as parent for folder creation + remove_parents for move)
-      const watchFolderName = (process.env.GDRIVE_WATCH_FOLDER ?? "techlab/invoices").split("/").pop()!;
+      // Resolve watch folder (level2) ID — the parent where processed/errors subfolders live
+      const watchFolderLeaf = watchFolder.split("/").pop()!;
       const watchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
-        query: `name = '${watchFolderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        query: `name = '${watchFolderLeaf}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         user_google_email: GOOGLE_EMAIL,
       });
       const watchText = extractText(watchResult);
-      let watchFolderId: string | undefined;
-      if (watchText) {
-        try {
-          const parsed = JSON.parse(watchText);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            watchFolderId = parsed[0].id ?? parsed[0].fileId;
-          }
-        } catch {
-          const idMatch = watchText.match(/ID:\s*([^,\s)]+)/);
-          if (idMatch) watchFolderId = idMatch[1].trim();
+      const watchFolderId = watchText ? extractDriveFolderId(watchText) : undefined;
+
+      // Resolve target subfolder (e.g. "processed") within the watch folder
+      let targetFolderId: string | undefined;
+      if (watchFolderId) {
+        const searchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
+          query: `name = '${targetFolder}' and '${watchFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+          user_google_email: GOOGLE_EMAIL,
+        });
+        const searchText = extractText(searchResult);
+        if (searchText) {
+          targetFolderId = extractDriveFolderId(searchText);
         }
       }
 
       // Create target folder if it doesn't exist
       if (!targetFolderId && watchFolderId) {
-        logger.log(`Creating folder "${targetFolder}" in watch folder`);
+        logger.log(`Creating folder "${targetFolder}" in ${watchFolder}`);
         const createResult = await callMcpTool(GMAIL_MCP_URL, "create_drive_folder", {
           name: targetFolder,
           parent_id: watchFolderId,
           user_google_email: GOOGLE_EMAIL,
         });
         const createText = extractText(createResult);
-        try {
-          const parsed = JSON.parse(createText);
-          targetFolderId = parsed.id ?? parsed.fileId;
-        } catch {
-          const idMatch = createText.match(/ID:\s*([^,\s)]+)/);
-          if (idMatch) targetFolderId = idMatch[1].trim();
-        }
+        if (createText) targetFolderId = extractDriveFolderId(createText);
       }
 
       if (!targetFolderId) {
-        logger.log(`Warning: could not find or create folder "${targetFolder}", skipping move`);
+        logger.log(`Warning: could not find or create folder "${targetFolder}" in ${watchFolder}, skipping move`);
         return;
       }
 
@@ -1304,10 +1287,10 @@ async function moveGdriveFile(
         remove_parents: watchFolderId ?? undefined,
         user_google_email: GOOGLE_EMAIL,
       });
-      logger.log(`Moved file ${fileId} to ${targetFolder}/`);
+      logger.log(`Moved file ${fileId} to ${watchFolder}/${targetFolder}/`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.log(`Warning: failed to move GDrive file ${fileId} to ${targetFolder}/: ${message}`);
+      logger.log(`Warning: failed to move GDrive file ${fileId} to ${watchFolder}/${targetFolder}/: ${message}`);
     }
   });
 }

@@ -9,6 +9,7 @@ export interface FileRow {
   filename: string | null;
   mime_type: string | null;
   created_at: string | null;
+  watch_folder: string | null;
   status: string;
   job_id: string | null;
   error: string | null;
@@ -25,6 +26,7 @@ export interface InsertFile {
   filename: string | null;
   mime_type: string | null;
   created_at: string | null;
+  watch_folder: string;
   status: string;
 }
 
@@ -38,6 +40,7 @@ CREATE TABLE IF NOT EXISTS gdrive_files (
   filename        TEXT,
   mime_type       TEXT,
   created_at      TEXT,
+  watch_folder    TEXT,
   status          TEXT NOT NULL DEFAULT 'new',
   job_id          TEXT,
   error           TEXT,
@@ -53,6 +56,11 @@ CREATE INDEX IF NOT EXISTS idx_gdrive_files_status ON gdrive_files(status);
 CREATE INDEX IF NOT EXISTS idx_gdrive_files_discovered ON gdrive_files(discovered_at);
 `;
 
+const MIGRATIONS = [
+  // Add watch_folder column (v1 → v2)
+  `ALTER TABLE gdrive_files ADD COLUMN watch_folder TEXT;`,
+];
+
 // ---------------------------------------------------------------------------
 // Database lifecycle
 // ---------------------------------------------------------------------------
@@ -62,6 +70,12 @@ export function openDb(path: string): Database {
   db.exec("PRAGMA journal_mode=WAL;");
   db.exec("PRAGMA busy_timeout=5000;");
   db.exec(SCHEMA);
+
+  // Run migrations (idempotent — silently skip already-applied)
+  for (const sql of MIGRATIONS) {
+    try { db.exec(sql); } catch { /* column already exists */ }
+  }
+
   return db;
 }
 
@@ -71,9 +85,9 @@ export function openDb(path: string): Database {
 
 export function insertFile(db: Database, file: InsertFile): void {
   db.prepare(
-    `INSERT OR IGNORE INTO gdrive_files (id, filename, mime_type, created_at, status, updated_at)
-     VALUES (?, ?, ?, ?, ?, datetime('now'))`
-  ).run(file.id, file.filename, file.mime_type, file.created_at, file.status);
+    `INSERT OR IGNORE INTO gdrive_files (id, filename, mime_type, created_at, watch_folder, status, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
+  ).run(file.id, file.filename, file.mime_type, file.created_at, file.watch_folder, file.status);
 }
 
 export function fileExists(db: Database, id: string): boolean {
