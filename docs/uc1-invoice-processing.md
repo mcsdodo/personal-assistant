@@ -223,7 +223,7 @@ flowchart TD
 **`month_tag` source** also differs: email path infers it from email context (subject, document date, `received_at` fallback); GDrive path uses the file's `created_time` (hard rule — always scan date, not document content date).
 
 **Code:**
-- [`invoice-worker.ts:534-570`](../local/claude-code/channels/invoice-worker.ts#L534) — `resolveCorrespondent()`: list → match → create if needed
+- [`invoice-worker.ts:534-575`](../local/claude-code/channels/invoice-worker.ts#L534) — `resolveCorrespondent()`: list → fuzzy match (via `fuzzy-match.ts`) → create if needed
 - [`invoice-worker.ts:578-655`](../local/claude-code/channels/invoice-worker.ts#L578) — `checkDuplicate()`: search by order_id + correspondent, compare amounts
 - [`invoice-worker.ts:660-735`](../local/claude-code/channels/invoice-worker.ts#L660) — `resolveTags()`: list → match → create missing
 - [`invoice-worker.ts:740-820`](../local/claude-code/channels/invoice-worker.ts#L740) — `uploadToPaperless()`: assemble args, call `post_document`
