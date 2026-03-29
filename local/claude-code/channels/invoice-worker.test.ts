@@ -40,6 +40,7 @@ function makeInput(overrides: Partial<InvoiceIntakeInput> = {}): InvoiceIntakeIn
       vendor: "Alza",
       doc_type: "invoice",
       is_fuel: false,
+      owner: "techlab",
       action: "download_and_upload",
       download_strategy: "attachment",
       strategy_confidence: "high",
@@ -813,6 +814,114 @@ describe("invoice-worker unified tag derivation", () => {
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("documents");
+    expect(output.tags).not.toContain("invoicing");
+  });
+
+  test("owner techlab: invoice gets techlab + invoicing + month tag", async () => {
+    const input = makeInput({
+      month_tag: "2026-03",
+      file_path: join(tmpDir, "biz-invoice.pdf"),
+      classification: {
+        ...makeInput().classification,
+        doc_type: "invoice",
+        is_fuel: false,
+        owner: "techlab",
+      },
+    });
+    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([
+        { id: 1, name: "invoicing" },
+        { id: 3, name: "techlab" },
+        { id: 7, name: "2026-03" },
+      ])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      () => new Response('"task-uuid"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry);
+
+    const output = JSON.parse(getJob(db, job.id)!.output_json!);
+    expect(output.tags).toContain("techlab");
+    expect(output.tags).toContain("invoicing");
+    expect(output.tags).toContain("2026-03");
+    expect(output.tags).not.toContain("personal");
+  });
+
+  test("owner personal: invoice gets personal + month tag, no invoicing", async () => {
+    const input = makeInput({
+      month_tag: "2026-03",
+      file_path: join(tmpDir, "personal-invoice.pdf"),
+      classification: {
+        ...makeInput().classification,
+        doc_type: "invoice",
+        is_fuel: false,
+        owner: "personal",
+      },
+    });
+    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([
+        { id: 8, name: "personal" },
+        { id: 7, name: "2026-03" },
+      ])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      () => new Response('"task-uuid"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry);
+
+    const output = JSON.parse(getJob(db, job.id)!.output_json!);
+    expect(output.tags).toContain("personal");
+    expect(output.tags).toContain("2026-03");
+    expect(output.tags).not.toContain("techlab");
+    expect(output.tags).not.toContain("invoicing");
+  });
+
+  test("owner personal + fuel: gets personal + fuel + month tag, no invoicing", async () => {
+    const input = makeInput({
+      month_tag: "2026-03",
+      file_path: join(tmpDir, "personal-fuel.pdf"),
+      classification: {
+        ...makeInput().classification,
+        doc_type: "receipt",
+        is_fuel: true,
+        owner: "personal",
+      },
+    });
+    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Slovnaft" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([
+        { id: 8, name: "personal" },
+        { id: 4, name: "fuel" },
+        { id: 7, name: "2026-03" },
+      ])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "receipt" }])),
+      () => new Response('"task-uuid"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry);
+
+    const output = JSON.parse(getJob(db, job.id)!.output_json!);
+    expect(output.tags).toContain("personal");
+    expect(output.tags).toContain("fuel");
+    expect(output.tags).toContain("2026-03");
+    expect(output.tags).not.toContain("techlab");
     expect(output.tags).not.toContain("invoicing");
   });
 });
