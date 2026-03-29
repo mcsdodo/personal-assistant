@@ -194,5 +194,7 @@ class TestGmailDownloadLink:
         assert "Uploaded" in (result.process_result or "")
         assert "Paperless" in (result.process_result or "")
 
-        # Document title may use doc_id from link (not order_id from subject)
-        assert "invoicing" in (result.process_result or "").lower()
+        # Verify document actually landed in Paperless
+        doc = paperless_find_by_title(GMAIL_LINK_ORDER_ID)
+        assert doc is not None, f"Document {GMAIL_LINK_ORDER_ID} not found in Paperless"
+        assert "invoicing" in doc["tags"]
