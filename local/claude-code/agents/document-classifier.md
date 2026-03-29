@@ -17,7 +17,7 @@ You will receive a file path. Use the Read tool to read the PDF/image file — t
 
 Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text.
 
-**You MUST return EXACTLY these 8 fields — no more, no fewer:**
+**You MUST return EXACTLY these 9 fields — no more, no fewer:**
 
 ```json
 {
@@ -28,12 +28,13 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
   "is_fuel": true,
   "confidence": "high",
   "order_id": "1475807",
+  "subtitle": null,
   "owner": "techlab"
 }
 ```
 
 **STRICT RULES:**
-- Return ALL 8 fields every time. Never omit any field.
+- Return ALL 9 fields every time. Never omit any field.
 - Do NOT add extra fields (no `doc_date`, `description`, `notes`, `doc_number`, or anything else).
 - `confidence` must be a string: `"high"`, `"medium"`, or `"low"` — never a number.
 - `is_fuel` must be a boolean — never omit it.
@@ -43,8 +44,8 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 ## Classification Rules
 
 ### doc_type
-- `invoice` — formal invoice (faktúra) with company details, VAT, line items
-- `receipt` — POS receipt (pokladničný blok) from retail/fuel station, parking ticket/proof of payment of parking, highway toll ticket/vignette — any payment confirmation or monetary document that is not a formal invoice
+- `invoice` — if the document contains any of these strings: "${BUSINESS_COMPANY_NAME}", "${BUSINESS_CRN}", "${BUSINESS_TAX_IDS}" — it is an invoice. No exceptions. These are our company credentials and their presence means a formal invoice (faktúra) was issued to us.
+- `receipt` — POS receipt (pokladničný blok) from retail/fuel station, parking ticket, highway toll vignette. May contain seller company credentials (seller IČO/DIČ/IČ DPH) but NOT our company credentials listed above.
 - `credit_note` — dobropis, refund document
 - `account_statement` — bank statement (výpis z účtu)
 - `document` — worklogs (dochádzka), vacation logs, travel orders (cestovný príkaz), business trip logs, contracts, attendance records — non-monetary documents
@@ -76,10 +77,20 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 ### order_id
 - Extract THIS document's own number — the number in the header/title, not a referenced document number
 - For credit notes: use the credit note number (e.g. "Opravný daňový doklad - 6401551319"), NOT the original invoice number it references
-- For POS receipts: use "Porad. číslo dokladu" or "číslo dokladu v eKasa" or document ID
-- Examples: "FV2026001234", "OBJ-583481365", "1475807", "0003"
+- For receipts (`doc_type: "receipt"`): return `null` — POS sequence numbers and eKasa IDs are not useful for identification
+- Examples: "FV2026001234", "OBJ-583481365", "5000009409"
 - Return `null` for bank statements and non-monetary documents (worklogs, travel orders)
 - Return `null` if not found
+
+### subtitle
+Short label (max 40 chars) for document title building. Used when `order_id` is null.
+- Return `null` when `order_id` is present — order_id takes priority for titles
+- For travel orders (cestovný príkaz): include date range, e.g. `"Cestovný príkaz 10.-12.03.2026"`
+- For attendance records (dochádzka): include month, e.g. `"Dochádzka marec 2026"`
+- For contracts: include counterparty, e.g. `"Zmluva - ABC s.r.o."`
+- For bank statements: include period, e.g. `"Výpis 03/2026"`
+- For parking/toll receipts without order_id: include location/date, e.g. `"Parkovanie Bratislava 25.03.2026"`
+- Return `null` if nothing useful can be extracted beyond what vendor already captures
 
 ### confidence
 - `"high"` — clear, legible scan, all fields extracted

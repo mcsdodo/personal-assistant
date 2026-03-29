@@ -172,7 +172,7 @@ Haiku subagent classifies each new email by sender, subject, and body excerpt.
 - [`agents/email-classifier.md`](../local/claude-code/agents/email-classifier.md) — Haiku classifier prompt defining all output fields and decision rules
 - [`invoice-worker.ts:40-92`](../local/claude-code/channels/invoice-worker.ts#L40) — `InvoiceIntakeInput` type definition with all classification fields
 
-**Document classification (post-download):** After downloading the PDF, Claude runs the `document-classifier` Haiku subagent ([`agents/document-classifier.md`](../local/claude-code/agents/document-classifier.md)) which visually inspects the PDF and returns 8 fields: `doc_type`, `vendor`, `total_amount`, `currency`, `is_fuel`, `confidence`, `order_id`, `owner`. Non-null values override the email-classifier's guesses. `doc_type` and `owner` come exclusively from this classifier. This same classifier handles GDrive scans.
+**Document classification (post-download):** After downloading the PDF, Claude runs the `document-classifier` Haiku subagent ([`agents/document-classifier.md`](../local/claude-code/agents/document-classifier.md)) which visually inspects the PDF and returns 9 fields: `doc_type`, `vendor`, `total_amount`, `currency`, `is_fuel`, `confidence`, `order_id`, `subtitle`, `owner`. Non-null values override the email-classifier's guesses. `doc_type`, `subtitle`, and `owner` come exclusively from this classifier. This same classifier handles GDrive scans.
 
 **Status recording:** After classification, Claude calls `update_email_status` with the classification JSON, action, vendor, and confidence.
 
@@ -184,7 +184,7 @@ The invoice-worker uploads documents via the Paperless MCP's `post_document` too
 1. **Resolve correspondent** — match vendor name to existing Paperless correspondent (case-insensitive), create if missing
 2. **Resolve tags** — derive tags from the `owner` field set by the document-classifier (see owner-aware logic below), create missing tags
 3. **Resolve document type** — map `doc_type` to Paperless type (invoice → "Invoice", receipt → "Receipt", credit_note → "Credit Note", account_statement → "Account Statement", document → "Document")
-4. **Build title** — `{vendor} - {order_id}` or `{vendor} - {subject}`
+4. **Build title** — priority: `{vendor} - {order_id}` → `{vendor} - {subtitle}` → `{vendor} - {subject/filename}` → `{vendor} - invoice/scan`
 5. **Upload** — `post_document` with base64 content, correspondent, tags, type, custom fields (total_amount, order_id)
 
 **Tag derivation (by source):**

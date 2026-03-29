@@ -55,6 +55,7 @@ export interface InvoiceIntakeInput {
     strategy_confidence: "high" | "medium" | "low";
     requires_review: boolean;
     order_id: string | null;
+    subtitle: string | null;
     total_amount: number | null;
     currency: string | null;
   };
@@ -90,6 +91,7 @@ export interface ScanIntakeInput {
     owner?: "techlab" | "personal";
     confidence: string;
     order_id: string | null;
+    subtitle: string | null;
   };
 }
 
@@ -251,7 +253,7 @@ export async function executeInvoiceIntake(
 
       // Step 6: Upload to Paperless
       addJobEvent(db, job.id, "step_started", { step: "upload" });
-      const title = buildTitle(classification.vendor, classification.order_id, input.subject);
+      const title = buildTitle(classification.vendor, classification.order_id, classification.subtitle, input.subject);
       const uploadResult = await uploadToPaperless({
         title,
         file,
@@ -830,10 +832,14 @@ async function uploadToPaperless(
 function buildTitle(
   vendor: string,
   orderId: string | null | undefined,
+  subtitle: string | null | undefined,
   subject: string | undefined,
 ): string {
   if (orderId) {
     return `${vendor} - ${orderId}`;
+  }
+  if (subtitle) {
+    return `${vendor} - ${subtitle}`;
   }
   if (subject) {
     // Use first meaningful part of subject
@@ -970,6 +976,7 @@ export async function executeScanIntake(
       const title = buildScanTitle(
         classification.vendor,
         classification.order_id,
+        classification.subtitle,
         input.filename,
       );
       const uploadResult = await uploadToPaperless({
@@ -1034,10 +1041,14 @@ export async function executeScanIntake(
 function buildScanTitle(
   vendor: string,
   orderId: string | null | undefined,
+  subtitle: string | null | undefined,
   filename: string | undefined,
 ): string {
   if (orderId) {
     return `${vendor} - ${orderId}`;
+  }
+  if (subtitle) {
+    return `${vendor} - ${subtitle}`;
   }
   if (filename) {
     // Strip extension and use as title context
