@@ -297,7 +297,7 @@ describe("invoice-worker attachment download + upload", () => {
     // not a document ID. The doc ID is resolved later by setDocumentCustomFields.
     expect(output.paperless_document_id).toBeUndefined();
     expect(output.correspondent).toBe("Alza");
-    expect(output.tags).toEqual(["invoicing", "techlab"]);
+    expect(output.tags).toEqual(["techlab", "invoicing"]);
 
     // Verify events were recorded
     const events = getJobEvents(db, job.id);
@@ -466,7 +466,7 @@ describe("invoice-worker attachment download + upload", () => {
 });
 
 describe("invoice-worker link download", () => {
-  test("downloads via extract_invoice_links + download_invoice_link for outlook", async () => {
+  test("downloads via get_email HTML extraction + direct fetch for outlook", async () => {
     const input = makeInput({
       classification: {
         ...makeInput().classification,
@@ -477,27 +477,26 @@ describe("invoice-worker link download", () => {
     const job = createRunningJob(input);
 
     mockFetch(
-      // 1. extract_invoice_links
-      () =>
-        jsonResponse(
-          rpcResponse([
-            { url: "https://example.com/invoice.pdf", text: "Download Invoice", doc_id: "INV-1" },
-          ]),
-        ),
-      // 2. download_invoice_link
+      // 1. get_email → returns HTML body with extractable invoice link
       () =>
         jsonResponse(
           rpcResponse({
-            filename: "invoice.pdf",
-            content_type: "application/pdf",
-            size: 4096,
-            content_base64: "JVBER",
+            body_html: '<a href="https://example.com/invoice.pdf">Stiahnuť faktúru</a>',
           }),
         ),
+      // 2. direct fetch of extracted URL → PDF content
+      () =>
+        new Response(Buffer.from("%PDF-fake"), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/pdf",
+            "Content-Disposition": 'attachment; filename="invoice.pdf"',
+          },
+        }),
       // 3. list_correspondents
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // NO dedup (order_id is null)
-      // 4. list_tags (derived: ["invoicing", "techlab"])
+      // 4. list_tags (derived: ["techlab", "invoicing"])
       () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
       // 5. create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 2 })),
@@ -505,7 +504,7 @@ describe("invoice-worker link download", () => {
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       // 7. post_document
       () => new Response('"task-uuid"', { status: 200 }),
-      // 8-10. setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
+      // 8-10. setDocumentCustomFields: task poll, PATCH, verify
       ...customFieldsMockHandlers(),
     );
 
@@ -517,7 +516,7 @@ describe("invoice-worker link download", () => {
     expect(output.outcome).toBe("uploaded");
   });
 
-  test("fails when link download returns error", async () => {
+  test("fails when link download returns 403 (expired)", async () => {
     const input = makeInput({
       classification: {
         ...makeInput().classification,
@@ -528,30 +527,24 @@ describe("invoice-worker link download", () => {
     const job = createRunningJob(input);
 
     mockFetch(
-      // 1. extract_invoice_links
-      () =>
-        jsonResponse(
-          rpcResponse([{ url: "https://example.com/expired-link", text: "Download" }]),
-        ),
-      // 2. download_invoice_link → returns error
+      // 1. get_email → HTML with extractable link
       () =>
         jsonResponse(
           rpcResponse({
-            filename: "",
-            content_type: "",
-            size: 0,
-            content_base64: "",
-            error: "Link expired",
-            status_code: 403,
+            body_html: '<a href="https://example.com/expired-link">Stiahnuť faktúru</a>',
           }),
         ),
+      // 2. direct fetch → 403 (first attempt)
+      () => new Response("Forbidden", { status: 403 }),
+      // 3. retry with browser headers → still 403
+      () => new Response("Forbidden", { status: 403 }),
     );
 
     await executeInvoiceIntake(db, job, logger, registry);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
-    expect(updated.error_json).toContain("Link expired");
+    expect(updated.error_json).toContain("Link may have expired");
   });
 });
 
@@ -603,12 +596,11 @@ describe("invoice-worker error handling", () => {
     expect(updated.error_json).toContain("500");
   });
 
-  test("fails for unsupported email source in link download", async () => {
+  test("fails for unsupported download strategy", async () => {
     const input = makeInput({
-      email_source: "gmail",
       classification: {
         ...makeInput().classification,
-        download_strategy: "known_link",
+        download_strategy: "browser_required" as any,
       },
     });
     const job = createRunningJob(input);
@@ -617,7 +609,7 @@ describe("invoice-worker error handling", () => {
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
-    expect(updated.error_json).toContain("not yet supported");
+    expect(updated.error_json).toContain("Unsupported download strategy");
   });
 });
 
@@ -903,7 +895,7 @@ describe("invoice-worker unified tag derivation", () => {
     const job = createRunningJob(input);
 
     mockFetch(
-      () => jsonResponse(rpcResponse([{ id: 10, name: "Slovnaft" }])),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       () => jsonResponse({ results: [] }),
       () => jsonResponse(rpcResponse([
         { id: 8, name: "personal" },
