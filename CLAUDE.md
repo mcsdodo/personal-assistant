@@ -102,7 +102,7 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | `local/checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
 | `local/checker-mcp/webapp.py` | Flask web UI (matching view + P&L view) |
 | `local/checker-mcp/entrypoint.sh` | Two-process entrypoint (MCP background + Flask PID 1) |
-| `local/checker-mcp/match_invoices.py` | Invoice matching engine (copy from paperless checker) |
+| `local/checker-mcp/match_invoices.py` | Invoice matching engine |
 | `local/outlook-mcp/server.py` | Outlook MCP (MSAL device code auth) |
 | `local/observability/` | Local dev Alloy, Prometheus, Loki, Grafana configs |
 
