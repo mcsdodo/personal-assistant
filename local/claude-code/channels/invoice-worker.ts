@@ -49,7 +49,6 @@ export interface InvoiceIntakeInput {
     vendor: string;
     doc_type: string;
     is_fuel: boolean;
-    suggested_tags: string[];
     action: string;
     download_strategy: DownloadStrategy | null;
     strategy_confidence: "high" | "medium" | "low";
@@ -85,7 +84,6 @@ export interface ScanIntakeInput {
     total_amount: number | null;
     currency: string | null;
     is_fuel: boolean;
-    suggested_tags: string[];
     confidence: string;
     order_id: string | null;
   };

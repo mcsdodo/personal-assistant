@@ -102,7 +102,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "object",
             description:
               "Classification output from email-classifier. Must include: is_invoice, confidence, vendor, " +
-              "doc_type, suggested_tags, action, download_strategy, strategy_confidence, requires_review, " +
+              "doc_type, action, download_strategy, strategy_confidence, requires_review, " +
               "order_id, total_amount, currency",
           },
           subject: {

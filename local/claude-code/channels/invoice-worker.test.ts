@@ -40,7 +40,6 @@ function makeInput(overrides: Partial<InvoiceIntakeInput> = {}): InvoiceIntakeIn
       vendor: "Alza",
       doc_type: "invoice",
       is_fuel: false,
-      suggested_tags: ["invoicing", "2026-03"],
       action: "download_and_upload",
       download_strategy: "attachment",
       strategy_confidence: "high",
@@ -753,7 +752,7 @@ describe("invoice-worker file_path from disk", () => {
 });
 
 describe("invoice-worker unified tag derivation", () => {
-  test("derives tags from classification fields, not suggested_tags", async () => {
+  test("derives tags deterministically from classification fields", async () => {
     const input = makeInput({
       month_tag: "2026-02",
       file_path: join(tmpDir, "tagged.pdf"),
@@ -761,7 +760,6 @@ describe("invoice-worker unified tag derivation", () => {
         ...makeInput().classification,
         is_fuel: true,
         doc_type: "receipt",
-        suggested_tags: ["wrong-tag-1", "wrong-tag-2"],
       },
     });
     writeFileSync(input.file_path!, Buffer.from("fake pdf"));
