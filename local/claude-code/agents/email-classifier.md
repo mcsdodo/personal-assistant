@@ -55,7 +55,6 @@ Always respond with ONLY this JSON (no markdown, no explanation):
   "vendor": "Alza",
   "doc_type": "invoice",
   "is_fuel": false,
-  "suggested_tags": ["invoicing", "2026-03"],
   "action": "download_and_upload",
   "download_strategy": "attachment",
   "strategy_confidence": "high",
@@ -72,7 +71,6 @@ Fields:
 - `vendor`: company name from the email sender/footer. Use the most complete name available (e.g., "Alza.sk s.r.o." from footer rather than just "Alza" from sender). If only a short name is visible, use that.
 - `doc_type`: "invoice" | "credit_note" | "receipt" | "statement" | "other"
 - `is_fuel`: boolean — true if this is a fuel/gas station receipt or invoice (for kniha-jazd integration later)
-- `suggested_tags`: array of EXISTING Paperless tags only. Use: `invoicing` (for all invoices/credit notes), `documents` (for non-invoice docs), `techlab` (for Techlab business expenses), and the YYYY-MM month tag. Never invent new tags like vendor names — vendors are tracked as correspondents, not tags.
 - `action`: "download_and_upload" | "notify_user" | "ignore"
 - `download_strategy`: how to retrieve the invoice document:
   - `"attachment"` — email has a PDF/document attachment (most common)
