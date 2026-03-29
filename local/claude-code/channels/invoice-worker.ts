@@ -49,6 +49,7 @@ export interface InvoiceIntakeInput {
     vendor: string;
     doc_type: string;
     is_fuel: boolean;
+    owner?: "techlab" | "personal";
     action: string;
     download_strategy: DownloadStrategy | null;
     strategy_confidence: "high" | "medium" | "low";
@@ -84,6 +85,7 @@ export interface ScanIntakeInput {
     total_amount: number | null;
     currency: string | null;
     is_fuel: boolean;
+    owner?: "techlab" | "personal";
     confidence: string;
     order_id: string | null;
   };
@@ -220,12 +222,19 @@ export async function executeInvoiceIntake(
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
       const allTagNames: string[] = [];
       const docType = classification.doc_type;
-      if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
-        allTagNames.push("invoicing");
-      } else if (docType === "document") {
-        allTagNames.push("documents");
+      const owner = classification.owner ?? "techlab"; // backward compat default
+
+      if (owner === "techlab") {
+        allTagNames.push("techlab");
+        if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
+          allTagNames.push("invoicing");
+        } else if (docType === "document") {
+          allTagNames.push("documents");
+        }
+      } else {
+        allTagNames.push("personal");
       }
-      allTagNames.push("techlab");
+
       if (classification.is_fuel) {
         allTagNames.push("fuel");
       }
@@ -933,14 +942,20 @@ export async function executeScanIntake(
       // Step 4: Resolve tags — derived deterministically from classification
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
       const allTagNames: string[] = [];
-      // doc_type → tag mapping (business logic, not classifier's job)
       const docType = classification.doc_type;
-      if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
-        allTagNames.push("invoicing");
-      } else if (docType === "document") {
-        allTagNames.push("documents");
+      const owner = classification.owner ?? "techlab"; // backward compat default
+
+      if (owner === "techlab") {
+        allTagNames.push("techlab");
+        if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
+          allTagNames.push("invoicing");
+        } else if (docType === "document") {
+          allTagNames.push("documents");
+        }
+      } else {
+        allTagNames.push("personal");
       }
-      allTagNames.push("techlab"); // all scans are business expenses
+
       if (classification.is_fuel) {
         allTagNames.push("fuel");
       }
