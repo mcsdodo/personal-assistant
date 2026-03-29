@@ -1169,6 +1169,16 @@ def main():
 
     doc_cache = {}
     global_matched_ids = set()
+    # Pre-process MONTH_WINDOW months before the display range so their
+    # matched invoices enter global_matched_ids.  Without this, window
+    # invoices from unprocessed months can steal matches from displayed
+    # months' invoices when they share the same amount.
+    if not args.all:
+        for i in range(MONTH_WINDOW, 0, -1):
+            collect_month(client, month_offset(months[0], -i), statement_type_id,
+                          total_amount_field_id, doc_cache, invoicing_tag_id,
+                          global_matched_ids,
+                          total_amount_alt_field_id=total_amount_alt_field_id)
     # Process oldest-first: same-month invoices are preferred, so older months
     # claim their own invoices before newer months can steal them via window.
     results = [collect_month(client, m, statement_type_id, total_amount_field_id, doc_cache, invoicing_tag_id, global_matched_ids, total_amount_alt_field_id=total_amount_alt_field_id) for m in months]

@@ -13,6 +13,7 @@ from match_invoices import (
     DOCUMENT_TYPE_STATEMENT,
     INVOICING_TAG_NAME,
     MONTH_WINDOW,
+    PAPERLESS_URL,
     TOTAL_AMOUNT_ALT_FIELD_NAME,
     TOTAL_AMOUNT_FIELD_NAME,
     PaperlessClient,
@@ -21,8 +22,6 @@ from match_invoices import (
     filter_resolved_unmatched,
     month_offset,
 )
-
-PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "https://documents.lacny.me")
 
 app = Flask(__name__)
 
@@ -72,6 +71,15 @@ def index():
 
     doc_cache = {}
     global_matched_ids = set()
+    # Pre-process MONTH_WINDOW months before the display range so their
+    # matched invoices enter global_matched_ids.  Without this, window
+    # invoices from unprocessed months can steal matches from displayed
+    # months' invoices when they share the same amount.
+    if not all_param:
+        for i in range(MONTH_WINDOW, 0, -1):
+            collect_month(client, month_offset(months[0], -i), stmt_type, ta_field,
+                          doc_cache, inv_tag, global_matched_ids,
+                          total_amount_alt_field_id=ta_alt_field)
     # Process oldest-first: same-month invoices are preferred, so older months
     # claim their own invoices before newer months can steal them via window.
     results = [collect_month(client, m, stmt_type, ta_field, doc_cache, inv_tag, global_matched_ids, total_amount_alt_field_id=ta_alt_field) for m in months]
@@ -236,7 +244,7 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
     expenses_detail = pl.get("expenses_detail", {})
     excluded_detail = pl.get("excluded_detail", {})
 
-    # Transpose expenses_detail {cat: {month: amt}} -> {month: {cat: amt}}
+    # Transpose expenses_detail {cat: {month: amt}} → {month: {cat: amt}}
     exp_by_month: dict[str, dict[str, float]] = {}
     for cat, months in expenses_detail.items():
         for m, v in months.items():
