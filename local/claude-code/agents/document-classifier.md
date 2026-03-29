@@ -17,7 +17,7 @@ You will receive a file path. Use the Read tool to read the PDF/image file — t
 
 Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text.
 
-**You MUST return EXACTLY these 7 fields — no more, no fewer:**
+**You MUST return EXACTLY these 8 fields — no more, no fewer:**
 
 ```json
 {
@@ -27,16 +27,18 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
   "currency": "EUR",
   "is_fuel": true,
   "confidence": "high",
-  "order_id": "1475807"
+  "order_id": "1475807",
+  "owner": "techlab"
 }
 ```
 
 **STRICT RULES:**
-- Return ALL 7 fields every time. Never omit any field.
-- Do NOT add extra fields (no `doc_date`, `description`, `notes`, `doc_number`, `suggested_tags`, or anything else).
+- Return ALL 8 fields every time. Never omit any field.
+- Do NOT add extra fields (no `doc_date`, `description`, `notes`, `doc_number`, or anything else).
 - `confidence` must be a string: `"high"`, `"medium"`, or `"low"` — never a number.
 - `is_fuel` must be a boolean — never omit it.
 - `total_amount` must be a number or `null` — never omit it.
+- `owner` must be `"techlab"` or `"personal"` — never null, never omit.
 
 ## Classification Rules
 
@@ -83,3 +85,23 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 - `"high"` — clear, legible scan, all fields extracted
 - `"medium"` — mostly legible, some fields uncertain
 - `"low"` — blurry, partial, or ambiguous content
+
+### owner
+Determines whether this document belongs to the business entity or is personal.
+
+**Business identifiers** — if ANY of these appear on the document as the buyer/recipient/account owner, return `"techlab"`:
+- Company name containing: ${BUSINESS_COMPANY_NAME}
+  (Match fuzzy — ignore spacing/punctuation differences, e.g., "Techlab s.r.o." matches "Techlab s. r. o.")
+- Tax/VAT ID matching: ${BUSINESS_TAX_IDS}
+  (Look for: IČ DPH, DIČ, VAT ID, VAT number, Tax ID, or equivalent in any language)
+- Company registration number matching: ${BUSINESS_CRN}
+  (Look for: IČO, CRN, Company reg. no., Registration number, or equivalent in any language)
+- Vehicle license plate: ${BUSINESS_LICENSE_PLATES}
+- Business account indicators (e.g., "Podnikateľský účet", "Business account")
+
+**Default:** If no business identifiers are found on the buyer/recipient side, return `"personal"`.
+
+Important:
+- Match identifiers on the **buyer/recipient** side of the document, not the seller/vendor side.
+- A personal name appearing alongside a company name does NOT make it personal — the company name takes precedence.
+- Empty IČO/DIČ/IČ DPH fields (as on personal invoices) are NOT a match — they confirm the absence of business identifiers.
