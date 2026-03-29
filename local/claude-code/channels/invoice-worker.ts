@@ -42,7 +42,7 @@ export interface InvoiceIntakeInput {
   email_source: string;
   /** Email message ID from the email provider */
   message_id: string;
-  /** Classification output from email-classifier agent */
+  /** Merged classification (email-classifier + document-classifier override) */
   classification: {
     is_invoice: boolean;
     confidence: "high" | "medium" | "low";
@@ -697,11 +697,15 @@ async function resolveDocumentType(
   logger: WorkerLogger,
 ): Promise<number | undefined> {
   // Map classifier doc_type to Paperless document type name
-  // Only types that exist in Paperless: "invoice", "account_statement"
   const typeMap: Record<string, string> = {
-    invoice: "invoice",
-    credit_note: "invoice",
-    account_statement: "account_statement",
+    invoice: "Invoice",
+    receipt: "Receipt",
+    credit_note: "Credit Note",
+    account_statement: "Account Statement",
+    document: "Document",
+    // email-classifier aliases (fallback if document-classifier doesn't override)
+    statement: "Account Statement",
+    other: "Document",
   };
 
   const paperlessTypeName = typeMap[docType];

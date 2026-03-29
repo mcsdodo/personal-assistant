@@ -53,7 +53,6 @@ Always respond with ONLY this JSON (no markdown, no explanation):
   "is_invoice": true,
   "confidence": "high",
   "vendor": "Alza",
-  "doc_type": "invoice",
   "is_fuel": false,
   "action": "download_and_upload",
   "download_strategy": "attachment",
@@ -69,7 +68,6 @@ Fields:
 - `is_invoice`: boolean (true for invoices, credit notes, receipts, statements)
 - `confidence`: "high" (clear invoice signals) | "medium" (likely but unsure) | "low" (probably not)
 - `vendor`: company name from the email sender/footer. Use the most complete name available (e.g., "Alza.sk s.r.o." from footer rather than just "Alza" from sender). If only a short name is visible, use that.
-- `doc_type`: "invoice" | "credit_note" | "receipt" | "statement" | "other"
 - `is_fuel`: boolean — true if this is a fuel/gas station receipt or invoice (for kniha-jazd integration later)
 - `action`: "download_and_upload" | "notify_user" | "ignore"
 - `download_strategy`: how to retrieve the invoice document:

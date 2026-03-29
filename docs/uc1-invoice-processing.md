@@ -164,7 +164,7 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 
 Haiku subagent classifies each new email by sender, subject, and body excerpt.
 
-**Output fields:** `is_invoice`, `confidence` (high/medium/low), `vendor`, `doc_type`, `is_fuel`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`.
+**Output fields:** `is_invoice`, `confidence` (high/medium/low), `vendor`, `is_fuel`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`. Note: `doc_type` and `owner` are not returned by the email-classifier — these come exclusively from the document-classifier after PDF download.
 
 **`has_attachments` override:** The classifier prompt is aware of the `has_attachments` field from the email metadata. When `has_attachments` is true, the `attachment` download strategy overrides all other guesses — this prevents emails with actual PDF attachments (e.g., bank statements, fuel receipts) from being misclassified as `browser_required`.
 
@@ -172,7 +172,7 @@ Haiku subagent classifies each new email by sender, subject, and body excerpt.
 - [`agents/email-classifier.md`](../local/claude-code/agents/email-classifier.md) — Haiku classifier prompt defining all output fields and decision rules
 - [`invoice-worker.ts:40-92`](../local/claude-code/channels/invoice-worker.ts#L40) — `InvoiceIntakeInput` type definition with all classification fields
 
-**Document classification (post-download):** After downloading the PDF, Claude runs the `document-classifier` Haiku subagent ([`agents/document-classifier.md`](../local/claude-code/agents/document-classifier.md)) which visually inspects the PDF and returns 8 fields: `doc_type`, `vendor`, `total_amount`, `currency`, `is_fuel`, `confidence`, `order_id`, `owner`. Non-null values override the email-classifier's guesses. This same classifier handles GDrive scans.
+**Document classification (post-download):** After downloading the PDF, Claude runs the `document-classifier` Haiku subagent ([`agents/document-classifier.md`](../local/claude-code/agents/document-classifier.md)) which visually inspects the PDF and returns 8 fields: `doc_type`, `vendor`, `total_amount`, `currency`, `is_fuel`, `confidence`, `order_id`, `owner`. Non-null values override the email-classifier's guesses. `doc_type` and `owner` come exclusively from this classifier. This same classifier handles GDrive scans.
 
 **Status recording:** After classification, Claude calls `update_email_status` with the classification JSON, action, vendor, and confidence.
 
@@ -183,7 +183,7 @@ The invoice-worker uploads documents via the Paperless MCP's `post_document` too
 **Steps:**
 1. **Resolve correspondent** — match vendor name to existing Paperless correspondent (case-insensitive), create if missing
 2. **Resolve tags** — derive tags from the `owner` field set by the document-classifier (see owner-aware logic below), create missing tags
-3. **Resolve document type** — map `doc_type` to Paperless type (invoice → "invoice", statement → "account_statement")
+3. **Resolve document type** — map `doc_type` to Paperless type (invoice → "Invoice", receipt → "Receipt", credit_note → "Credit Note", account_statement → "Account Statement", document → "Document")
 4. **Build title** — `{vendor} - {order_id}` or `{vendor} - {subject}`
 5. **Upload** — `post_document` with base64 content, correspondent, tags, type, custom fields (total_amount, order_id)
 
