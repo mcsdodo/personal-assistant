@@ -332,6 +332,18 @@ Notes:
 - production host config reuses the existing shared `prometheus.remote_write.prometheus_endpoint` and `loki.write.loki_endpoint` outputs
 - after syncing the shared config to `/mnt/shared_configs/grafana/config.alloy`, restart the host Alloy container
 
+### Updating Grafana Dashboards
+
+Dashboard JSON files live in `local/observability/dashboards/`. Production Grafana mounts dashboards read-only from `/mnt/shared_configs/grafana/dashboards/` on the infra host.
+
+**After editing a dashboard JSON:**
+```bash
+# Copy to production Grafana (provisioner picks up changes automatically)
+scp local/observability/dashboards/claude-code.json root@192.168.0.112:/mnt/shared_configs/grafana/dashboards/claude-code.json
+```
+
+No Grafana restart needed — the file provisioner detects changes and reloads.
+
 ### Metrics (Prometheus, meter: `com.anthropic.claude_code`)
 
 | Metric | Unit | Attributes |
