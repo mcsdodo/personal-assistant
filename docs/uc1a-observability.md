@@ -51,13 +51,17 @@ Distribution of classifier decisions across the pipeline.
 
 **Code:** [`email-watcher.ts:188-205`](../local/claude-code/channels/email-watcher.ts#L188) — SQL groups non-null actions.
 
-## UC-1A.4: Vendor Mix
+## UC-1A.4: Correspondent Mix
 
-Top vendors detected by the classifier (top 20).
+Top correspondents from completed invoice workflow jobs (normalized names from Paperless fuzzy matching).
 
-**Metric:** `email_watcher_vendors_total{vendor}` — count by vendor, descending.
+**Metric:** `invoice_worker_correspondents_total{correspondent}` — OTLP counter pushed from `workflow-mcp`. Seeded from historical completed jobs at startup, incremented on each new upload.
 
-**Code:** [`email-watcher.ts:228-246`](../local/claude-code/channels/email-watcher.ts#L228) — SQL groups by vendor, ordered by count DESC, limit 20.
+**Dashboard panel:** "Top Correspondents" (bar gauge, queries `invoice_worker_correspondents_total`).
+
+**Code:** [`invoice-worker.ts`](../local/claude-code/channels/invoice-worker.ts) — counter defined and seeded via `seedCounterFromDb()`, incremented after `completeJob()` on successful upload. [`workflow-mcp.ts`](../local/claude-code/channels/workflow-mcp.ts) — `getMeter("workflow")` initializes the OTel meter.
+
+**Legacy:** `email_watcher_vendors_total{vendor}` (scraped from email-watcher `/metrics`) still exists but uses raw classifier vendor names (inconsistent naming). The dashboard now uses the OTLP correspondent metric instead.
 
 ## UC-1A.5: Confidence and Latency
 

@@ -424,37 +424,67 @@ async function downloadAttachment(
   }
 
   if (source === "gmail") {
-    // Gmail: get_attachments then download_attachment
-    const attachmentsResult = await callMcpTool(mcpUrl, "get_attachments", {
+    // Gmail: get_gmail_message_content lists attachments in --- ATTACHMENTS --- section,
+    // then get_gmail_attachment_content downloads a specific one.
+    const contentResult = await callMcpTool(mcpUrl, "get_gmail_message_content", {
       message_id: messageId,
+      user_google_email: GOOGLE_EMAIL,
     });
-    const attachmentsText = extractText(attachmentsResult);
-    const attachments = JSON.parse(attachmentsText);
+    const contentText = extractText(contentResult);
 
-    if (!Array.isArray(attachments) || !attachments.length) {
+    // Parse attachment metadata from text: "1. file.pdf (mime, size)\n   Attachment ID: abc"
+    const attachmentRegex = /\d+\.\s+(.+?)\s+\(([^,]+),\s*[\d.]+\s*KB\)\s*\n\s*Attachment ID:\s*(\S+)/g;
+    const attachments: Array<{ filename: string; mimeType: string; attachmentId: string }> = [];
+    let match;
+    while ((match = attachmentRegex.exec(contentText)) !== null) {
+      attachments.push({ filename: match[1], mimeType: match[2], attachmentId: match[3] });
+    }
+
+    if (!attachments.length) {
       throw new Error("No attachments found on Gmail message");
     }
 
-    // Find PDF attachment
+    // Find PDF attachment (prefer PDF, fallback to first)
     const target = attachments.find(
-      (a: any) =>
-        a.mimeType === "application/pdf" ||
-        a.filename?.toLowerCase().endsWith(".pdf"),
+      (a) => a.mimeType === "application/pdf" || a.filename.toLowerCase().endsWith(".pdf"),
     ) ?? attachments[0];
 
-    const downloadResult = await callMcpTool(mcpUrl, "download_attachment", {
+    // Download via Gmail MCP — returns a file path or download URL
+    const downloadResult = await callMcpTool(mcpUrl, "get_gmail_attachment_content", {
       message_id: messageId,
-      attachment_id: target.id ?? target.attachmentId,
+      attachment_id: target.attachmentId,
+      user_google_email: GOOGLE_EMAIL,
     });
-    const downloadData = extractText(downloadResult);
-    const parsed = JSON.parse(downloadData);
+    const downloadText = extractText(downloadResult);
 
-    return {
-      filename: parsed.filename ?? parsed.name ?? target.filename ?? "attachment.pdf",
-      content_base64: parsed.content_base64 ?? parsed.data ?? "",
-      content_type: parsed.content_type ?? parsed.mimeType ?? "application/pdf",
-      size: parsed.size ?? 0,
-    };
+    // Extract download URL or file path from text response
+    const urlMatch = downloadText.match(/Download URL:\s*(https?:\/\/\S+)/);
+    const pathMatch = downloadText.match(/Saved to:\s*(\S+)/);
+
+    if (urlMatch) {
+      // HTTP mode — fetch the file from the temporary URL
+      const resp = await fetch(urlMatch[1]);
+      if (!resp.ok) throw new Error(`Failed to fetch Gmail attachment: ${resp.status}`);
+      const buf = Buffer.from(await resp.arrayBuffer());
+      return {
+        filename: target.filename,
+        content_base64: buf.toString("base64"),
+        content_type: target.mimeType,
+        size: buf.length,
+      };
+    } else if (pathMatch) {
+      // stdio mode — read from disk
+      const { readFileSync } = await import("fs");
+      const buf = readFileSync(pathMatch[1]);
+      return {
+        filename: target.filename,
+        content_base64: buf.toString("base64"),
+        content_type: target.mimeType,
+        size: buf.length,
+      };
+    }
+
+    throw new Error("Could not extract file path or URL from Gmail attachment response");
   }
 
   throw new Error(`Unsupported email source: ${source}`);

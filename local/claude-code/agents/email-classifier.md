@@ -71,7 +71,8 @@ Fields:
 - `is_fuel`: boolean — true if this is a fuel/gas station receipt or invoice (for kniha-jazd integration later)
 - `action`: "download_and_upload" | "notify_user" | "ignore"
 - `download_strategy`: how to retrieve the invoice document:
-  - `"claude_download"` — email has attachments and requires Claude to inspect, pick the right one, and download it to disk before creating the workflow job. **Use this for all emails with attachments** — it handles single and multi-attachment cases correctly.
+  - `"attachment"` — email has a PDF/document attachment (worker downloads automatically, picks first PDF)
+  - `"claude_download"` — email has multiple attachments and it's unclear which is the invoice; Claude must inspect them, pick the right one, and download it to disk before creating the workflow job
   - `"known_link"` — email body contains a known vendor download link pattern (e.g., Alza "Stiahnuť faktúru")
   - `"direct_url"` — email body contains a direct download URL to a PDF/document
   - `"browser_required"` — document can only be accessed through a web portal login
@@ -85,7 +86,8 @@ Fields:
 
 ## Download Strategy Rules
 
-- `has_attachments` is true → `"claude_download"` (high confidence) — **this overrides all other strategies**
+- `has_attachments` is true AND subject/body suggests a single invoice → `"attachment"` (high confidence)
+- `has_attachments` is true AND subject/body suggests multiple documents (e.g., order confirmation with packing slip + invoice + shipping label) → `"claude_download"` (high confidence)
 - Known vendor with download link pattern (Alza "Stiahnuť faktúru/doklad") → `"known_link"` (high confidence)
 - Email contains a direct .pdf or document download URL → `"direct_url"` (medium-high confidence)
 - Vendor portal login required AND no attachments (Orange self-service, etc.) → `"browser_required"` (high confidence)

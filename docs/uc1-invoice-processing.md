@@ -164,9 +164,12 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 
 Haiku subagent classifies each new email by sender, subject, and body excerpt.
 
-**Output fields:** `is_invoice`, `confidence` (high/medium/low), `vendor`, `is_fuel`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`. Note: `doc_type` and `owner` are not returned by the email-classifier — these come exclusively from the document-classifier after PDF download.
+**Output fields:** `is_invoice`, `confidence` (high/medium/low), `vendor`, `is_fuel`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/claude_download/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`. Note: `doc_type` and `owner` are not returned by the email-classifier — these come exclusively from the document-classifier after PDF download.
 
-**`has_attachments` override:** The classifier prompt is aware of the `has_attachments` field from the email metadata. When `has_attachments` is true, the `attachment` download strategy overrides all other guesses — this prevents emails with actual PDF attachments (e.g., bank statements, fuel receipts) from being misclassified as `browser_required`.
+**Download strategy rules:**
+- `has_attachments` + single invoice expected → `attachment` (worker downloads automatically, picks first PDF — works for both Gmail and Outlook)
+- `has_attachments` + multiple documents (e.g., order confirmation with packing slip + invoice + shipping label) → `claude_download` (Claude inspects attachments, picks the right one, downloads to disk, passes `file_path` to the job)
+- Known vendor download link → `known_link`; direct PDF URL → `direct_url`; portal login required → `browser_required`
 
 **Code:**
 - [`agents/email-classifier.md`](../local/claude-code/agents/email-classifier.md) — Haiku classifier prompt defining all output fields and decision rules
@@ -300,15 +303,16 @@ The classifier assigns a `download_strategy` that determines how the worker gets
 
 | Strategy | Handler | Description |
 |----------|---------|-------------|
-| `attachment` | [`invoice-worker.ts:342-430`](../local/claude-code/channels/invoice-worker.ts#L342) | Download email attachment via MCP (prefers PDF) |
-| `known_link` | [`invoice-worker.ts:431-530`](../local/claude-code/channels/invoice-worker.ts#L431) | Extract invoice link from email body using vendor rules, download via MCP |
+| `attachment` | [`invoice-worker.ts:342-470`](../local/claude-code/channels/invoice-worker.ts#L342) | Download single email attachment via MCP (prefers PDF). Works for both Gmail (`get_gmail_message_content` + `get_gmail_attachment_content`) and Outlook (`get_attachments` + `download_attachment`). |
+| `claude_download` | Claude pre-downloads | Multi-attachment emails — Claude inspects attachments, picks the invoice, downloads to disk, passes `file_path` to the job. Worker refuses to proceed without `file_path`. |
+| `known_link` | [`invoice-worker.ts:471-570`](../local/claude-code/channels/invoice-worker.ts#L471) | Extract invoice link from email body using vendor rules, download via MCP |
 | `direct_url` | Same as known_link | Direct URL in email body |
 | `browser_required` | Pauses for approval | Requires browser interaction (e.g., login-gated portal) |
 | `manual_review` | Pauses for approval | Classifier unsure, needs human review |
 
 **Vendor rules** for link extraction: [`channels/invoice-links.ts`](../local/claude-code/channels/invoice-links.ts) — `INVOICE_LINK_RULES` is the single source of truth for vendor-specific patterns (sender + link text + subject). Used by both email-watcher (Gmail HTML) and invoice-worker (Outlook `body_html`). The legacy `INVOICE_RULES` in `outlook-mcp/server.py` is superseded.
 
-**Pre-job download (email path):** Claude now downloads the PDF *before* creating the intake job (using `curl` for links, `download-helper.ts` for attachments). The job receives a `file_path` and the worker reads from disk. The worker's MCP-based download functions are kept as fallback when `file_path` is missing (e.g., legacy jobs or manual retries).
+**Pre-job download (email path):** For `claude_download` and link strategies, Claude downloads the PDF *before* creating the intake job (using `curl` for links, email MCP tools for attachments). The job receives a `file_path` and the worker reads from disk. For `attachment` strategy, the worker downloads directly via MCP.
 
 ## Durable Workflow Layer
 

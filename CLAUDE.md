@@ -355,9 +355,15 @@ Notes:
 | `email_watcher_recent_discovered_total` | Emails discovered in the last 24h by `source` and `status` |
 | `email_watcher_actions_total` | Classified actions such as `download_and_upload`, `notify_user`, `ignore` |
 | `email_watcher_confidence_total` | Classified emails grouped by confidence (`high`, `medium`, `low`) |
-| `email_watcher_vendors_total` | Top detected vendors once classification starts recording them |
+| `email_watcher_vendors_total` | Raw vendor names from email classifier (legacy, still scraped) |
 | `email_watcher_processed_results_total` | Processed email counts grouped by final `status` |
 | `email_watcher_latency_seconds` | Average workflow latency from discovery to classification / processing |
+
+### Invoice Worker Metrics (OTLP push from `workflow-mcp`)
+
+| Metric | Meaning |
+|--------|---------|
+| `invoice_worker_correspondents_total` | Completed invoices by normalized Paperless correspondent. Counter seeded from DB at startup, incremented on each upload. Used by "Top Correspondents" dashboard panel. |
 
 ### Events (Loki, via OTel logs)
 
