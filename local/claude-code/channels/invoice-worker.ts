@@ -12,7 +12,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync } from "fs";
 
-import { getTracer, withSpan, SpanStatusCode } from "./tracing";
+import { getTracer, getMeter, withSpan, SpanStatusCode } from "./tracing";
 import type { Span } from "./tracing";
 
 import {
@@ -127,6 +127,28 @@ const GOOGLE_EMAIL = process.env.GMAIL_EMAIL ?? "";
 const PAPERLESS_MCP_URL = process.env.PAPERLESS_MCP_URL ?? "http://paperless-mcp:3000/mcp";
 
 const tracer = getTracer("invoice-worker");
+const meter = getMeter("invoice-worker");
+const correspondentsCounter = meter.createCounter("invoice_worker_correspondents_total", {
+  description: "Completed invoices by normalized Paperless correspondent",
+});
+
+let counterSeeded = false;
+function seedCounterFromDb(db: import("bun:sqlite").Database): void {
+  if (counterSeeded) return;
+  counterSeeded = true;
+  try {
+    const rows = db.query(
+      `SELECT json_extract(output_json, '$.correspondent') AS correspondent, COUNT(*) AS count
+       FROM jobs
+       WHERE state = 'completed'
+         AND json_extract(output_json, '$.correspondent') IS NOT NULL
+       GROUP BY correspondent`
+    ).all() as Array<{ correspondent: string; count: number }>;
+    for (const row of rows) {
+      correspondentsCounter.add(row.count, { correspondent: row.correspondent });
+    }
+  } catch {}
+}
 
 // ── Main executor ──────────────────────────────────────────────────────
 
@@ -136,6 +158,7 @@ export async function executeInvoiceIntake(
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<void> {
+  seedCounterFromDb(db);
   const input = parseJobJson<InvoiceIntakeInput>(job.input_json);
   if (!input) {
     failJob(db, job.id, { code: "invalid_input", message: "Missing or invalid input_json" });
@@ -292,6 +315,7 @@ export async function executeInvoiceIntake(
       };
       completeJob(db, job.id, result);
       logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
+      correspondentsCounter.add(1, { correspondent: correspondent.name });
       span.setAttribute("invoice.outcome", "uploaded");
       span.setAttribute("paperless.document_id", uploadResult.document_id ?? 0);
       span.setStatus({ code: SpanStatusCode.OK });
@@ -861,6 +885,7 @@ export async function executeScanIntake(
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<void> {
+  seedCounterFromDb(db);
   const input = parseJobJson<ScanIntakeInput>(job.input_json);
   if (!input) {
     failJob(db, job.id, { code: "invalid_input", message: "Missing or invalid input_json" });
@@ -1020,6 +1045,7 @@ export async function executeScanIntake(
       };
       completeJob(db, job.id, result);
       logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
+      correspondentsCounter.add(1, { correspondent: correspondent.name });
       span.setAttribute("invoice.outcome", "uploaded");
       span.setAttribute("paperless.document_id", uploadResult.document_id ?? 0);
       span.setStatus({ code: SpanStatusCode.OK });
