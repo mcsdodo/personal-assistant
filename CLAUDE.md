@@ -222,6 +222,19 @@ if __name__ == "__main__":
     uvicorn.run(passthrough, host="0.0.0.0", port=8000)
 ```
 
+## Windows: TypeScript LSP Fix
+
+Claude Code's `typescript-lsp` plugin fails on Windows with `ENOENT: uv_spawn 'typescript-language-server'` because Node.js `spawn()` can't resolve npm's `.cmd` wrappers without `shell: true` ([#16751](https://github.com/anthropics/claude-code/issues/16751)).
+
+**Fix:** In `~/.claude/plugins/marketplaces/claude-plugins-official/.claude-plugin/marketplace.json`, change:
+```json
+"command": "typescript-language-server"  →  "command": "typescript-language-server.cmd"
+```
+
+**After plugin updates:** This file gets overwritten — reapply the `.cmd` suffix.
+
+**Why pyright works:** pip installs real `.exe` shims; npm only creates `.cmd` batch wrappers.
+
 ## Development
 
 Development runs locally on the Windows dev machine using Docker Desktop with the local compose override:
