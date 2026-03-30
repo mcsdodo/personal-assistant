@@ -46,7 +46,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
       "id": 1,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "sum(email_watcher_emails_total)", "legendFormat": "emails", "refId": "A" }],
+      "targets": [{ "expr": "max(email_watcher_emails_total)", "legendFormat": "emails", "refId": "A" }],
       "title": "Tracked Emails",
       "type": "stat"
     },
@@ -66,7 +66,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
       "id": 2,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "sum(email_watcher_backlog_total)", "legendFormat": "new", "refId": "A" }],
+      "targets": [{ "expr": "max(email_watcher_backlog_total)", "legendFormat": "new", "refId": "A" }],
       "title": "Waiting To Process",
       "type": "stat"
     },
@@ -79,7 +79,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
       "id": 3,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "sum(email_watcher_attachments_total)", "legendFormat": "with attachments", "refId": "A" }],
+      "targets": [{ "expr": "max(email_watcher_attachments_total)", "legendFormat": "with attachments", "refId": "A" }],
       "title": "With Attachments",
       "type": "stat"
     },
@@ -92,7 +92,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
       "id": 4,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "sum(email_watcher_recent_discovered_total)", "legendFormat": "last 24h", "refId": "A" }],
+      "targets": [{ "expr": "max(email_watcher_recent_discovered_total)", "legendFormat": "last 24h", "refId": "A" }],
       "title": "Discovered Last 24h",
       "type": "stat"
     },
@@ -109,7 +109,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
       "id": 10,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{ "expr": "sum by (source) (email_watcher_backlog_total)", "legendFormat": "{{ source }}", "refId": "A" }],
+      "targets": [{ "expr": "max by (source) (email_watcher_backlog_total)", "legendFormat": "{{ source }}", "refId": "A" }],
       "title": "Backlog by Source",
       "type": "timeseries"
     },
@@ -119,7 +119,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "id": 11,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{ "expr": "sum by (source,status) (email_watcher_emails_total)", "legendFormat": "{{ source }} / {{ status }}", "refId": "A" }],
+      "targets": [{ "expr": "max by (source,status) (email_watcher_emails_total)", "legendFormat": "{{ source }} / {{ status }}", "refId": "A" }],
       "title": "Inbox State by Source and Status",
       "type": "timeseries"
     },
@@ -129,7 +129,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "id": 12,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
-      "targets": [{ "expr": "sum by (source) (email_watcher_emails_total)", "legendFormat": "{{ source }}", "refId": "A" }],
+      "targets": [{ "expr": "max by (source) (email_watcher_emails_total)", "legendFormat": "{{ source }}", "refId": "A" }],
       "title": "Emails by Source",
       "type": "bargauge"
     },
@@ -139,7 +139,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
       "id": 13,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
-      "targets": [{ "expr": "sum by (status) (email_watcher_emails_total)", "legendFormat": "{{ status }}", "refId": "A" }],
+      "targets": [{ "expr": "max by (status) (email_watcher_emails_total)", "legendFormat": "{{ status }}", "refId": "A" }],
       "title": "Emails by Status",
       "type": "bargauge"
     },
