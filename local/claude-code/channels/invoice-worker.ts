@@ -36,7 +36,8 @@ export type DownloadStrategy =
   | "known_link"
   | "direct_url"
   | "browser_required"
-  | "manual_review";
+  | "manual_review"
+  | "claude_download";
 
 export interface InvoiceIntakeInput {
   /** "gmail" or "outlook" */
@@ -187,6 +188,8 @@ export async function executeInvoiceIntake(
           filename: file.filename,
           size: file.size,
         });
+      } else if (strategy === "claude_download") {
+        throw new Error("claude_download strategy requires file_path — Claude must download the file before creating the job");
       } else {
         addJobEvent(db, job.id, "step_started", { step: "download", strategy });
         file = await downloadInvoice(input, logger);
