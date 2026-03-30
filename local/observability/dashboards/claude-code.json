@@ -195,20 +195,10 @@
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 39 },
       "id": 24,
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "pieType": "donut", "legend": { "displayMode": "table", "placement": "right", "calcs": ["value"] }, "tooltip": { "mode": "single" } },
       "targets": [{ "expr": "sum by (confidence) (email_watcher_confidence_total)", "legendFormat": "{{ confidence }}", "refId": "A" }],
       "title": "Classification Confidence",
-      "type": "bargauge"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
-      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "unit": "s" } },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 39 },
-      "id": 25,
-      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{ "expr": "email_watcher_latency_seconds", "legendFormat": "{{ stage }}", "refId": "A" }],
-      "title": "Workflow Latency",
-      "type": "timeseries"
+      "type": "piechart"
     },
     {
       "collapsed": false,
