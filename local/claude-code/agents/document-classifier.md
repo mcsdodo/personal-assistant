@@ -44,8 +44,8 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 ## Classification Rules
 
 ### doc_type
-- `invoice` — if the document contains any of these strings: "${BUSINESS_COMPANY_NAME}", "${BUSINESS_CRN}", "${BUSINESS_TAX_IDS}" — it is an invoice. No exceptions. These are our company credentials and their presence means a formal invoice (faktúra) was issued to us.
-- `receipt` — POS receipt (pokladničný blok) from retail/fuel station, parking ticket, highway toll vignette. May contain seller company credentials (seller IČO/DIČ/IČ DPH) but NOT our company credentials listed above.
+- `invoice` — formal invoice (faktúra, daňový doklad, proforma faktúra). Classify as `invoice` if ANY of these are true: (1) document contains our company credentials: "${BUSINESS_COMPANY_NAME}", "${BUSINESS_CRN}", "${BUSINESS_TAX_IDS}" — always an invoice, no exceptions; (2) document title/header contains "Faktúra", "Invoice", "Daňový doklad", or has a structured invoice layout with invoice number, buyer/seller sections, and VAT breakdown. It does NOT matter whether the buyer is our company or a personal purchase — if the document is an invoice, classify it as `invoice`. The `owner` field below handles the business vs personal distinction.
+- `receipt` — POS receipt (pokladničný blok) from retail/fuel station, parking ticket, highway toll vignette. Typically a narrow thermal print format without formal buyer/seller sections.
 - `credit_note` — dobropis, refund document
 - `account_statement` — bank statement (výpis z účtu)
 - `document` — worklogs (dochádzka), vacation logs, travel orders (cestovný príkaz), business trip logs, contracts, attendance records — non-monetary documents
