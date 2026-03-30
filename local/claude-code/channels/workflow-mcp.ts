@@ -20,13 +20,14 @@ import {
   openWorkflowDb,
 } from "./workflow-db";
 
-import { initTracing, createLogger } from "./tracing";
+import { initTracing, createLogger, getMeter } from "./tracing";
 
 const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
 const WORKFLOW_POLL_MS = parseInt(process.env.WORKFLOW_POLL_MS ?? "2000", 10);
 
 initTracing("workflow");
 const log = createLogger("workflow");
+const meter = getMeter("workflow");
 
 function text(value: unknown): { type: "text"; text: string } {
   return {
@@ -361,6 +362,26 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main(): Promise<void> {
   db = openWorkflowDb(WORKFLOW_DB_PATH);
   log(`Opened workflow DB at ${WORKFLOW_DB_PATH}`);
+
+  // Observable gauge: reads normalized correspondents from completed jobs on each collection
+  meter.createObservableGauge("invoice_worker_correspondents_total", {
+    description: "Completed invoices by normalized Paperless correspondent",
+  }).addCallback((gauge) => {
+    try {
+      const rows = db!.query(
+        `SELECT json_extract(output_json, '$.correspondent') AS correspondent, COUNT(*) AS count
+         FROM jobs
+         WHERE state = 'completed'
+           AND json_extract(output_json, '$.correspondent') IS NOT NULL
+         GROUP BY correspondent
+         ORDER BY count DESC
+         LIMIT 30`
+      ).all() as Array<{ correspondent: string; count: number }>;
+      for (const row of rows) {
+        gauge.observe(row.count, { correspondent: row.correspondent });
+      }
+    } catch { /* DB not ready */ }
+  });
 
   const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
   const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";

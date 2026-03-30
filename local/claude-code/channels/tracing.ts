@@ -1,22 +1,26 @@
 /**
- * Shared OpenTelemetry tracing module for personal-assistant channels.
+ * Shared OpenTelemetry tracing + metrics module for personal-assistant channels.
  *
  * Usage:
- *   import { initTracing, getTracer, withSpan, createLogger } from "./tracing";
+ *   import { initTracing, getTracer, getMeter, withSpan, createLogger } from "./tracing";
  *   initTracing("email-watcher");
  *   const tracer = getTracer("email-watcher");
+ *   const meter = getMeter("email-watcher");
  */
 
-import { trace, context, SpanStatusCode, propagation, TraceFlags } from "@opentelemetry/api";
-import type { Span, Tracer, SpanOptions } from "@opentelemetry/api";
+import { trace, context, SpanStatusCode, propagation, TraceFlags, metrics } from "@opentelemetry/api";
+import type { Span, Tracer, SpanOptions, Meter } from "@opentelemetry/api";
 import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { Resource } from "@opentelemetry/resources";
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 
 let initialized = false;
 let provider: BasicTracerProvider | null = null;
+let meterProvider: MeterProvider | null = null;
 
 /**
  * Initialize OTel tracing. Call once per process at startup.
@@ -65,8 +69,25 @@ export function initTracing(component: string): void {
     contextManager: new AsyncLocalStorageContextManager(),
   });
 
+  // Metrics — push via OTLP to the same endpoint
+  const metricsUrl = httpEndpoint.includes("/v1/metrics")
+    ? httpEndpoint
+    : `${httpEndpoint}/v1/metrics`;
+  const metricExporter = new OTLPMetricExporter({ url: metricsUrl });
+  meterProvider = new MeterProvider({
+    resource,
+    readers: [
+      new PeriodicExportingMetricReader({
+        exporter: metricExporter,
+        exportIntervalMillis: parseInt(process.env.OTEL_METRIC_EXPORT_INTERVAL ?? "10000", 10),
+      }),
+    ],
+  });
+  metrics.setGlobalMeterProvider(meterProvider);
+
   // Graceful shutdown
   const shutdown = async () => {
+    await meterProvider?.shutdown();
     await provider?.shutdown();
     process.exit(0);
   };
@@ -79,6 +100,13 @@ export function initTracing(component: string): void {
  */
 export function getTracer(name: string): Tracer {
   return trace.getTracer(name, "0.2.0");
+}
+
+/**
+ * Get a named meter for emitting metrics.
+ */
+export function getMeter(name: string): Meter {
+  return metrics.getMeter(name, "0.2.0");
 }
 
 /**
@@ -171,5 +199,5 @@ export function remoteParentContext(traceId: string) {
 }
 
 // Re-export commonly used OTel types
-export { SpanStatusCode, context, trace, propagation } from "@opentelemetry/api";
-export type { Span, Tracer } from "@opentelemetry/api";
+export { SpanStatusCode, context, trace, propagation, metrics } from "@opentelemetry/api";
+export type { Span, Tracer, Meter } from "@opentelemetry/api";

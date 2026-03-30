@@ -20,11 +20,23 @@ const noopTracer = {
   startSpan: () => noopSpan,
 };
 
+const noopCounter = { add: () => {} };
+const noopMeter = {
+  createCounter: () => noopCounter,
+  createHistogram: () => ({ record: () => {} }),
+  createUpDownCounter: () => noopCounter,
+  createObservableGauge: () => ({ addCallback: () => {} }),
+};
+
 mock.module("@opentelemetry/api", () => ({
   trace: {
     getTracer: () => noopTracer,
     getActiveSpan: () => undefined,
     setSpanContext: (_ctx: any) => ({}),
+  },
+  metrics: {
+    getMeter: () => noopMeter,
+    setGlobalMeterProvider: () => {},
   },
   context: { active: () => ({}) },
   propagation: { inject: () => {} },
@@ -47,4 +59,11 @@ mock.module("@opentelemetry/semantic-conventions", () => ({
 }));
 mock.module("@opentelemetry/context-async-hooks", () => ({
   AsyncLocalStorageContextManager: class {},
+}));
+mock.module("@opentelemetry/sdk-metrics", () => ({
+  MeterProvider: class { shutdown() { return Promise.resolve(); } },
+  PeriodicExportingMetricReader: class {},
+}));
+mock.module("@opentelemetry/exporter-metrics-otlp-http", () => ({
+  OTLPMetricExporter: class {},
 }));
