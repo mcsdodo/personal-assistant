@@ -95,13 +95,14 @@ def _session() -> requests.Session:
 # ── Tools ─────────────────────────────────────────────────────────────────
 
 @mcp_server.tool()
-def list_emails(top: int = 20, sender: str | None = None, folder: str | None = None) -> list[dict]:
+def list_emails(top: int = 20, sender: str | None = None, folder: str | None = None, received_after: str | None = None) -> list[dict]:
     """List recent emails from Outlook.
 
     Args:
         top: Number of emails to fetch (default 20).
         sender: Filter by sender email (partial match).
         folder: Mail folder name (default: Inbox).
+        received_after: ISO datetime — only return emails received after this time.
     """
     s = _session()
     if folder:
@@ -117,8 +118,13 @@ def list_emails(top: int = 20, sender: str | None = None, folder: str | None = N
         "$select": "id,subject,from,toRecipients,receivedDateTime,hasAttachments,bodyPreview",
         "$orderby": "receivedDateTime desc",
     }
+    filters = []
     if sender:
-        params["$filter"] = f"contains(from/emailAddress/address, '{sender}')"
+        filters.append(f"contains(from/emailAddress/address, '{sender}')")
+    if received_after:
+        filters.append(f"receivedDateTime ge {received_after}")
+    if filters:
+        params["$filter"] = " and ".join(filters)
 
     resp = s.get(url, params=params)
     resp.raise_for_status()

@@ -12,7 +12,7 @@ export interface InsertEmail {
   preview?: string | null;
   hasAttachments?: boolean;
   receivedAt?: string | null;
-  status: "new" | "seed";
+  status: "new";
   traceId?: string | null;
 }
 
@@ -66,6 +66,13 @@ CREATE TABLE IF NOT EXISTS emails (
 );
 `;
 
+const SOURCE_STATE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS source_state (
+  source TEXT PRIMARY KEY,
+  last_checked TEXT NOT NULL
+);
+`;
+
 // ---------------------------------------------------------------------------
 // Allowed fields for updateEmail
 // ---------------------------------------------------------------------------
@@ -93,6 +100,7 @@ export function openDb(path: string): Database {
   const db = new Database(path, { create: true });
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
+  db.exec(SOURCE_STATE_SCHEMA);
   // Migration: add trace_id column if missing
   try { db.exec("ALTER TABLE emails ADD COLUMN trace_id TEXT;"); } catch { /* already exists */ }
   return db;
@@ -139,29 +147,6 @@ export function emailExists(db: Database, id: string): boolean {
   const row = db
     .prepare("SELECT 1 FROM emails WHERE id = ? LIMIT 1")
     .get(id);
-  return row !== null;
-}
-
-/**
- * Returns true if the emails table has any rows at all.
- * Useful for first-scan detection.
- */
-export function hasAnyEmails(db: Database): boolean {
-  const row = db
-    .prepare("SELECT 1 FROM emails LIMIT 1")
-    .get();
-  return row !== null;
-}
-
-/**
- * Returns true if the emails table has any rows for a specific source.
- * Used for per-source seeding: each source (gmail, outlook) seeds
- * independently on its first successful poll.
- */
-export function hasAnyEmailsForSource(db: Database, source: string): boolean {
-  const row = db
-    .prepare("SELECT 1 FROM emails WHERE source = ? LIMIT 1")
-    .get(source);
   return row !== null;
 }
 
@@ -258,4 +243,24 @@ export function getEmailStats(db: Database): StatRow[] {
        GROUP BY status`
     )
     .all() as StatRow[];
+}
+
+/**
+ * Returns the last_checked timestamp for a given source, or null if not yet tracked.
+ */
+export function getLastChecked(db: Database, source: string): string | null {
+  const row = db
+    .prepare("SELECT last_checked FROM source_state WHERE source = ? LIMIT 1")
+    .get(source) as { last_checked: string } | null;
+  return row?.last_checked ?? null;
+}
+
+/**
+ * Upserts the last_checked timestamp for a given source.
+ */
+export function setLastChecked(db: Database, source: string, timestamp: string): void {
+  db.prepare(
+    `INSERT INTO source_state (source, last_checked) VALUES (?, ?)
+     ON CONFLICT(source) DO UPDATE SET last_checked = excluded.last_checked`
+  ).run(source, timestamp);
 }

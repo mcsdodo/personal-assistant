@@ -72,7 +72,15 @@ Each event has these meta fields:
 - `sender`, `subject`, `has_attachments`: email metadata
 - `received_at`: when the email was received
 
-On first startup, existing emails are seeded into the database without processing. Only emails that arrive after the channel starts are pushed.
+### Startup events
+
+The email-watcher tracks a `last_checked` timestamp per source. On startup:
+
+- **`first_start` event**: No previous checkpoint for this source. Ask the user via Telegram how far back to check (e.g. "Gmail is starting for the first time. Check emails from the last 3 days, 1 week, or skip?"). Then call `init_source(source, since)` with their answer or `skip_catchup(source)` if they say skip.
+
+- **`catchup_required` event**: Too many emails found since `last_checked` (exceeds threshold). Ask the user via Telegram: "{N} emails found for {source} since last check. Process all or skip?" Then call `approve_catchup(source)` or `skip_catchup(source)`.
+
+Normal new-email events work the same as before — classify and process.
 
 ## When you receive a gdrive-watcher channel event
 

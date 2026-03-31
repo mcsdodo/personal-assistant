@@ -49,7 +49,8 @@ services:
       - TELEGRAM_STATE_DIR=/home/node/.claude/channels/telegram
       # email-watcher channel
       - GMAIL_EMAIL=${GMAIL_EMAIL:-}
-      - GMAIL_SEARCH_QUERY=${GMAIL_SEARCH_QUERY:-newer_than:1d}
+      - GMAIL_SEARCH_BASE=${GMAIL_SEARCH_BASE:-${GMAIL_SEARCH_QUERY:-}}
+      - MAX_CATCHUP_EMAILS=${MAX_CATCHUP_EMAILS:-10}
       - GMAIL_MCP_URL=http://gmail-mcp:8000/mcp
       - OUTLOOK_MCP_URL=http://outlook-mcp:8002/mcp
       - OUTLOOK_ENABLED=${OUTLOOK_ENABLED:-true}
