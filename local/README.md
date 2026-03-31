@@ -18,12 +18,12 @@ Event-driven personal assistant: Claude Code (Sonnet) + Haiku subagents + MCP to
 personal-assistant/
   CLAUDE.md                    # Stack docs (always read this first)
   docker-compose.yml           # Production compose (Komodo deploys this)
+  claude-code/                 # Dockerfile + channels + agents
+  checker-mcp/                 # Dockerfile + match_invoices.py
+  outlook-mcp/                 # Dockerfile + MSAL server
   local/
     docker-compose.yml         # Local dev overlay (build contexts + observability)
     .env / .env.example        # Local dev secrets
-    claude-code/               # Dockerfile + channels + agents
-    checker-mcp/               # Dockerfile + match_invoices.py
-    outlook-mcp/               # Dockerfile + MSAL server
     observability/             # Alloy, Prometheus, Loki, Grafana configs
     data/                      # Gitignored: auth tokens, SQLite DB, downloads
 ```

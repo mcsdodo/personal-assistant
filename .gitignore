@@ -14,6 +14,7 @@ token.json
 # Runtime data
 local/data/*
 !local/data/.gitignore
+data/
 
 # Python
 __pycache__/

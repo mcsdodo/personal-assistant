@@ -33,7 +33,7 @@ Emails waiting for processing, broken down by source (gmail/outlook).
 
 **Metric:** `email_watcher_backlog_total{source}` — count of emails with `status="new"`.
 
-**Code:** [`email-watcher.ts:119-136`](../local/claude-code/channels/email-watcher.ts#L119) — SQL query groups `status='new'` by source.
+**Code:** [`email-watcher.ts:119-136`](../claude-code/channels/email-watcher.ts#L119) — SQL query groups `status='new'` by source.
 
 ## UC-1A.2: Attachment Tracking
 
@@ -41,7 +41,7 @@ Emails with attachments, by source and processing status.
 
 **Metric:** `email_watcher_attachments_total{source, status}` — count of `has_attachments=1` emails.
 
-**Code:** [`email-watcher.ts:138-161`](../local/claude-code/channels/email-watcher.ts#L138) — SQL groups by source + status where `has_attachments = 1`.
+**Code:** [`email-watcher.ts:138-161`](../claude-code/channels/email-watcher.ts#L138) — SQL groups by source + status where `has_attachments = 1`.
 
 ## UC-1A.3: Workflow Actions
 
@@ -49,7 +49,7 @@ Distribution of classifier decisions across the pipeline.
 
 **Metric:** `email_watcher_actions_total{action}` — count by action (download_and_upload, notify_user, ignore).
 
-**Code:** [`email-watcher.ts:188-205`](../local/claude-code/channels/email-watcher.ts#L188) — SQL groups non-null actions.
+**Code:** [`email-watcher.ts:188-205`](../claude-code/channels/email-watcher.ts#L188) — SQL groups non-null actions.
 
 ## UC-1A.4: Correspondent Mix
 
@@ -59,7 +59,7 @@ Top correspondents from completed invoice workflow jobs (normalized names from P
 
 **Dashboard panel:** "Top Correspondents" (bar gauge, queries `invoice_worker_correspondents_total`).
 
-**Code:** [`invoice-worker.ts`](../local/claude-code/channels/invoice-worker.ts) — counter defined and seeded via `seedCounterFromDb()`, incremented after `completeJob()` on successful upload. [`workflow-mcp.ts`](../local/claude-code/channels/workflow-mcp.ts) — `getMeter("workflow")` initializes the OTel meter.
+**Code:** [`invoice-worker.ts`](../claude-code/channels/invoice-worker.ts) — counter defined and seeded via `seedCounterFromDb()`, incremented after `completeJob()` on successful upload. [`workflow-mcp.ts`](../claude-code/channels/workflow-mcp.ts) — `getMeter("workflow")` initializes the OTel meter.
 
 **Legacy:** `email_watcher_vendors_total{vendor}` (scraped from email-watcher `/metrics`) still exists but uses raw classifier vendor names (inconsistent naming). The dashboard now uses the OTLP correspondent metric instead.
 
@@ -72,8 +72,8 @@ Classification confidence distribution and end-to-end workflow latency.
 - `email_watcher_latency_seconds{stage}` — average seconds from discovery to classification/processing
 
 **Code:**
-- [`email-watcher.ts:207-226`](../local/claude-code/channels/email-watcher.ts#L207) — confidence grouping
-- [`email-watcher.ts:267-298`](../local/claude-code/channels/email-watcher.ts#L267) — latency calculation using `julianday()` diff
+- [`email-watcher.ts:207-226`](../claude-code/channels/email-watcher.ts#L207) — confidence grouping
+- [`email-watcher.ts:267-298`](../claude-code/channels/email-watcher.ts#L267) — latency calculation using `julianday()` diff
 
 Additional metrics:
 - `email_watcher_emails_total{source, status}` — total emails tracked
@@ -116,7 +116,7 @@ The email-watcher runs a Bun HTTP server on port 9465 with two endpoints:
 - `/health` — returns 200 if DB accessible and last poll < 2.5 minutes ago, 503 otherwise
 - `/metrics` — Prometheus text format with all `email_watcher_*` metrics
 
-**Code:** [`email-watcher.ts:304-332`](../local/claude-code/channels/email-watcher.ts#L304) — `startMetricsServer()`: health staleness check + metrics rendering.
+**Code:** [`email-watcher.ts:304-332`](../claude-code/channels/email-watcher.ts#L304) — `startMetricsServer()`: health staleness check + metrics rendering.
 
 ## Grafana Dashboard
 

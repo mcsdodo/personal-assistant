@@ -50,7 +50,7 @@ Single Dockerfile builds the `claude-code` container.
 4. Clone official Telegram plugin from `github.com/anthropics/claude-plugins-official`
 5. Copy `.mcp.json`, `CLAUDE.md`, agents, `.claude.json`, `entrypoint.sh`
 
-**Code:** [`Dockerfile`](../local/claude-code/Dockerfile) — 50 lines, non-root user (`node`), multi-stage USER switches.
+**Code:** [`Dockerfile`](../claude-code/Dockerfile) — 50 lines, non-root user (`node`), multi-stage USER switches.
 
 **Other images:**
 - `checker-mcp` and `outlook-mcp` — local Python builds via Komodo
@@ -62,9 +62,9 @@ Single Dockerfile builds the `claude-code` container.
 The stack deploys to **infra LXC** (192.168.0.112) via Komodo.
 
 **3 builds:**
-1. `claude-code` — Dockerfile in `local/claude-code/`
-2. `checker-mcp` — Dockerfile in `local/checker-mcp/`
-3. `outlook-mcp` — Dockerfile in `local/outlook-mcp/`
+1. `claude-code` — Dockerfile in `claude-code/`
+2. `checker-mcp` — Dockerfile in `checker-mcp/`
+3. `outlook-mcp` — Dockerfile in `outlook-mcp/`
 
 Builds are tagged by git commit. Komodo syncs compose files and triggers builds + stack deploy.
 
@@ -88,7 +88,7 @@ Trigger `start_google_auth` tool from inside the Claude session. OAuth callback 
 ### Outlook MSAL Device Code
 Restart outlook-mcp container → check logs for device code URL. Enter code at Microsoft login page. Tokens in `/mnt/shared_configs/personal-assistant/outlook/token_cache.json`.
 
-**Code:** [`outlook-mcp/server.py:31-94`](../local/outlook-mcp/server.py#L31) — MSAL cache load/save, device code flow, silent token acquisition.
+**Code:** [`outlook-mcp/server.py:31-94`](../outlook-mcp/server.py#L31) — MSAL cache load/save, device code flow, silent token acquisition.
 
 ### Telegram Pairing
 DM the bot. `access.json` in the NAS volume handles chat allowlisting. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` env vars configure the bot.
@@ -107,7 +107,7 @@ All 5 services have Docker health checks. `claude-code` depends on all MCPs via 
 
 **Staleness detection:** email-watcher `/health` returns 503 if no successful poll in `POLL_INTERVAL_MS * 5` (default 2.5 min). Catches MCP connectivity loss and email-watcher hangs.
 
-**Code:** [`email-watcher.ts:322-340`](../local/claude-code/channels/email-watcher.ts#L322) — health endpoint with staleness check.
+**Code:** [`email-watcher.ts:322-340`](../claude-code/channels/email-watcher.ts#L322) — health endpoint with staleness check.
 
 ## Restart Resilience
 
@@ -116,19 +116,19 @@ Three layers ensure the system recovers from crashes:
 ### 1. Docker restart policy
 All services use `restart: unless-stopped`. When the tmux session dies, `entrypoint.sh` exits with code 1, triggering restart.
 
-**Code:** [`entrypoint.sh:65-69`](../local/claude-code/entrypoint.sh#L65) — tmux watchdog loop: `while tmux has-session ... sleep 10`.
+**Code:** [`entrypoint.sh:65-69`](../claude-code/entrypoint.sh#L65) — tmux watchdog loop: `while tmux has-session ... sleep 10`.
 
 ### 2. Entrypoint prompt detection
 The entrypoint detects and accepts two TUI prompts:
 1. Development channels prompt ("local development") — polls up to 60s
 2. New MCP server prompt ("new.*mcp", "trust", "approve") — polls 10s after
 
-**Code:** [`entrypoint.sh:29-58`](../local/claude-code/entrypoint.sh#L29) — prompt polling with tmux `capture-pane` + grep + `send-keys Enter`.
+**Code:** [`entrypoint.sh:29-58`](../claude-code/entrypoint.sh#L29) — prompt polling with tmux `capture-pane` + grep + `send-keys Enter`.
 
 ### 3. Durable workflow DB
 Jobs in `workflow.db` persist across restarts. On startup, the worker resumes queued jobs automatically.
 
-**Code:** [`workflow-db.ts:46-78`](../local/claude-code/channels/workflow-db.ts#L46) — SQLite schema with `state` column tracking job lifecycle.
+**Code:** [`workflow-db.ts:46-78`](../claude-code/channels/workflow-db.ts#L46) — SQLite schema with `state` column tracking job lifecycle.
 
 ## Stateless MCP
 
@@ -172,7 +172,7 @@ NAS: WD MyCloud at 192.168.0.79, NFS → PVE host → bind mount into LXC → Do
 
 ## MCP Server Configuration
 
-7 MCP servers configured in [`.mcp.json`](../local/claude-code/.mcp.json):
+7 MCP servers configured in [`.mcp.json`](../claude-code/.mcp.json):
 
 | Server | Type | Transport |
 |--------|------|-----------|

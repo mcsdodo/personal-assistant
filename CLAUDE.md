@@ -89,21 +89,21 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | `docker-compose.yml` | Production stack (Komodo deploys this) |
 | `local/docker-compose.yml` | Local dev overlay (build contexts + observability sidecar) |
 | `local/.env` / `local/.env.example` | Local dev secrets (Komodo manages prod secrets) |
-| `local/claude-code/Dockerfile` | node:20 + bun + claude-code CLI, non-root user |
-| `local/claude-code/.mcp.json` | MCP server config (channels + HTTP tools) |
-| `local/claude-code/CLAUDE.md` | Instructions for the Claude session |
-| `local/claude-code/entrypoint.sh` | tmux wrapper, prompt detection, health monitor |
-| `local/claude-code/channels/email-watcher.ts` | Email-watcher channel (polls Gmail+Outlook, SQLite audit) |
-| `local/claude-code/channels/db.ts` | Email-watcher SQLite module |
-| `local/claude-code/channels/gdrive-watcher.ts` | GDrive-watcher channel (polls Google Drive, SQLite audit) |
-| `local/claude-code/channels/gdrive-db.ts` | GDrive-watcher SQLite module |
-| `local/claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice-worker) |
-| `local/claude-code/agents/` | Haiku subagents (email-classifier, document-classifier — classifier returns `owner` field for personal/business tag routing) |
-| `local/checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
-| `local/checker-mcp/webapp.py` | Flask web UI (matching view + P&L view) |
-| `local/checker-mcp/entrypoint.sh` | Two-process entrypoint (MCP background + Flask PID 1) |
-| `local/checker-mcp/match_invoices.py` | Invoice matching engine |
-| `local/outlook-mcp/server.py` | Outlook MCP (MSAL device code auth) |
+| `claude-code/Dockerfile` | node:20 + bun + claude-code CLI, non-root user |
+| `claude-code/.mcp.json` | MCP server config (channels + HTTP tools) |
+| `claude-code/CLAUDE.md` | Instructions for the Claude session |
+| `claude-code/entrypoint.sh` | tmux wrapper, prompt detection, health monitor |
+| `claude-code/channels/email-watcher.ts` | Email-watcher channel (polls Gmail+Outlook, SQLite audit) |
+| `claude-code/channels/db.ts` | Email-watcher SQLite module |
+| `claude-code/channels/gdrive-watcher.ts` | GDrive-watcher channel (polls Google Drive, SQLite audit) |
+| `claude-code/channels/gdrive-db.ts` | GDrive-watcher SQLite module |
+| `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice-worker) |
+| `claude-code/agents/` | Haiku subagents (email-classifier, document-classifier — classifier returns `owner` field for personal/business tag routing) |
+| `checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
+| `checker-mcp/webapp.py` | Flask web UI (matching view + P&L view) |
+| `checker-mcp/entrypoint.sh` | Two-process entrypoint (MCP background + Flask PID 1) |
+| `checker-mcp/match_invoices.py` | Invoice matching engine |
+| `outlook-mcp/server.py` | Outlook MCP (MSAL device code auth) |
 | `local/observability/` | Local dev Alloy, Prometheus, Loki, Grafana configs |
 
 ## Claude Code in Docker — Reference
@@ -296,7 +296,7 @@ python -m pytest tests/ -v -m gmail --timeout=300
 
 The invoice-worker has 68 unit tests with mocked MCP calls:
 ```bash
-cd local/claude-code
+cd claude-code
 bun test
 ```
 

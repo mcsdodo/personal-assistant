@@ -7,7 +7,7 @@
 services:
   claude-code:
     build:
-      context: ./local/claude-code
+      context: ./claude-code
       args:
         CLAUDE_CODE_VERSION: latest
     volumes:
@@ -23,11 +23,11 @@ services:
 
   checker-mcp:
     build:
-      context: ./local/checker-mcp
+      context: ./checker-mcp
 
   outlook-mcp:
     build:
-      context: ./local/outlook-mcp
+      context: ./outlook-mcp
     volumes:
       - ${OUTLOOK_DATA_DIR:-./local/data/outlook}:/data
 
@@ -40,6 +40,56 @@ services:
       - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8000/oauth2callback}
     entrypoint: ["uv", "run", "main.py"]
     command: ["--transport", "streamable-http", "--tools", "gmail", "drive"]
+
+  # ── Local Paperless-ngx (for dev/testing) ──────────────────
+  # After first start:
+  #   1. docker compose exec paperless python3 manage.py createsuperuser
+  #   2. Log into http://localhost:8010, go to Settings > API Tokens
+  #   3. Put the token in .env as PAPERLESS_API_TOKEN=<token>
+  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:2.20.3
+    container_name: personal-assistant-paperless
+    restart: unless-stopped
+    depends_on:
+      - paperless-db
+      - paperless-broker
+    ports:
+      - "8010:8000"
+    volumes:
+      - ./data/paperless/data:/usr/src/paperless/data
+      - ./data/paperless/media:/usr/src/paperless/media
+      - ./data/paperless/consume:/usr/src/paperless/consume
+    environment:
+      PAPERLESS_REDIS: redis://paperless-broker:6379
+      PAPERLESS_DBHOST: paperless-db
+      PAPERLESS_DBPASS: paperless
+      USERMAP_UID: 0
+      USERMAP_GID: 0
+      PAPERLESS_TIME_ZONE: Europe/Bratislava
+      PAPERLESS_URL: http://localhost:8010
+      PAPERLESS_CONSUMER_POLLING: 10
+      PAPERLESS_CONSUMER_RECURSIVE: true
+      PAPERLESS_TASK_WORKERS: 2
+      PAPERLESS_THREADS_PER_WORKER: 3
+      PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS: "true"
+
+  paperless-db:
+    image: docker.io/library/postgres:18
+    container_name: personal-assistant-paperless-db
+    restart: unless-stopped
+    volumes:
+      - ./data/paperless/pgdata:/var/lib/postgresql
+    environment:
+      POSTGRES_DB: paperless
+      POSTGRES_USER: paperless
+      POSTGRES_PASSWORD: paperless
+
+  paperless-broker:
+    image: docker.io/library/redis:8
+    container_name: personal-assistant-paperless-broker
+    restart: unless-stopped
+    volumes:
+      - ./data/paperless/redisdata:/data
 
   alloy:
     image: grafana/alloy:latest

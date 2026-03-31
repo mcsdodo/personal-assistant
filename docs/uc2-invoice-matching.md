@@ -30,9 +30,9 @@ Match a month's bank statement against invoices stored in Paperless.
 4. Return rows with status: `matched`, `missing`, `excluded`, `manual`
 
 **Code:**
-- [`checker-mcp/server.py:55-72`](../local/checker-mcp/server.py#L55) — `match_invoices()` tool: calls `collect_month()` from engine
-- [`checker-mcp/server.py:75-103`](../local/checker-mcp/server.py#L75) — `match_invoices_range()` tool: iterates months, applies `filter_resolved_unmatched()`
-- [`checker-mcp/match_invoices.py`](../local/checker-mcp/match_invoices.py) — matching engine (shared with webapp): `collect_month()` at L515-577, movement parsing at L203-283
+- [`checker-mcp/server.py:55-72`](../checker-mcp/server.py#L55) — `match_invoices()` tool: calls `collect_month()` from engine
+- [`checker-mcp/server.py:75-103`](../checker-mcp/server.py#L75) — `match_invoices_range()` tool: iterates months, applies `filter_resolved_unmatched()`
+- [`checker-mcp/match_invoices.py`](../checker-mcp/match_invoices.py) — matching engine (shared with webapp): `collect_month()` at L515-577, movement parsing at L203-283
 
 **Cross-month resolution:** `filter_resolved_unmatched()` removes movements marked "missing" in one month if they're matched in a later month (e.g., invoice dated Dec, payment in Jan).
 
@@ -54,7 +54,7 @@ Quick status check showing how many movements are matched, missing, or pending.
 }
 ```
 
-**Code:** [`checker-mcp/server.py:123-150`](../local/checker-mcp/server.py#L123) — `get_month_status()`: runs `collect_month()`, extracts stats + missing list.
+**Code:** [`checker-mcp/server.py:123-150`](../checker-mcp/server.py#L123) — `get_month_status()`: runs `collect_month()`, extracts stats + missing list.
 
 ## UC-2.7: P&L Summary
 
@@ -62,13 +62,13 @@ Annual profit & loss summary on accrual basis.
 
 **Tool:** `get_pl_summary(year)` — returns income, expenses by category, excluded totals, net income.
 
-**Code:** [`checker-mcp/server.py:106-120`](../local/checker-mcp/server.py#L106) — `get_pl_summary()`: calls `collect_pl()` from engine. Engine implementation at [`match_invoices.py:841-1051`](../local/checker-mcp/match_invoices.py#L841).
+**Code:** [`checker-mcp/server.py:106-120`](../checker-mcp/server.py#L106) — `get_pl_summary()`: calls `collect_pl()` from engine. Engine implementation at [`match_invoices.py:841-1051`](../checker-mcp/match_invoices.py#L841).
 
 ## Lazy Client
 
 The Paperless API client is initialized lazily on first tool call, resolving document type IDs, custom field IDs, and tag IDs once.
 
-**Code:** [`checker-mcp/server.py:27-49`](../local/checker-mcp/server.py#L27) — `_ClientHolder` singleton: resolves `statement_type_id`, `total_amount_field_id`, `total_amount_alt_field_id`, `invoicing_tag_id`.
+**Code:** [`checker-mcp/server.py:27-49`](../checker-mcp/server.py#L27) — `_ClientHolder` singleton: resolves `statement_type_id`, `total_amount_field_id`, `total_amount_alt_field_id`, `invoicing_tag_id`.
 
 ## Not Yet Implemented
 
