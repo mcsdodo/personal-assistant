@@ -1,0 +1,44 @@
+# Secrets and credentials — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx
+credentials.json
+client_secret.json
+token.json
+
+# Runtime data
+local/data/*
+!local/data/.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Node
+node_modules/
+*.tsbuildinfo
+.bun/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker
+*.tar
+*.tar.gz
