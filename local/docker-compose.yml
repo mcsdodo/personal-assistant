@@ -56,9 +56,9 @@ services:
     ports:
       - "8010:8000"
     volumes:
-      - ./data/paperless/data:/usr/src/paperless/data
-      - ./data/paperless/media:/usr/src/paperless/media
-      - ./data/paperless/consume:/usr/src/paperless/consume
+      - ./local/data/paperless/data:/usr/src/paperless/data
+      - ./local/data/paperless/media:/usr/src/paperless/media
+      - ./local/data/paperless/consume:/usr/src/paperless/consume
     environment:
       PAPERLESS_REDIS: redis://paperless-broker:6379
       PAPERLESS_DBHOST: paperless-db
@@ -78,7 +78,7 @@ services:
     container_name: personal-assistant-paperless-db
     restart: unless-stopped
     volumes:
-      - ./data/paperless/pgdata:/var/lib/postgresql
+      - ./local/data/paperless/pgdata:/var/lib/postgresql
     environment:
       POSTGRES_DB: paperless
       POSTGRES_USER: paperless
@@ -89,7 +89,7 @@ services:
     container_name: personal-assistant-paperless-broker
     restart: unless-stopped
     volumes:
-      - ./data/paperless/redisdata:/data
+      - ./local/data/paperless/redisdata:/data
 
   alloy:
     image: grafana/alloy:latest
