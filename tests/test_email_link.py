@@ -122,7 +122,7 @@ def pdf_server():
 class TestDownloadLink:
     """Test invoice download via link in email body."""
 
-    def test_alza_known_link(self, reset_pipeline, clean_paperless, pdf_server):
+    def test_alza_known_link(self, reset_pipeline_outlook_only, clean_paperless, pdf_server):
         """Alza-style email with Stiahnuť faktúru link: extracted, downloaded, uploaded."""
         send_html_email(
             to=OUTLOOK_TO,
@@ -178,7 +178,7 @@ GMAIL_LINK_TEXT = (
 class TestGmailDownloadLink:
     """Test invoice download via link in Gmail email body (HTML extraction)."""
 
-    def test_gmail_alza_known_link(self, reset_pipeline, clean_paperless, pdf_server):
+    def test_gmail_alza_known_link(self, reset_pipeline_gmail_only, clean_paperless, pdf_server):
         """Gmail Alza email with Stiahnuť faktúru link: HTML extracted, downloaded, uploaded."""
         send_html_email(
             to=GMAIL_TO,

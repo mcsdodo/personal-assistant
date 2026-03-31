@@ -13,10 +13,8 @@ import pytest
 
 from .helpers import (
     full_reset,
-    wait_seed_complete,
+    wait_source_ready,
     paperless_wipe,
-    GMAIL_TO,
-    OUTLOOK_TO,
 )
 
 
@@ -29,32 +27,26 @@ def pytest_configure(config):
 
 @pytest.fixture(scope="module")
 def reset_pipeline():
-    """Full reset: stop container, clear DBs + Paperless, restart, wait for seed.
-
-    Shared per test module so we don't restart for every test.
-    After seed, tests send emails and verify results.
-    """
+    """Full reset: stop container, clear DBs + Paperless, restart, wait for ready."""
     full_reset()
-    # Wait for both sources to seed
-    wait_seed_complete("gmail", timeout=90)
-    wait_seed_complete("outlook", timeout=90)
+    wait_source_ready("gmail")
+    wait_source_ready("outlook")
     yield
-    # No teardown — leave state for debugging failed tests
 
 
 @pytest.fixture(scope="module")
 def reset_pipeline_gmail_only():
-    """Reset and wait for Gmail seed only (faster for Gmail-only tests)."""
+    """Reset and wait for Gmail source ready."""
     full_reset()
-    wait_seed_complete("gmail", timeout=90)
+    wait_source_ready("gmail")
     yield
 
 
 @pytest.fixture(scope="module")
 def reset_pipeline_outlook_only():
-    """Reset and wait for Outlook seed only."""
+    """Reset and wait for Outlook source ready."""
     full_reset()
-    wait_seed_complete("outlook", timeout=90)
+    wait_source_ready("outlook")
     yield
 
 

@@ -22,7 +22,8 @@ import {
   openDb,
   insertEmail,
   emailExists,
-  hasAnyEmailsForSource,
+  getLastChecked,
+  setLastChecked,
   updateEmail,
   getRecentEmails,
   getEmailStats,
@@ -61,7 +62,8 @@ const HEALTH_STALE_MULTIPLIER = 5; // unhealthy after N missed poll cycles
 
 const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const GMAIL_EMAIL = process.env.GMAIL_EMAIL ?? "";
-const GMAIL_SEARCH_QUERY = process.env.GMAIL_SEARCH_QUERY ?? "newer_than:1d";
+const GMAIL_SEARCH_BASE = process.env.GMAIL_SEARCH_BASE ?? process.env.GMAIL_SEARCH_QUERY ?? "";
+const MAX_CATCHUP_EMAILS = parseInt(process.env.MAX_CATCHUP_EMAILS ?? "10", 10);
 
 const OUTLOOK_MCP_URL = process.env.OUTLOOK_MCP_URL ?? "http://outlook-mcp:8002/mcp";
 const OUTLOOK_ENABLED = (process.env.OUTLOOK_ENABLED ?? "true").toLowerCase() !== "false";
@@ -75,6 +77,26 @@ const EMAIL_FILTER_EXCLUDE = process.env.EMAIL_FILTER_EXCLUDE ?? "";
 import { filterEmailsByRecipient } from "./email-filter";
 
 const gmailEnabled = GMAIL_EMAIL.length > 0;
+
+function buildGmailQuery(lastChecked: string | null): string {
+  const base = GMAIL_SEARCH_BASE;
+  if (!lastChecked) return base;
+  const epoch = Math.floor(new Date(lastChecked).getTime() / 1000);
+  return base ? `${base} after:${epoch}` : `after:${epoch}`;
+}
+
+function parseDuration(duration: string): number {
+  const match = duration.match(/^(\d+)\s*(h|d|w|m)$/i);
+  if (!match) return 24 * 60 * 60 * 1000;
+  const value = parseInt(match[1], 10);
+  switch (match[2].toLowerCase()) {
+    case "h": return value * 60 * 60 * 1000;
+    case "d": return value * 24 * 60 * 60 * 1000;
+    case "w": return value * 7 * 24 * 60 * 60 * 1000;
+    case "m": return value * 30 * 24 * 60 * 60 * 1000;
+    default: return 24 * 60 * 60 * 1000;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tracing
@@ -357,6 +379,9 @@ let gmailClient: Client | null = null;
 let outlookClient: Client | null = null;
 let lastSuccessfulPollAt: number = Date.now();
 
+const catchupQueue: Map<string, EmailInfo[]> = new Map();
+const awaitingFirstStart: Set<string> = new Set();
+
 async function getGmailClient(): Promise<Client> {
   if (gmailClient) return gmailClient;
 
@@ -518,7 +543,7 @@ function parseGmailEmails(data: any, ids: string[]): EmailInfo[] {
   return [];
 }
 
-async function pollGmail(db: Database): Promise<EmailInfo[]> {
+async function pollGmail(db: Database, query: string): Promise<EmailInfo[]> {
   if (!gmailEnabled) return [];
 
   try {
@@ -528,7 +553,7 @@ async function pollGmail(db: Database): Promise<EmailInfo[]> {
     const searchResult = await client.callTool({
       name: "search_gmail_messages",
       arguments: {
-        query: GMAIL_SEARCH_QUERY,
+        query,
         user_google_email: GMAIL_EMAIL,
         page_size: 50,
       },
@@ -556,8 +581,7 @@ async function pollGmail(db: Database): Promise<EmailInfo[]> {
     // This avoids ~50 sequential Gmail API calls per poll when nothing is new.
     const ids = allIds.filter((id) => !emailExists(db, id));
     if (ids.length === 0) {
-      // All emails already known — return minimal info for seeding/dedup logic
-      return allIds.map((id) => ({ id, source: "gmail" as const }));
+      return [];
     }
 
     // Step 2: Fetch full content per message (includes attachment info)
@@ -609,10 +633,7 @@ async function pollGmail(db: Database): Promise<EmailInfo[]> {
         log(`Gmail fetch failed for ${id}: ${e.message}`);
       }
     }
-    // Return fetched new emails + minimal stubs for known IDs (needed for seeding logic)
-    const knownIds = allIds.filter((id) => emailExists(db, id));
-    const knownStubs: EmailInfo[] = knownIds.map((id) => ({ id, source: "gmail" as const }));
-    return [...emails, ...knownStubs];
+    return emails;
   } catch (e: any) {
     log(`Gmail poll error: ${e.message}`);
     resetGmailClient();
@@ -624,15 +645,20 @@ async function pollGmail(db: Database): Promise<EmailInfo[]> {
 // Outlook polling
 // ---------------------------------------------------------------------------
 
-async function pollOutlook(db: Database): Promise<EmailInfo[]> {
+async function pollOutlook(db: Database, receivedAfter: string | null): Promise<EmailInfo[]> {
   if (!OUTLOOK_ENABLED) return [];
 
   try {
     const client = await getOutlookClient();
 
+    const args: Record<string, any> = { top: 50 };
+    if (receivedAfter) {
+      args.received_after = receivedAfter;
+    }
+
     const result = await client.callTool({
       name: "list_emails",
-      arguments: { top: 20 },
+      arguments: args,
     });
 
     const data = parseToolResult(result);
@@ -659,166 +685,213 @@ async function pollOutlook(db: Database): Promise<EmailInfo[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Process new emails (insert + push channel notifications)
+// ---------------------------------------------------------------------------
+
+async function processNewEmails(db: Database, channel: Server, emails: EmailInfo[]): Promise<void> {
+  if (emails.length === 0) return;
+
+  // Cap to avoid flooding
+  const capped = emails.slice(0, MAX_NEW_PER_CYCLE);
+  if (emails.length > MAX_NEW_PER_CYCLE) {
+    log(`Capped new emails from ${emails.length} to ${MAX_NEW_PER_CYCLE}`);
+  }
+
+  // Extract invoice links from Gmail HTML for new emails
+  for (const email of capped) {
+    if (email.source === "gmail" && email.sender) {
+      try {
+        const client = await getGmailClient();
+        const htmlResult = await client.callTool({
+          name: "get_gmail_message_content",
+          arguments: {
+            message_id: email.id,
+            user_google_email: GMAIL_EMAIL,
+            body_format: "html",
+          },
+        });
+        const html = parseToolResult(htmlResult);
+        if (typeof html === "string") {
+          const links = extractInvoiceLinks(html, email.sender, email.subject ?? "");
+          if (links.length > 0) {
+            email.invoiceLinks = links;
+            log(`Found ${links.length} invoice link(s) in Gmail ${email.id}`);
+          }
+        }
+      } catch (e: any) {
+        // body_format not supported or MCP error — skip link extraction
+        log(`Gmail HTML fetch failed for ${email.id}: ${e.message}`);
+      }
+    }
+  }
+
+  for (const email of capped) {
+    // Insert as 'new'
+    insertEmail(db, {
+      id: email.id,
+      source: email.source,
+      sender: email.sender ?? null,
+      subject: email.subject ?? null,
+      preview: email.preview ?? null,
+      hasAttachments: email.hasAttachments ?? false,
+      receivedAt: email.receivedAt ?? null,
+      status: "new",
+      traceId: getActiveTraceId(),
+    });
+
+    // Push channel notification
+    const contentLines = [
+      "New email detected:",
+      `Source: ${email.source}`,
+    ];
+    if (email.sender) contentLines.push(`From: ${email.sender}`);
+    if (email.subject) contentLines.push(`Subject: ${email.subject}`);
+    contentLines.push(`Has attachments: ${email.hasAttachments ? "yes" : "no"}`);
+    if (email.preview) contentLines.push(`Preview: ${email.preview}`);
+    contentLines.push(`Message ID: ${email.id}`);
+    if (email.invoiceLinks?.length) {
+      contentLines.push(`Invoice links: ${email.invoiceLinks.map(l => l.url).join(", ")}`);
+    }
+
+    const meta: Record<string, string> = {
+      email_source: email.source,
+      sender: email.sender ?? "",
+      subject: email.subject ?? "",
+      has_attachments: String(email.hasAttachments ?? false),
+      message_id: email.id,
+      received_at: email.receivedAt ?? "",
+      timestamp: new Date().toISOString(),
+    };
+    if (email.invoiceLinks?.length) {
+      meta.invoice_links = JSON.stringify(email.invoiceLinks);
+    }
+
+    await channel.notification({
+      method: "notifications/claude/channel",
+      params: {
+        content: contentLines.join("\n"),
+        meta,
+      },
+    });
+  }
+
+  log(`Pushed ${capped.length} new email(s)`);
+}
+
+// ---------------------------------------------------------------------------
 // Poll cycle
 // ---------------------------------------------------------------------------
 
 async function pollCycle(db: Database, channel: Server): Promise<void> {
   return withSpan(tracer, "email-watcher.poll", {}, async (span) => {
-    const [gmailEmails, outlookEmails] = await Promise.all([
-      pollGmail(db),
-      pollOutlook(db),
-    ]);
+    const sources: Array<{ name: string; poll: () => Promise<EmailInfo[]> }> = [];
 
-    // Per-source seeding: each source seeds independently on its first
-    // successful poll. This prevents the bug where Gmail seeds first, then
-    // Outlook emails on the next cycle are treated as "new" (not seeded)
-    // because the global hasAnyEmails() already returns true.
-    const emailsBySource: Map<string, EmailInfo[]> = new Map();
-    for (const email of gmailEmails) {
-      const list = emailsBySource.get(email.source) ?? [];
-      list.push(email);
-      emailsBySource.set(email.source, list);
-    }
-    for (const email of outlookEmails) {
-      const list = emailsBySource.get(email.source) ?? [];
-      list.push(email);
-      emailsBySource.set(email.source, list);
-    }
-
-    // Seed any source that has never been seen before
-    let seededCount = 0;
-    const emailsToProcess: EmailInfo[] = [];
-    for (const [source, emails] of emailsBySource) {
-      if (!hasAnyEmailsForSource(db, source)) {
-        log(`First scan for ${source}: seeding ${emails.length} emails`);
-        for (const email of emails) {
-          insertEmail(db, {
-            id: email.id,
-            source: email.source,
-            sender: email.sender ?? null,
-            subject: email.subject ?? null,
-            preview: email.preview ?? null,
-            hasAttachments: email.hasAttachments ?? false,
-            receivedAt: email.receivedAt ?? null,
-            status: "seed",
-          });
-          seededCount++;
-        }
-      } else {
-        emailsToProcess.push(...emails);
-      }
-    }
-
-    // Filter to emails not already in DB
-    let newEmails = emailsToProcess.filter((e) => !emailExists(db, e.id));
-
-    // Apply whitelist/blacklist filter on recipient address
-    if (EMAIL_FILTER_INCLUDE || EMAIL_FILTER_EXCLUDE) {
-      const before = newEmails.length;
-      newEmails = filterEmailsByRecipient(newEmails, EMAIL_FILTER_INCLUDE, EMAIL_FILTER_EXCLUDE);
-      if (before !== newEmails.length) {
-        log(`Email filter: ${before} → ${newEmails.length} (include="${EMAIL_FILTER_INCLUDE}", exclude="${EMAIL_FILTER_EXCLUDE}")`);
-      }
-    }
-
-    // Poll completed successfully (reached MCP servers, no errors)
-    lastSuccessfulPollAt = Date.now();
-
-    const totalFound = gmailEmails.length + outlookEmails.length;
-    span.setAttribute("email.found", totalFound);
-    span.setAttribute("email.new", newEmails.length);
-    span.setAttribute("email.seeded", seededCount);
-    span.setAttribute("email.with_attachments", newEmails.filter(e => e.hasAttachments).length);
-
-    if (newEmails.length === 0) {
-      return;
-    }
-
-    // Cap to avoid flooding
-    const capped = newEmails.slice(0, MAX_NEW_PER_CYCLE);
-    if (newEmails.length > MAX_NEW_PER_CYCLE) {
-      log(`Capped new emails from ${newEmails.length} to ${MAX_NEW_PER_CYCLE}`);
-    }
-
-    // Extract invoice links from Gmail HTML for new emails
-    for (const email of capped) {
-      if (email.source === "gmail" && email.sender) {
-        try {
-          const client = await getGmailClient();
-          const htmlResult = await client.callTool({
-            name: "get_gmail_message_content",
-            arguments: {
-              message_id: email.id,
-              user_google_email: GMAIL_EMAIL,
-              body_format: "html",
+    if (gmailEnabled) {
+      const lastChecked = getLastChecked(db, "gmail");
+      if (lastChecked === null && !awaitingFirstStart.has("gmail")) {
+        awaitingFirstStart.add("gmail");
+        await channel.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content:
+              "First start for Gmail source. No previous checkpoint found.\n" +
+              "How far back should I check for emails?\n" +
+              "Ask the user via Telegram. They can reply with a duration (e.g. '3 days', '1 week') or 'skip'.\n" +
+              "Then call init_source(source='gmail', since='3d') or skip_catchup(source='gmail').",
+            meta: {
+              event_type: "first_start",
+              source: "gmail",
+              timestamp: new Date().toISOString(),
             },
-          });
-          const html = parseToolResult(htmlResult);
-          if (typeof html === "string") {
-            const links = extractInvoiceLinks(html, email.sender, email.subject ?? "");
-            if (links.length > 0) {
-              email.invoiceLinks = links;
-              log(`Found ${links.length} invoice link(s) in Gmail ${email.id}`);
-            }
-          }
-        } catch (e: any) {
-          // body_format not supported or MCP error — skip link extraction
-          log(`Gmail HTML fetch failed for ${email.id}: ${e.message}`);
+          },
+        });
+        log("Gmail: first start, awaiting user input");
+      } else if (lastChecked !== null) {
+        const query = buildGmailQuery(lastChecked);
+        sources.push({ name: "gmail", poll: () => pollGmail(db, query) });
+      }
+    }
+
+    if (OUTLOOK_ENABLED) {
+      const lastChecked = getLastChecked(db, "outlook");
+      if (lastChecked === null && !awaitingFirstStart.has("outlook")) {
+        awaitingFirstStart.add("outlook");
+        await channel.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content:
+              "First start for Outlook source. No previous checkpoint found.\n" +
+              "How far back should I check for emails?\n" +
+              "Ask the user via Telegram. They can reply with a duration (e.g. '3 days', '1 week') or 'skip'.\n" +
+              "Then call init_source(source='outlook', since='3d') or skip_catchup(source='outlook').",
+            meta: {
+              event_type: "first_start",
+              source: "outlook",
+              timestamp: new Date().toISOString(),
+            },
+          },
+        });
+        log("Outlook: first start, awaiting user input");
+      } else if (lastChecked !== null) {
+        sources.push({ name: "outlook", poll: () => pollOutlook(db, lastChecked) });
+      }
+    }
+
+    if (sources.length === 0) return;
+
+    const results = await Promise.all(sources.map(s => s.poll()));
+    let totalFound = 0;
+    let totalNew = 0;
+
+    for (let i = 0; i < sources.length; i++) {
+      const source = sources[i].name;
+      let emails = results[i];
+
+      totalFound += results[i].length;
+
+      // Filter to emails not already in DB
+      emails = emails.filter((e) => !emailExists(db, e.id));
+
+      // Apply whitelist/blacklist filter
+      if (EMAIL_FILTER_INCLUDE || EMAIL_FILTER_EXCLUDE) {
+        const before = emails.length;
+        emails = filterEmailsByRecipient(emails, EMAIL_FILTER_INCLUDE, EMAIL_FILTER_EXCLUDE);
+        if (before !== emails.length) {
+          log(`Email filter: ${before} -> ${emails.length} (include="${EMAIL_FILTER_INCLUDE}", exclude="${EMAIL_FILTER_EXCLUDE}")`);
         }
       }
+
+      totalNew += emails.length;
+
+      if (emails.length > MAX_CATCHUP_EMAILS) {
+        catchupQueue.set(source, emails);
+        await channel.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content:
+              `Catchup required for ${source}: found ${emails.length} new emails since last check.\n` +
+              `This exceeds the threshold of ${MAX_CATCHUP_EMAILS}.\n` +
+              `Ask the user via Telegram whether to process all ${emails.length} emails or skip.\n` +
+              `Call approve_catchup(source='${source}') to process, or skip_catchup(source='${source}') to skip.`,
+            meta: {
+              event_type: "catchup_required",
+              source,
+              email_count: String(emails.length),
+              timestamp: new Date().toISOString(),
+            },
+          },
+        });
+        log(`${source}: ${emails.length} emails exceed catchup threshold, awaiting approval`);
+      } else {
+        await processNewEmails(db, channel, emails);
+        setLastChecked(db, source, new Date().toISOString());
+      }
     }
 
-    for (const email of capped) {
-      // Insert as 'new'
-      insertEmail(db, {
-        id: email.id,
-        source: email.source,
-        sender: email.sender ?? null,
-        subject: email.subject ?? null,
-        preview: email.preview ?? null,
-        hasAttachments: email.hasAttachments ?? false,
-        receivedAt: email.receivedAt ?? null,
-        status: "new",
-        traceId: getActiveTraceId(),
-      });
+    span.setAttribute("email.found", totalFound);
+    span.setAttribute("email.new", totalNew);
 
-      // Push channel notification
-      const contentLines = [
-        "New email detected:",
-        `Source: ${email.source}`,
-      ];
-      if (email.sender) contentLines.push(`From: ${email.sender}`);
-      if (email.subject) contentLines.push(`Subject: ${email.subject}`);
-      contentLines.push(`Has attachments: ${email.hasAttachments ? "yes" : "no"}`);
-      if (email.preview) contentLines.push(`Preview: ${email.preview}`);
-      contentLines.push(`Message ID: ${email.id}`);
-      if (email.invoiceLinks?.length) {
-        contentLines.push(`Invoice links: ${email.invoiceLinks.map(l => l.url).join(", ")}`);
-      }
-
-      const meta: Record<string, string> = {
-        email_source: email.source,
-        sender: email.sender ?? "",
-        subject: email.subject ?? "",
-        has_attachments: String(email.hasAttachments ?? false),
-        message_id: email.id,
-        received_at: email.receivedAt ?? "",
-        timestamp: new Date().toISOString(),
-      };
-      if (email.invoiceLinks?.length) {
-        meta.invoice_links = JSON.stringify(email.invoiceLinks);
-      }
-
-      await channel.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: contentLines.join("\n"),
-          meta,
-        },
-      });
-    }
-
-    log(`Pushed ${capped.length} new email(s)`);
+    lastSuccessfulPollAt = Date.now();
   });
 }
 
@@ -836,9 +909,12 @@ const mcp = new Server(
     instructions:
       'Events from email-watcher arrive as <channel source="email-watcher" email_source="gmail|outlook" ...>.\n' +
       "Each event is a NEW email detected in a monitored inbox.\n" +
+      "Special events: first_start (ask user how far back to check), catchup_required (too many emails, ask to approve).\n" +
       "Classify using the email-classifier subagent, then act on the result.\n" +
       "The email_source and message_id fields tell you which MCP tools to use.\n\n" +
-      "IMPORTANT: After classifying and/or processing an email, call update_email_status to record the result.",
+      "IMPORTANT: After classifying and/or processing an email, call update_email_status to record the result.\n" +
+      "For first_start events: ask user via Telegram, then call init_source or skip_catchup.\n" +
+      "For catchup_required events: ask user via Telegram, then call approve_catchup or skip_catchup.",
   }
 );
 
@@ -880,7 +956,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object" as const,
         properties: {
           limit: { type: "number", description: "Max emails to return (default: 20)" },
-          status: { type: "string", description: "Filter by status (new, seed, classified, processed, failed, ignored)" },
+          status: { type: "string", description: "Filter by status (new, classified, processed, failed, ignored)" },
           source: { type: "string", description: "Filter by source (gmail, outlook)" },
         },
       },
@@ -891,6 +967,46 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object" as const,
         properties: {},
+      },
+    },
+    {
+      name: "init_source",
+      description:
+        "Initialize a source on first start. Sets last_checked to the given duration in the past and triggers polling. " +
+        "Call this after the user tells you how far back to check (e.g. '3d', '1w', '24h').",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          source: { type: "string", enum: ["gmail", "outlook"], description: "Email source to initialize" },
+          since: { type: "string", description: "Duration to look back (e.g. '3d', '1w', '24h', '12h')" },
+        },
+        required: ["source", "since"],
+      },
+    },
+    {
+      name: "approve_catchup",
+      description:
+        "Approve processing of queued catchup emails for a source. " +
+        "Call this when the user approves processing emails accumulated during downtime.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          source: { type: "string", enum: ["gmail", "outlook"], description: "Email source to approve" },
+        },
+        required: ["source"],
+      },
+    },
+    {
+      name: "skip_catchup",
+      description:
+        "Skip queued catchup emails and set last_checked to now. " +
+        "Call this when the user wants to skip accumulated emails.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          source: { type: "string", enum: ["gmail", "outlook"], description: "Email source to skip" },
+        },
+        required: ["source"],
       },
     },
   ],
@@ -946,6 +1062,54 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
         const stats = getEmailStats(db);
         return {
           content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
+        };
+      }
+
+      case "init_source": {
+        const source = args?.source as string;
+        const since = args?.since as string;
+        if (!source || !since) {
+          return { content: [{ type: "text", text: "Error: source and since are required" }], isError: true };
+        }
+        const ms = parseDuration(since);
+        const lastChecked = new Date(Date.now() - ms).toISOString();
+        setLastChecked(db, source, lastChecked);
+        awaitingFirstStart.delete(source);
+        log(`Initialized ${source}: last_checked=${lastChecked} (${since} ago)`);
+        return {
+          content: [{ type: "text", text: `Initialized ${source}: will check emails from ${lastChecked} (${since} ago). Next poll cycle will pick them up.` }],
+        };
+      }
+
+      case "approve_catchup": {
+        const source = args?.source as string;
+        if (!source) {
+          return { content: [{ type: "text", text: "Error: source is required" }], isError: true };
+        }
+        const queued = catchupQueue.get(source);
+        if (!queued || queued.length === 0) {
+          return { content: [{ type: "text", text: `No catchup emails queued for ${source}` }], isError: true };
+        }
+        await processNewEmails(db, mcp, queued);
+        setLastChecked(db, source, new Date().toISOString());
+        catchupQueue.delete(source);
+        log(`Approved catchup for ${source}: processed ${queued.length} emails`);
+        return {
+          content: [{ type: "text", text: `Processed ${queued.length} catchup emails for ${source}` }],
+        };
+      }
+
+      case "skip_catchup": {
+        const source = args?.source as string;
+        if (!source) {
+          return { content: [{ type: "text", text: "Error: source is required" }], isError: true };
+        }
+        setLastChecked(db, source, new Date().toISOString());
+        catchupQueue.delete(source);
+        awaitingFirstStart.delete(source);
+        log(`Skipped catchup for ${source}: last_checked set to now`);
+        return {
+          content: [{ type: "text", text: `Skipped catchup for ${source}. Will only process new emails from now.` }],
         };
       }
 

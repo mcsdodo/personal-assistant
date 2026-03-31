@@ -17,7 +17,6 @@ from email.mime.text import MIMEText
 from email import encoders
 from email.utils import formatdate
 from pathlib import Path
-from typing import Any
 
 import requests
 
@@ -55,6 +54,7 @@ SUBJECT_MAP = {
     "fuel_invoice.pdf": "Blok tankovanie Slovnaft",
     "refund.pdf": "Opravný doklad 6401551319 - Alza.sk",
     "account_statement_locked.pdf": "Výpis z účtu za 03/2026 - Tatra banka",
+    "personal.pdf": "Faktúra 5419358935 - Alza.sk",
 }
 
 
@@ -367,21 +367,30 @@ def wait_healthy(timeout: int = 90):
     raise TimeoutError(f"Container not healthy within {timeout}s")
 
 
-def wait_seed_complete(source: str, timeout: int = 90):
-    """Wait until the email-watcher has seeded emails for a source."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            r = requests.get("http://localhost:9465/metrics", timeout=3)
-            for line in r.text.splitlines():
-                if f'source="{source}"' in line and "seed" in line and not line.startswith("#"):
-                    count = int(float(line.split()[-1]))
-                    if count > 0:
-                        return count
-        except (requests.ConnectionError, ValueError):
-            pass
-        time.sleep(5)
-    raise TimeoutError(f"No seed emails for {source} within {timeout}s")
+def wait_source_ready(source: str, timeout: int = 90):
+    """Wait for health, then set last_checked=now for the source.
+
+    This replaces the old wait_seed_complete. Instead of waiting for seed
+    metrics, we directly initialize the source_state table so the email-watcher
+    treats all existing emails as "before" and only processes new ones.
+    """
+    wait_healthy(timeout=timeout)
+    script = (
+        'import{Database}from"bun:sqlite";'
+        'const db=new Database("/data/email-watcher/emails.db");'
+        'db.prepare("INSERT INTO source_state (source, last_checked) VALUES (?, ?) '
+        "ON CONFLICT(source) DO UPDATE SET last_checked = excluded.last_checked\")"
+        f'.run("{source}", new Date().toISOString());'
+        'console.log("ok");'
+        'db.close();'
+    )
+    result = subprocess.run(
+        ["docker", "exec", CONTAINER, "sh", "-c", f"bun -e '{script}'"],
+        capture_output=True, timeout=15,
+    )
+    output = result.stdout.decode("utf-8", errors="replace").strip()
+    if "ok" not in output:
+        raise RuntimeError(f"Failed to init source {source}: {output} {result.stderr.decode()}")
 
 
 def full_reset():
