@@ -790,7 +790,7 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
   return withSpan(tracer, "email-watcher.poll", {}, async (span) => {
     const sources: Array<{ name: string; poll: () => Promise<EmailInfo[]> }> = [];
 
-    if (gmailEnabled) {
+    if (gmailEnabled && !catchupQueue.has("gmail")) {
       const lastChecked = getLastChecked(db, "gmail");
       if (lastChecked === null && !awaitingFirstStart.has("gmail")) {
         awaitingFirstStart.add("gmail");
@@ -816,7 +816,7 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
       }
     }
 
-    if (OUTLOOK_ENABLED) {
+    if (OUTLOOK_ENABLED && !catchupQueue.has("outlook")) {
       const lastChecked = getLastChecked(db, "outlook");
       if (lastChecked === null && !awaitingFirstStart.has("outlook")) {
         awaitingFirstStart.add("outlook");
