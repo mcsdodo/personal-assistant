@@ -13,7 +13,6 @@ import pytest
 
 from .helpers import (
     full_reset,
-    wait_source_ready,
     paperless_wipe,
 )
 
@@ -27,26 +26,22 @@ def pytest_configure(config):
 
 @pytest.fixture(scope="module")
 def reset_pipeline():
-    """Full reset: stop container, clear DBs + Paperless, restart, wait for ready."""
-    full_reset()
-    wait_source_ready("gmail")
-    wait_source_ready("outlook")
+    """Full reset with both sources pre-seeded."""
+    full_reset("gmail", "outlook")
     yield
 
 
 @pytest.fixture(scope="module")
 def reset_pipeline_gmail_only():
-    """Reset and wait for Gmail source ready."""
-    full_reset()
-    wait_source_ready("gmail")
+    """Reset with Gmail source pre-seeded."""
+    full_reset("gmail")
     yield
 
 
 @pytest.fixture(scope="module")
 def reset_pipeline_outlook_only():
-    """Reset and wait for Outlook source ready."""
-    full_reset()
-    wait_source_ready("outlook")
+    """Reset with Outlook source pre-seeded."""
+    full_reset("outlook")
     yield
 
 

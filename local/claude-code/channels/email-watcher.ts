@@ -661,10 +661,14 @@ async function pollOutlook(db: Database, receivedAfter: string | null): Promise<
       arguments: args,
     });
 
-    const data = parseToolResult(result);
-    if (!data || !Array.isArray(data)) {
-      log("Outlook returned non-array data");
+    let data = parseToolResult(result);
+    if (!data) {
+      log("Outlook returned no data");
       return [];
+    }
+    // Single email → parseToolResult returns object, not array. Wrap it.
+    if (!Array.isArray(data)) {
+      data = [data];
     }
 
     return data.map((item: any) => ({

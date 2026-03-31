@@ -367,36 +367,55 @@ def wait_healthy(timeout: int = 90):
     raise TimeoutError(f"Container not healthy within {timeout}s")
 
 
-def wait_source_ready(source: str, timeout: int = 90):
-    """Wait for health, then set last_checked=now for the source.
+def preseed_source_state(*sources: str):
+    """Pre-create the email-watcher DB with last_checked for given sources.
 
-    This replaces the old wait_seed_complete. Instead of waiting for seed
-    metrics, we directly initialize the source_state table so the email-watcher
-    treats all existing emails as "before" and only processes new ones.
+    Must be called BEFORE starting the container (after clear_dbs) so the
+    email-watcher sees last_checked on its first poll and skips the first_start
+    flow. This prevents Claude from getting stuck waiting for Telegram input.
     """
-    wait_healthy(timeout=timeout)
-    script = (
-        'import{Database}from"bun:sqlite";'
-        'const db=new Database("/data/email-watcher/emails.db");'
-        'db.prepare("INSERT INTO source_state (source, last_checked) VALUES (?, ?) '
-        "ON CONFLICT(source) DO UPDATE SET last_checked = excluded.last_checked\")"
-        f'.run("{source}", new Date().toISOString());'
-        'console.log("ok");'
-        'db.close();'
-    )
-    result = subprocess.run(
-        ["docker", "exec", CONTAINER, "sh", "-c", f"bun -e '{script}'"],
-        capture_output=True, timeout=15,
-    )
-    output = result.stdout.decode("utf-8", errors="replace").strip()
-    if "ok" not in output:
-        raise RuntimeError(f"Failed to init source {source}: {output} {result.stderr.decode()}")
+    import sqlite3
+    db_dir = PA_DATA / "email-watcher"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_dir / "emails.db"
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS emails (
+            id TEXT PRIMARY KEY, source TEXT NOT NULL, sender TEXT, subject TEXT,
+            preview TEXT, has_attachments INTEGER DEFAULT 0, received_at TEXT,
+            discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
+            classified_at TEXT, classification TEXT, action TEXT, vendor TEXT,
+            confidence TEXT, processed_at TEXT, process_result TEXT,
+            status TEXT NOT NULL DEFAULT 'new', trace_id TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS source_state (
+            source TEXT PRIMARY KEY, last_checked TEXT NOT NULL
+        )
+    """)
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    for source in sources:
+        conn.execute(
+            "INSERT OR REPLACE INTO source_state (source, last_checked) VALUES (?, ?)",
+            (source, now),
+        )
+    conn.commit()
+    conn.close()
 
 
-def full_reset():
-    """Stop container, clear all DBs + Paperless, restart, wait for seed."""
+def full_reset(*sources: str):
+    """Stop container, clear all DBs + Paperless, preseed sources, restart.
+
+    Sources are pre-seeded with last_checked=now BEFORE the container starts,
+    so the email-watcher's first poll sees them and skips first_start events.
+    """
     stop_claude()
     clear_dbs()
     paperless_wipe()
+    if sources:
+        preseed_source_state(*sources)
     start_claude()
     wait_healthy()
