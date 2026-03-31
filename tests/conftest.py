@@ -33,15 +33,15 @@ def reset_pipeline():
 
 @pytest.fixture(scope="module")
 def reset_pipeline_gmail_only():
-    """Reset with Gmail source pre-seeded."""
-    full_reset("gmail")
+    """Reset with both sources pre-seeded (prevents first_start Telegram prompt)."""
+    full_reset("gmail", "outlook")
     yield
 
 
 @pytest.fixture(scope="module")
 def reset_pipeline_outlook_only():
-    """Reset with Outlook source pre-seeded."""
-    full_reset("outlook")
+    """Reset with both sources pre-seeded (prevents first_start Telegram prompt)."""
+    full_reset("gmail", "outlook")
     yield
 
 
