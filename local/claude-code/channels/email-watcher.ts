@@ -578,6 +578,11 @@ async function pollGmail(db: Database): Promise<EmailInfo[]> {
         if (typeof text === "string") {
           const subjectMatch = text.match(/Subject:\s*(.+)/);
           const fromMatch = text.match(/From:\s*(.+)/);
+          // Skip if Gmail returned an error instead of email content (e.g. 404)
+          if (!fromMatch && !subjectMatch) {
+            log(`Gmail returned no email headers for ${id}, skipping (likely 404 or deleted)`);
+            continue;
+          }
           const toMatch = text.match(/To:\s*(.+)/);
           const dateMatch = text.match(/Date:\s*(.+)/);
           const rawFrom = fromMatch?.[1]?.trim() ?? "";
