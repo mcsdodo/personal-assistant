@@ -23,7 +23,7 @@ flowchart TB
     loki --> grafana
 ```
 
-**Local dev:** Alloy + Prometheus + Loki + Grafana run as a sidecar stack via [`local/docker-compose.yml`](../local/docker-compose.yml).
+**Local dev:** Alloy + Prometheus + Loki + Grafana run as sidecar services via the `local` profile in [`docker-compose.yml`](../docker-compose.yml).
 
 **Production:** Host Alloy (shared across all stacks) scrapes email-watcher on port 9465 and receives OTLP on port 4317. Config at `compose.stacks/_shared-infra/alloy/config.alloy`.
 
@@ -120,15 +120,15 @@ The email-watcher runs a Bun HTTP server on port 9465 with two endpoints:
 
 ## Grafana Dashboard
 
-Pre-provisioned dashboard at [`observability/dashboards/claude-code.json`](../local/observability/dashboards/claude-code.json).
+Pre-provisioned dashboard at [`observability/dashboards/claude-code.json`](../observability/dashboards/claude-code.json).
 
-Datasource provisioning: [`observability/provisioning/`](../local/observability/provisioning/) — auto-configures Prometheus + Loki datasources for Grafana.
+Datasource provisioning: [`observability/provisioning/`](../observability/provisioning/) — auto-configures Prometheus + Loki datasources for Grafana.
 
 ## Config Files
 
 | File | Purpose |
 |------|---------|
-| [`observability/alloy-config.alloy`](../local/observability/alloy-config.alloy) | Local dev: OTLP receiver + Prometheus remote_write + Loki push |
-| [`observability/prometheus-config.yml`](../local/observability/prometheus-config.yml) | Local dev: scrape config for Prometheus |
-| [`observability/loki-config.yml`](../local/observability/loki-config.yml) | Local dev: Loki storage config |
+| [`observability/alloy-config.alloy`](../observability/alloy-config.alloy) | Local dev: OTLP receiver + Prometheus remote_write + Loki push |
+| [`observability/prometheus-config.yml`](../observability/prometheus-config.yml) | Local dev: scrape config for Prometheus |
+| [`observability/loki-config.yml`](../observability/loki-config.yml) | Local dev: Loki storage config |
 | `_shared-infra/alloy/config.alloy` | Production: shared host Alloy with OTLP + email-watcher scrape |

@@ -86,9 +86,8 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 
 | File | Purpose |
 |------|---------|
-| `docker-compose.yml` | Production stack (Komodo deploys this) |
-| `local/docker-compose.yml` | Local dev overlay (build contexts + observability sidecar) |
-| `local/.env` / `local/.env.example` | Local dev secrets (Komodo manages prod secrets) |
+| `docker-compose.yml` | Full stack with `local` profile for dev (Komodo deploys without profile) |
+| `.env` / `.env.example` | Local dev secrets (Komodo manages prod secrets) |
 | `claude-code/Dockerfile` | node:20 + bun + claude-code CLI, non-root user |
 | `claude-code/.mcp.json` | MCP server config (channels + HTTP tools) |
 | `claude-code/CLAUDE.md` | Instructions for the Claude session |
@@ -104,7 +103,7 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | `checker-mcp/entrypoint.sh` | Two-process entrypoint (MCP background + Flask PID 1) |
 | `checker-mcp/match_invoices.py` | Invoice matching engine |
 | `outlook-mcp/server.py` | Outlook MCP (MSAL device code auth) |
-| `local/observability/` | Local dev Alloy, Prometheus, Loki, Grafana configs |
+| `observability/` | Local dev Alloy, Prometheus, Loki, Grafana configs |
 
 ## Claude Code in Docker — Reference
 
@@ -237,17 +236,17 @@ Claude Code's `typescript-lsp` plugin fails on Windows with `ENOENT: uv_spawn 't
 
 ## Development
 
-Development runs locally on the Windows dev machine using Docker Desktop with the local compose override:
+Development runs locally on the Windows dev machine using Docker Desktop with the `local` profile:
 
 ```bash
 # Start the full stack (from compose.stacks/infra/personal-assistant/)
-docker compose -f docker-compose.yml -f local/docker-compose.yml --env-file local/.env up
+docker compose --profile local --env-file .env up
 
 # Rebuild after code changes
-docker compose -f docker-compose.yml -f local/docker-compose.yml --env-file local/.env up --build
+docker compose --profile local --env-file .env up --build
 
 # Check status
-docker compose -f docker-compose.yml -f local/docker-compose.yml --env-file local/.env ps
+docker compose --profile local --env-file .env ps
 
 # View Claude session
 docker exec personal-assistant-claude tmux capture-pane -t claude -p -S -30
@@ -309,7 +308,7 @@ The local observability stack also scrapes an `email-watcher` Prometheus endpoin
 ### Local Dev
 
 ```bash
-docker compose -f docker-compose.yml -f local/docker-compose.yml --env-file local/.env up
+docker compose --profile local --env-file .env up
 ```
 
 This starts a local Alloy + Prometheus + Loki + Grafana alongside the main stack.
@@ -328,18 +327,18 @@ Production OTLP support now belongs in the shared host Alloy config at `compose.
 Set `OTEL_ENDPOINT` in `.env` if the host Alloy isn't reachable at `http://alloy:4317` from the `claude-code` container.
 
 Notes:
-- local dev still uses `observability/alloy-config.alloy` via `docker-compose.local.yml`
+- local dev still uses `observability/alloy-config.alloy` via the `local` profile in `docker-compose.yml`
 - production host config reuses the existing shared `prometheus.remote_write.prometheus_endpoint` and `loki.write.loki_endpoint` outputs
 - after syncing the shared config to `/mnt/shared_configs/grafana/config.alloy`, restart the host Alloy container
 
 ### Updating Grafana Dashboards
 
-Dashboard JSON files live in `local/observability/dashboards/`. Production Grafana mounts dashboards read-only from `/mnt/shared_configs/grafana/dashboards/` on the infra host.
+Dashboard JSON files live in `observability/dashboards/`. Production Grafana mounts dashboards read-only from `/mnt/shared_configs/grafana/dashboards/` on the infra host.
 
 **After editing a dashboard JSON:**
 ```bash
 # Copy to production Grafana (provisioner picks up changes automatically)
-scp local/observability/dashboards/claude-code.json root@192.168.0.112:/mnt/shared_configs/grafana/dashboards/claude-code.json
+scp observability/dashboards/claude-code.json root@192.168.0.112:/mnt/shared_configs/grafana/dashboards/claude-code.json
 ```
 
 No Grafana restart needed — the file provisioner detects changes and reloads.
@@ -391,9 +390,9 @@ No Grafana restart needed — the file provisioner detects changes and reloads.
 
 | File | Purpose |
 |------|---------|
-| `local/docker-compose.yml` | Local dev overlay (build contexts + Alloy + Prometheus + Loki + Grafana) |
-| `local/observability/alloy-config.alloy` | Alloy OTLP receiver config (local dev) |
+| `docker-compose.yml` (services with `local` profile) | Local dev services (build contexts + Alloy + Prometheus + Loki + Grafana) |
+| `observability/alloy-config.alloy` | Alloy OTLP receiver config (local dev) |
 | `compose.stacks/_shared-infra/alloy/config.alloy` | Shared host Alloy config with production OTLP + email-watcher scrape |
-| `local/observability/dashboards/claude-code.json` | Grafana dashboard |
-| `local/observability/prometheus-config.yml` | Minimal Prometheus config for local dev |
-| `local/observability/loki-config.yml` | Minimal Loki config for local dev |
+| `observability/dashboards/claude-code.json` | Grafana dashboard |
+| `observability/prometheus-config.yml` | Minimal Prometheus config for local dev |
+| `observability/loki-config.yml` | Minimal Loki config for local dev |

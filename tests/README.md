@@ -12,7 +12,7 @@ End-to-end tests for the email processing pipeline. Sends real emails, waits for
 
    # Personal assistant
    cd compose.stacks/infra/personal-assistant
-   docker compose -f docker-compose.yml -f local/docker-compose.yml --env-file local/.env up -d
+   docker compose --profile local --env-file .env up -d
    ```
 
 2. **Gmail OAuth token** — run once to authorize:

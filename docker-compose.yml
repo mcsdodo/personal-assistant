@@ -1,6 +1,10 @@
 services:
   claude-code:
     image: personal-assistant-claude-code:latest
+    build:
+      context: ./claude-code
+      args:
+        CLAUDE_CODE_VERSION: latest
     container_name: personal-assistant-claude
     restart: unless-stopped
     labels:
@@ -25,11 +29,11 @@ services:
       - "9466:9466"
     volumes:
       # Bind-mount host Claude credentials dir for OAuth tokens
-      - /mnt/shared_configs/personal-assistant/claude-config:/home/node/.claude
+      - ${PA_DATA_DIR:-/mnt/shared_configs/personal-assistant}/claude-config:/home/node/.claude
       # Downloaded invoices
-      - /mnt/shared_configs/personal-assistant/downloads:/workspace/downloads
-      - /mnt/shared_configs/personal-assistant/email-watcher:/data/email-watcher
-      - /mnt/shared_configs/personal-assistant/gdrive-watcher:/data/gdrive-watcher
+      - ${PA_DATA_DIR:-/mnt/shared_configs/personal-assistant}/downloads:/workspace/downloads
+      - ${PA_DATA_DIR:-/mnt/shared_configs/personal-assistant}/email-watcher:/data/email-watcher
+      - ${PA_DATA_DIR:-/mnt/shared_configs/personal-assistant}/gdrive-watcher:/data/gdrive-watcher
     environment:
       - NODE_OPTIONS=--max-old-space-size=4096
       - HOME=/home/node
@@ -38,7 +42,7 @@ services:
       - OTEL_METRICS_EXPORTER=otlp
       - OTEL_LOGS_EXPORTER=otlp
       - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_ENDPOINT}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_ENDPOINT:-}
       - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
       - OTEL_METRIC_EXPORT_INTERVAL=${OTEL_METRIC_INTERVAL:-10000}
       - OTEL_LOGS_EXPORT_INTERVAL=5000
@@ -99,6 +103,8 @@ services:
 
   checker-mcp:
     image: personal-assistant-checker-mcp:latest
+    build:
+      context: ./checker-mcp
     container_name: personal-assistant-checker-mcp
     restart: unless-stopped
     labels:
@@ -137,23 +143,29 @@ services:
       - "8000:8000"
     volumes:
       # OAuth tokens persist here
-      - /mnt/shared_configs/personal-assistant/gmail:/app/store_creds
+      - ${PA_DATA_DIR:-/mnt/shared_configs/personal-assistant}/gmail:/app/store_creds
+      - ${GMAIL_CLIENT_SECRET_FILE:-/dev/null}:/app/client_secret_mount.json:ro
     environment:
       - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}
       - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET}
-      - GOOGLE_OAUTH_REDIRECT_URI=https://gmail-mcp.lacny.me/oauth2callback
+      - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI:-https://gmail-mcp.lacny.me/oauth2callback}
       - GOOGLE_MCP_CREDENTIALS_DIR=/app/store_creds
       - GOOGLE_CLIENT_SECRET_JSON=${GOOGLE_CLIENT_SECRET_JSON}
       - TOOLS=gmail drive
-    # Write client_secret.json from env var at startup (no manual file copy needed)
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        echo "$$GOOGLE_CLIENT_SECRET_JSON" > /app/client_secret.json
+        if [ -n "$$GOOGLE_CLIENT_SECRET_JSON" ]; then
+          echo "$$GOOGLE_CLIENT_SECRET_JSON" > /app/client_secret.json
+        elif [ -s /app/client_secret_mount.json ]; then
+          cp /app/client_secret_mount.json /app/client_secret.json
+        fi
         exec uv run main.py --transport streamable-http --tools gmail drive
 
   outlook-mcp:
     image: personal-assistant-outlook-mcp:latest
+    build:
+      context: ./outlook-mcp
     container_name: personal-assistant-outlook-mcp
     restart: unless-stopped
     labels:
@@ -166,10 +178,146 @@ services:
       start_period: 30s
     volumes:
       # Token cache persists here — device code auth runs at startup if needed
-      - /mnt/shared_configs/personal-assistant/outlook:/data
+      - ${PA_DATA_DIR:-/mnt/shared_configs/personal-assistant}/outlook:/data
     environment:
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID:-consumers}
       - TOKEN_CACHE_PATH=/data/token_cache.json
       # Stateless HTTP: no session IDs, server restarts are transparent to Claude
       - FASTMCP_STATELESS_HTTP=true
+
+  # ── Local-profile services ────────────────────────────────────
+  # Usage: docker compose --profile local --env-file .env up --build
+
+  # ── Local Paperless-ngx (for dev/testing) ──────────────────
+  # After first start:
+  #   1. docker compose exec paperless python3 manage.py createsuperuser
+  #   2. Log into http://localhost:8010, go to Settings > API Tokens
+  #   3. Put the token in .env as PAPERLESS_API_TOKEN=<token>
+  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:2.20.3
+    container_name: personal-assistant-paperless
+    restart: unless-stopped
+    profiles: ["local"]
+    depends_on:
+      - paperless-db
+      - paperless-broker
+    ports:
+      - "8010:8000"
+    volumes:
+      - ${PA_DATA_DIR:-./data}/paperless/data:/usr/src/paperless/data
+      - ${PA_DATA_DIR:-./data}/paperless/media:/usr/src/paperless/media
+      - ${PA_DATA_DIR:-./data}/paperless/consume:/usr/src/paperless/consume
+    environment:
+      PAPERLESS_REDIS: redis://paperless-broker:6379
+      PAPERLESS_DBHOST: paperless-db
+      PAPERLESS_DBPASS: paperless
+      USERMAP_UID: 0
+      USERMAP_GID: 0
+      PAPERLESS_TIME_ZONE: Europe/Bratislava
+      PAPERLESS_URL: http://localhost:8010
+      PAPERLESS_CONSUMER_POLLING: 10
+      PAPERLESS_CONSUMER_RECURSIVE: true
+      PAPERLESS_TASK_WORKERS: 2
+      PAPERLESS_THREADS_PER_WORKER: 3
+      PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS: "true"
+
+  paperless-db:
+    image: docker.io/library/postgres:18
+    container_name: personal-assistant-paperless-db
+    restart: unless-stopped
+    profiles: ["local"]
+    volumes:
+      - ${PA_DATA_DIR:-./data}/paperless/pgdata:/var/lib/postgresql
+    environment:
+      POSTGRES_DB: paperless
+      POSTGRES_USER: paperless
+      POSTGRES_PASSWORD: paperless
+
+  paperless-broker:
+    image: docker.io/library/redis:8
+    container_name: personal-assistant-paperless-broker
+    restart: unless-stopped
+    profiles: ["local"]
+    volumes:
+      - ${PA_DATA_DIR:-./data}/paperless/redisdata:/data
+
+  alloy:
+    image: grafana/alloy:latest
+    container_name: personal-assistant-alloy
+    restart: unless-stopped
+    profiles: ["local"]
+    volumes:
+      - ./observability/alloy-config.alloy:/etc/alloy/config.alloy:ro
+    ports:
+      - "12345:12345"   # Alloy UI
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090/api/v1/write
+      - LOKI_URL=http://loki:3100/loki/api/v1/push
+      - TEMPO_URL=http://tempo:3200
+    command: >
+      run
+      --server.http.listen-addr=0.0.0.0:12345
+      --stability.level=generally-available
+      /etc/alloy/config.alloy
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: personal-assistant-prometheus
+    restart: unless-stopped
+    profiles: ["local"]
+    ports:
+      - "9091:9090"     # 9091 to avoid conflict with host prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-remote-write-receiver'
+    volumes:
+      - ./observability/prometheus-config.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  loki:
+    image: grafana/loki:latest
+    container_name: personal-assistant-loki
+    restart: unless-stopped
+    profiles: ["local"]
+    user: "0"
+    ports:
+      - "3101:3100"     # 3101 to avoid conflict with host loki
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ./observability/loki-config.yml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    container_name: personal-assistant-tempo
+    restart: unless-stopped
+    profiles: ["local"]
+    ports:
+      - "3200:3200"      # Tempo query API
+    command: -config.file=/etc/tempo/tempo.yml
+    volumes:
+      - ./observability/tempo-config.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: personal-assistant-grafana
+    restart: unless-stopped
+    profiles: ["local"]
+    ports:
+      - "3001:3000"     # 3001 to avoid conflict with host grafana
+    environment:
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./observability/dashboards:/var/lib/grafana/dashboards:ro
+      - ./observability/provisioning:/etc/grafana/provisioning:ro
+
+volumes:
+  prometheus-data:
+  loki-data:
+  tempo-data:

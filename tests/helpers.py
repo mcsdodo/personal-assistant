@@ -26,7 +26,7 @@ import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[4]  # C:\_dev\home.notavailable
 PA_STACK = REPO_ROOT / "compose.stacks" / "infra" / "personal-assistant"
-PA_DATA = PA_STACK / "local" / "data"
+PA_DATA = PA_STACK / "data"
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
 
 CREDENTIALS_FILE = Path(r"C:\_dev\invoice-automation\config\credentials.json")
@@ -43,10 +43,7 @@ PAPERLESS_TOKEN = os.environ.get(
 )
 
 CONTAINER = "personal-assistant-claude"
-COMPOSE_CMD = (
-    f"docker compose -f docker-compose.yml -f local/docker-compose.yml "
-    f"--env-file local/.env"
-)
+COMPOSE_CMD = "docker compose --profile local --env-file .env"
 
 # Subject templates matching what the email-classifier expects
 SUBJECT_MAP = {

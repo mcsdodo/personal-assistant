@@ -12,8 +12,8 @@ client_secret.json
 token.json
 
 # Runtime data
-local/data/*
-!local/data/.gitignore
+data/*
+!data/.gitignore
 
 # Python
 __pycache__/

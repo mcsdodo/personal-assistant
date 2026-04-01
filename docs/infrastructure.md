@@ -35,7 +35,7 @@ flowchart TB
     end
 ```
 
-**Config:** [`docker-compose.yml`](../docker-compose.yml) — production stack | [`local/docker-compose.yml`](../local/docker-compose.yml) — dev overlay with build contexts + observability sidecar.
+**Config:** [`docker-compose.yml`](../docker-compose.yml) — full stack. Production runs without profile; local dev uses `--profile local` for build contexts + observability sidecar.
 
 ## Docker Build
 
