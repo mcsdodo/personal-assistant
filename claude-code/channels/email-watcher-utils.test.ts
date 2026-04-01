@@ -42,11 +42,6 @@ mock.module("./db", () => ({
   getEmailStats: () => ({ byStatus: [], last24h: [] }),
 }));
 
-// invoice-links — prevent any real import side effects
-mock.module("./invoice-links", () => ({
-  extractInvoiceLinks: () => [],
-}));
-
 // Dynamic import — the mocks above MUST be registered before this runs.
 let buildGmailQuery: any;
 let parseDuration: any;
