@@ -18,6 +18,20 @@ if [ ! -f /home/node/.claude/.credentials.json ]; then
   echo "Run: docker exec -it personal-assistant-claude claude login"
 fi
 
+# Start workflow-mcp HTTP server (background, before Claude so it's ready for tool calls)
+bun run /app/channels/workflow-mcp.ts &
+WORKFLOW_PID=$!
+echo "Started workflow-mcp (PID $WORKFLOW_PID, port ${WORKFLOW_MCP_PORT:-8003})"
+
+# Wait for workflow-mcp to be ready
+for i in $(seq 1 15); do
+  if curl -sf "http://localhost:${WORKFLOW_MCP_PORT:-8003}/health" > /dev/null 2>&1; then
+    echo "Workflow-mcp healthy (after ${i}s)"
+    break
+  fi
+  sleep 1
+done
+
 # Run Claude Code in interactive mode inside tmux
 tmux new-session -d -s claude \
   "claude --model sonnet --remote-control \

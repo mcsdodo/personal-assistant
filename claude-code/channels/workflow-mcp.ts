@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -24,6 +23,7 @@ import { initTracing, createLogger } from "./tracing";
 
 const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
 const WORKFLOW_POLL_MS = parseInt(process.env.WORKFLOW_POLL_MS ?? "2000", 10);
+const WORKFLOW_PORT = parseInt(process.env.WORKFLOW_MCP_PORT ?? "8003", 10);
 
 initTracing("workflow");
 const log = createLogger("workflow");
@@ -368,8 +368,32 @@ async function main(): Promise<void> {
   await fieldRegistry.init();
   log("Custom field registry initialized");
 
-  await mcp.connect(new StdioServerTransport());
-  log("Workflow MCP connected (stdio)");
+  // HTTP transport — stateless, Web Standard API for Bun compatibility.
+  const { WebStandardStreamableHTTPServerTransport } = await import(
+    "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
+  );
+
+  Bun.serve({
+    port: WORKFLOW_PORT,
+    idleTimeout: 255, // seconds — MCP streaming can hold connections open
+    async fetch(req) {
+      const url = new URL(req.url);
+
+      if (url.pathname === "/health") {
+        return new Response("ok", { status: 200 });
+      }
+
+      if (url.pathname === "/mcp" && (req.method === "POST" || req.method === "GET" || req.method === "DELETE")) {
+        const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+        try { await mcp.close(); } catch {}
+        await mcp.connect(transport);
+        return transport.handleRequest(req);
+      }
+
+      return new Response("Not Found", { status: 404 });
+    },
+  });
+  log(`Workflow MCP listening on :${WORKFLOW_PORT} (/mcp, /health)`);
 
   await workerTick();
   setInterval(() => {
@@ -379,7 +403,9 @@ async function main(): Promise<void> {
   }, WORKFLOW_POLL_MS);
 }
 
-main().catch((error) => {
-  log(`Fatal error: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((error) => {
+    log(`Fatal error: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}

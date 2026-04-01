@@ -29,6 +29,23 @@ PA_STACK = REPO_ROOT / "compose.stacks" / "infra" / "personal-assistant"
 PA_DATA = PA_STACK / "data"
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
 
+# Load .env from the project root so tests pick up the same config as docker compose
+_ENV_FILE = PA_STACK / ".env"
+_dotenv: dict[str, str] = {}
+if _ENV_FILE.exists():
+    for line in _ENV_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        _dotenv[key.strip()] = value.strip()
+
+
+def _env(key: str, default: str = "") -> str:
+    """Read from shell env first, then .env file, then default."""
+    return os.environ.get(key) or _dotenv.get(key) or default
+
+
 CREDENTIALS_FILE = Path(r"C:\_dev\invoice-automation\config\credentials.json")
 TOKEN_FILE = Path(r"C:\_dev\invoice-automation\config\token.json")
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
@@ -37,10 +54,14 @@ GMAIL_FROM = "lacny.jozef@gmail.com"
 GMAIL_TO = "lacny.jozef+dev@gmail.com"
 OUTLOOK_TO = "lacny.jozef+dev@hotmail.com"
 
+# PAPERLESS_URL from .env is container-to-container (http://paperless:8010).
+# Tests run on the host, so always use localhost.
 PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "http://localhost:8010/api")
-PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN") or os.environ.get("PAPERLESS_API_TOKEN")
+PAPERLESS_TOKEN = _env("PAPERLESS_TOKEN") or _env("PAPERLESS_API_TOKEN")
 if not PAPERLESS_TOKEN:
-    raise RuntimeError("PAPERLESS_TOKEN or PAPERLESS_API_TOKEN env var required for E2E tests")
+    raise RuntimeError(
+        f"PAPERLESS_TOKEN or PAPERLESS_API_TOKEN not found in env or {_ENV_FILE}"
+    )
 
 CONTAINER = "personal-assistant-claude"
 COMPOSE_CMD = "docker compose --profile local --env-file .env"
