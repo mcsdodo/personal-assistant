@@ -33,26 +33,34 @@ tmux new-session -d -s claude \
     --permission-mode dontAsk \
     --mcp-config /workspace/.mcp.json"
 
-# Wait for the development channels TUI prompt, then accept it
-echo "Waiting for development channels prompt..."
-accepted=false
+# Wait for Claude to be ready. With --permission-mode dontAsk, the dev channels
+# prompt is skipped (channels load automatically). With --dangerously-skip-permissions,
+# there's a TUI prompt requiring Enter. Handle both cases.
+echo "Waiting for Claude startup..."
+ready=false
 for i in $(seq 1 60); do
-  if tmux capture-pane -t claude -p 2>/dev/null | grep -q "local development"; then
+  pane_content=$(tmux capture-pane -t claude -p 2>/dev/null || true)
+  # dontAsk mode: no prompt, channels load directly
+  if echo "$pane_content" | grep -q "Listening for channel messages"; then
+    echo "Channels loaded (after ${i}s)"
+    ready=true
+    break
+  fi
+  # Legacy: dangerously-skip-permissions shows a TUI prompt
+  if echo "$pane_content" | grep -q "local development"; then
     tmux send-keys -t claude Enter
     echo "Accepted development channels prompt (after ${i}s)"
-    accepted=true
+    ready=true
     break
   fi
   sleep 1
 done
 
-if [ "$accepted" = false ]; then
-  echo "WARNING: Development channels prompt not detected after 60s"
-  echo "Claude may have started without channels, or the prompt text changed"
+if [ "$ready" = false ]; then
+  echo "WARNING: Claude not ready after 60s — channels may not have loaded"
 fi
 
-# Check for additional TUI prompts (e.g. "new MCP servers found" when adding
-# new stdio servers like workflow). Poll for a few seconds after channels prompt.
+# Dismiss any additional TUI prompts (e.g. "new MCP servers found", auto-update notices)
 echo "Checking for additional startup prompts..."
 for i in $(seq 1 10); do
   pane_content=$(tmux capture-pane -t claude -p 2>/dev/null || true)
