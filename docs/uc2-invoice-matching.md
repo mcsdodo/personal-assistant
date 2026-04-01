@@ -10,7 +10,7 @@ flowchart TB
 
     claude -->|Streamable HTTP| checker["checker-mcp<br/>:8001/mcp<br/>4 MCP tools (FastMCP/Python)"]
 
-    checker -->|API calls| paperless["Paperless-ngx API<br/>documents.lacny.me<br/>bank statements + invoices + custom fields"]
+    checker -->|API calls| paperless["Paperless-ngx API<br/>PAPERLESS_URL<br/>bank statements + invoices + custom fields"]
 ```
 
 The checker-mcp wraps the same matching engine used by the [Invoice Checker webapp](../../../media-gpu/paperless/local/checker/CLAUDE.md) (`match_invoices.py`). It's copied into the container at build time.

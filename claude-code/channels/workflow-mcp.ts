@@ -362,7 +362,8 @@ async function main(): Promise<void> {
   db = openWorkflowDb(WORKFLOW_DB_PATH);
   log(`Opened workflow DB at ${WORKFLOW_DB_PATH}`);
 
-  const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
+  const paperlessUrl = process.env.PAPERLESS_URL;
+  if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
   const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
   fieldRegistry = new PaperlessFieldRegistry(paperlessUrl, paperlessToken, log);
   await fieldRegistry.init();

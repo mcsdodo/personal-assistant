@@ -657,7 +657,8 @@ async function checkDuplicate(
 
     // Search via direct Paperless API using custom_fields__icontains
     // (paperless-mcp search_documents does full-text search which doesn't reliably find custom field values)
-    const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
+    const paperlessUrl = process.env.PAPERLESS_URL;
+    if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
     const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
 
     const searchParams = new URLSearchParams({
@@ -815,7 +816,8 @@ async function uploadToPaperless(
 
     // Upload directly to Paperless API (bypasses paperless-mcp to avoid
     // 413 Payload Too Large on base64-encoded files over ~200KB).
-    const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
+    const paperlessUrl = process.env.PAPERLESS_URL;
+    if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
     const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
     const fileBuffer = Buffer.from(params.file.content_base64, "base64");
 
@@ -1204,7 +1206,8 @@ async function setDocumentCustomFields(
       return { error: "no task UUID" };
     }
 
-    const paperlessUrl = process.env.PAPERLESS_URL ?? "https://documents.lacny.me";
+    const paperlessUrl = process.env.PAPERLESS_URL;
+    if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
     const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
 
     try {
