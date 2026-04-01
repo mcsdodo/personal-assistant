@@ -30,12 +30,18 @@ class _ClientHolder:
     _instance = None
 
     def __init__(self):
-        url = os.environ.get("PAPERLESS_URL", "https://documents.lacny.me")
+        url = os.environ["PAPERLESS_URL"]
         token = os.environ["PAPERLESS_API_TOKEN"]
         self.client = PaperlessClient(url, token)
-        self.statement_type_id = self.client.get_document_type_id(DOCUMENT_TYPE_STATEMENT)
-        self.total_amount_field_id = self.client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
-        self.total_amount_alt_field_id = self.client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
+        self.statement_type_id = self.client.get_document_type_id(
+            DOCUMENT_TYPE_STATEMENT
+        )
+        self.total_amount_field_id = self.client.get_custom_field_id(
+            TOTAL_AMOUNT_FIELD_NAME
+        )
+        self.total_amount_alt_field_id = self.client.get_custom_field_id(
+            TOTAL_AMOUNT_ALT_FIELD_NAME
+        )
         self.invoicing_tag_id = self.client.get_tag_id(INVOICING_TAG_NAME)
 
     @classmethod
@@ -65,8 +71,13 @@ def match_invoices(month: str) -> dict:
     doc_cache = {}
     global_matched_ids = set()
     result = collect_month(
-        h.client, month, h.statement_type_id, h.total_amount_field_id,
-        doc_cache, h.invoicing_tag_id, global_matched_ids,
+        h.client,
+        month,
+        h.statement_type_id,
+        h.total_amount_field_id,
+        doc_cache,
+        h.invoicing_tag_id,
+        global_matched_ids,
         total_amount_alt_field_id=h.total_amount_alt_field_id,
     )
     return _clean_result(result)
@@ -93,8 +104,13 @@ def match_invoices_range(month_from: str, month_to: str) -> list[dict]:
     global_matched_ids = set()
     results = [
         collect_month(
-            h.client, m, h.statement_type_id, h.total_amount_field_id,
-            doc_cache, h.invoicing_tag_id, global_matched_ids,
+            h.client,
+            m,
+            h.statement_type_id,
+            h.total_amount_field_id,
+            doc_cache,
+            h.invoicing_tag_id,
+            global_matched_ids,
             total_amount_alt_field_id=h.total_amount_alt_field_id,
         )
         for m in months
@@ -114,7 +130,10 @@ def get_pl_summary(year: int) -> dict:
     """
     h = _holder()
     return collect_pl(
-        h.client, year, h.statement_type_id, h.total_amount_field_id,
+        h.client,
+        year,
+        h.statement_type_id,
+        h.total_amount_field_id,
         h.invoicing_tag_id,
         total_amount_alt_field_id=h.total_amount_alt_field_id,
     )
@@ -135,8 +154,13 @@ def get_month_status(month: str | None = None) -> dict:
     doc_cache = {}
     global_matched_ids = set()
     result = collect_month(
-        h.client, month, h.statement_type_id, h.total_amount_field_id,
-        doc_cache, h.invoicing_tag_id, global_matched_ids,
+        h.client,
+        month,
+        h.statement_type_id,
+        h.total_amount_field_id,
+        doc_cache,
+        h.invoicing_tag_id,
+        global_matched_ids,
         total_amount_alt_field_id=h.total_amount_alt_field_id,
     )
     return {
@@ -145,7 +169,8 @@ def get_month_status(month: str | None = None) -> dict:
         "has_statement": bool(result["header_doc_id"]),
         "missing_invoices": [
             {"amount": r["amount"], "description": r.get("description", "")}
-            for r in result["rows"] if r["status"] == "missing"
+            for r in result["rows"]
+            if r["status"] == "missing"
         ],
     }
 
@@ -156,6 +181,7 @@ def get_month_status(month: str | None = None) -> dict:
 def _clean_result(result: dict) -> dict:
     """Strip ANSI codes and internal fields from collect_month output."""
     import re
+
     ansi_re = re.compile(r"\033\[[0-9;]*m")
 
     def clean_str(s):
@@ -163,14 +189,16 @@ def _clean_result(result: dict) -> dict:
 
     cleaned_rows = []
     for row in result.get("rows", []):
-        cleaned_rows.append({
-            "status": row.get("status", ""),
-            "amount": row.get("amount"),
-            "description": clean_str(row.get("description", "")),
-            "invoice_name": clean_str(row.get("invoice_name", "")),
-            "doc_id": row.get("doc_id"),
-            "skip_label": row.get("skip_label", ""),
-        })
+        cleaned_rows.append(
+            {
+                "status": row.get("status", ""),
+                "amount": row.get("amount"),
+                "description": clean_str(row.get("description", "")),
+                "invoice_name": clean_str(row.get("invoice_name", "")),
+                "doc_id": row.get("doc_id"),
+                "skip_label": row.get("skip_label", ""),
+            }
+        )
     return {
         "month": result["month"],
         "header": clean_str(result.get("header", "")),
@@ -189,13 +217,18 @@ if __name__ == "__main__":
         if scope["type"] == "http":
             path = scope.get("path", "")
             if path == "/health":
-                await send({"type": "http.response.start", "status": 200, "headers": [[b"content-type", b"text/plain"]]})
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": [[b"content-type", b"text/plain"]],
+                    }
+                )
                 await send({"type": "http.response.body", "body": b"ok"})
                 return
             headers = list(scope.get("headers", []))
             scope["headers"] = [
-                (k, b"localhost:8001") if k == b"host" else (k, v)
-                for k, v in headers
+                (k, b"localhost:8001") if k == b"host" else (k, v) for k, v in headers
             ]
         await app(scope, receive, send)
 

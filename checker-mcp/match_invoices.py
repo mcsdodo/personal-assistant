@@ -29,8 +29,7 @@ from dotenv import load_dotenv
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
-# PAPERLESS_URL = "http://localhost:8010"
-PAPERLESS_URL = "https://documents.lacny.me"
+PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "")
 DOCUMENT_TYPE_STATEMENT = "Account Statement"
 INVOICING_TAG_NAME = "invoicing"  # only docs with this tag are matched
 MONTH_WINDOW = 1  # +/- months for cross-matching
@@ -101,11 +100,15 @@ SKIP_RULES = [
 ]
 
 SKIP_ACCOUNT_RULES = [
-    SkipRule("2938452410", SkipReason.PAYROLL, PLCategory.EXPENSE),
+    SkipRule(acct.strip(), SkipReason.PAYROLL, PLCategory.EXPENSE)
+    for acct in os.environ.get("SKIP_PAYROLL_ACCOUNTS", "").split(",")
+    if acct.strip()
+] + [
     SkipRule("SPSRSKBA", SkipReason.STATE_TREASURY, PLCategory.EXCLUDED),
 ]
 
 # ── Paperless API helpers ──────────────────────────────────────────────────
+
 
 class PaperlessClient:
     def __init__(self, url: str, token: str):
@@ -265,20 +268,24 @@ def parse_movements(content: str) -> list[dict]:
         # Description is the text between date and amount on first line
         desc = first_line
         if date_match:
-            desc = desc[len(date_match.group(0)):].strip()
+            desc = desc[len(date_match.group(0)) :].strip()
         desc = RE_STATEMENT_AMOUNT.sub("", desc).strip()
 
         # Extract foreign currency original amount if present
         orig_match = RE_ORIG_AMOUNT.search(block)
-        orig_amount = parse_statement_amount(orig_match.group(1)) if orig_match else None
+        orig_amount = (
+            parse_statement_amount(orig_match.group(1)) if orig_match else None
+        )
 
-        movements.append({
-            "date": date_str,
-            "description": desc,
-            "amount": amount_val,
-            "orig_amount": orig_amount,
-            "raw_block": block,
-        })
+        movements.append(
+            {
+                "date": date_str,
+                "description": desc,
+                "amount": amount_val,
+                "orig_amount": orig_amount,
+                "raw_block": block,
+            }
+        )
 
     return movements
 
@@ -312,14 +319,14 @@ RE_AMOUNT = re.compile(
 RE_TOTAL_AMOUNT = re.compile(
     r"(?:spolu|celkom|celkem|úhrad[ue]|total|summe|gesamt|betrag|netto|brutto|amount|balance|due|EUR|USD|€|\$)\D{0,15}"
     r"(\d{1,3}(?:[\s.]\d{3})+,\d{2}"  # comma-decimal with space/dot thousands: 7 619,85
-    r"|\d{1,3}(?:,\d{3})+\.\d{2})",   # dot-decimal with comma thousands: 7,619.85
+    r"|\d{1,3}(?:,\d{3})+\.\d{2})",  # dot-decimal with comma thousands: 7,619.85
     re.IGNORECASE,
 )
 
 # Whole-number amounts next to currency symbols/codes (no decimals)
 # E.g. "230 Kč", "CZK 230", "€ 50", "100 EUR"
 RE_CURRENCY_AMOUNT = re.compile(
-    r"(?:EUR|USD|CZK|HUF|PLN|Kč|€|\$) ?(\d{2,5})(?![.,]\d)"            # currency before: "CZK 230"
+    r"(?:EUR|USD|CZK|HUF|PLN|Kč|€|\$) ?(\d{2,5})(?![.,]\d)"  # currency before: "CZK 230"
     r"|(?<![.,\d\w])(\d{2,5})(?![.,]\d) ?(?:EUR|USD|CZK|HUF|PLN|Kč|€|\$)",  # currency after: "230 Kč"
     re.IGNORECASE,
 )
@@ -389,6 +396,7 @@ def extract_invoice_amounts(content: str, year: int = 0) -> list[float]:
 
 # ── Month arithmetic ──────────────────────────────────────────────────────
 
+
 def month_offset(yyyy_mm: str, offset: int) -> str:
     """Add offset months to YYYY-MM string."""
     year, month = int(yyyy_mm[:4]), int(yyyy_mm[5:7])
@@ -440,6 +448,7 @@ def build_pair_index(invoice_docs: list[dict]) -> dict[int, dict]:
     is a prefix of the other (e.g. 'fa_regaly' and 'fa_regaly_zalohova').
     """
     from collections import defaultdict
+
     groups = defaultdict(list)
     for inv in invoice_docs:
         amt = round(inv["_amounts"][0], 2) if inv.get("_amounts") else None
@@ -458,7 +467,7 @@ def build_pair_index(invoice_docs: list[dict]) -> dict[int, dict]:
             title_amts.setdefault(amt, []).append((title, inv))
     for amt, entries in title_amts.items():
         for i, (t1, inv1) in enumerate(entries):
-            for t2, inv2 in entries[i+1:]:
+            for t2, inv2 in entries[i + 1 :]:
                 if inv1["id"] == inv2["id"]:
                     continue
                 if t1.startswith(t2) or t2.startswith(t1):
@@ -482,7 +491,7 @@ def build_pair_index(invoice_docs: list[dict]) -> dict[int, dict]:
     for abs_amt, entries in title_amts.items():
         neg_abs = round(abs(abs_amt), 2)
         for i, (t1, inv1) in enumerate(entries):
-            for t2, inv2 in entries[i+1:]:
+            for t2, inv2 in entries[i + 1 :]:
                 if inv1["id"] == inv2["id"]:
                     continue
                 if t1.startswith(t2) or t2.startswith(t1):
@@ -511,6 +520,7 @@ def build_pair_index(invoice_docs: list[dict]) -> dict[int, dict]:
 
 
 # ── Matching engine ───────────────────────────────────────────────────────
+
 
 def find_matching_invoice(
     amount: float,
@@ -545,7 +555,11 @@ def find_matching_invoice(
             if inv["id"] in _exclude:
                 continue
             amounts = inv["_amounts"]
-            if amounts and round(abs(amounts[0]), 2) == try_amount and signs_compatible(amounts[0]):
+            if (
+                amounts
+                and round(abs(amounts[0]), 2) == try_amount
+                and signs_compatible(amounts[0])
+            ):
                 return "OK", inv, True
 
     # Second pass: primary amount, any sign (invoices without signed amounts)
@@ -579,21 +593,41 @@ def find_matching_invoice(
 
 # ── Data collection ───────────────────────────────────────────────────────
 
-def collect_month(client: PaperlessClient, yyyy_mm: str,
-                  statement_type_id: int, total_amount_field_id: int | None,
-                  doc_cache: dict, invoicing_tag_id: int | None = None,
-                  global_matched_ids: set | None = None,
-                  total_amount_alt_field_id: int | None = None) -> dict:
+
+def collect_month(
+    client: PaperlessClient,
+    yyyy_mm: str,
+    statement_type_id: int,
+    total_amount_field_id: int | None,
+    doc_cache: dict,
+    invoicing_tag_id: int | None = None,
+    global_matched_ids: set | None = None,
+    total_amount_alt_field_id: int | None = None,
+) -> dict:
     """Process one month, return structured data."""
-    result = {"month": yyyy_mm, "header": "", "header_doc_id": None, "rows": [],
-              "stats": {"total": 0, "skipped": 0, "ok": 0, "manual": 0, "missing": 0, "info": 0}}
+    result = {
+        "month": yyyy_mm,
+        "header": "",
+        "header_doc_id": None,
+        "rows": [],
+        "stats": {
+            "total": 0,
+            "skipped": 0,
+            "ok": 0,
+            "manual": 0,
+            "missing": 0,
+            "info": 0,
+        },
+    }
 
     tag_id = client.get_tag_id(yyyy_mm)
     if tag_id is None:
         result["header"] = f"No tag found for {yyyy_mm}, skipping."
         return result
 
-    statements = client.get_documents(tags__id=tag_id, document_type__id=statement_type_id)
+    statements = client.get_documents(
+        tags__id=tag_id, document_type__id=statement_type_id
+    )
 
     # Fetch invoices for this month + window (only docs with "invoicing" tag)
     # Ordered oldest-first so older unclaimed invoices are matched before same-month.
@@ -606,7 +640,10 @@ def collect_month(client: PaperlessClient, yyyy_mm: str,
         if wm_tag_id not in doc_cache:
             doc_cache[wm_tag_id] = client.get_documents(tags__id=wm_tag_id)
         for doc in doc_cache[wm_tag_id]:
-            if doc["id"] not in seen_ids and doc.get("document_type") != statement_type_id:
+            if (
+                doc["id"] not in seen_ids
+                and doc.get("document_type") != statement_type_id
+            ):
                 if invoicing_tag_id is None or invoicing_tag_id in doc.get("tags", []):
                     seen_ids.add(doc["id"])
                     invoice_docs.append(doc)
@@ -617,12 +654,25 @@ def collect_month(client: PaperlessClient, yyyy_mm: str,
             total = None
             alt = None
             for cf in inv.get("custom_fields", []):
-                if total_amount_field_id and cf["field"] == total_amount_field_id and cf["value"] is not None:
+                if (
+                    total_amount_field_id
+                    and cf["field"] == total_amount_field_id
+                    and cf["value"] is not None
+                ):
                     total = round(float(cf["value"]), 2)
-                if total_amount_alt_field_id and cf["field"] == total_amount_alt_field_id and cf["value"] is not None:
+                if (
+                    total_amount_alt_field_id
+                    and cf["field"] == total_amount_alt_field_id
+                    and cf["value"] is not None
+                ):
                     alt = round(float(cf["value"]), 2)
-            inv["_amounts"] = [total] if total is not None else \
-                extract_invoice_amounts(inv.get("content", ""), year=int(yyyy_mm[:4]))
+            inv["_amounts"] = (
+                [total]
+                if total is not None
+                else extract_invoice_amounts(
+                    inv.get("content", ""), year=int(yyyy_mm[:4])
+                )
+            )
             inv["_alt_amount"] = alt
 
     stats = result["stats"]
@@ -640,11 +690,17 @@ def collect_month(client: PaperlessClient, yyyy_mm: str,
             stats["total"] += 1
             stats["manual"] += 1
             amt = inv["_amounts"][0] if inv.get("_amounts") else 0.0
-            result["rows"].append({
-                "date": "", "desc": inv["title"][:40].ljust(40),
-                "amount": f"{amt:>10.2f} ", "status": "pending",
-                "label": "PENDING", "detail": "no statement", "doc_id": inv["id"],
-            })
+            result["rows"].append(
+                {
+                    "date": "",
+                    "desc": inv["title"][:40].ljust(40),
+                    "amount": f"{amt:>10.2f} ",
+                    "status": "pending",
+                    "label": "PENDING",
+                    "detail": "no statement",
+                    "doc_id": inv["id"],
+                }
+            )
         return result
 
     matched_ids = set(global_matched_ids) if global_matched_ids is not None else set()
@@ -661,11 +717,21 @@ def collect_month(client: PaperlessClient, yyyy_mm: str,
             skip = skip_reason(mov)
             if skip:
                 stats["skipped"] += 1
-                result["rows"].append({"date": date_str, "desc": desc, "amount": amt_str,
-                                       "status": "skipped", "label": "SKIPPED", "detail": skip.label})
+                result["rows"].append(
+                    {
+                        "date": date_str,
+                        "desc": desc,
+                        "amount": amt_str,
+                        "status": "skipped",
+                        "label": "SKIPPED",
+                        "detail": skip.label,
+                    }
+                )
                 continue
 
-            status, matched, _ = find_matching_invoice(amt_val, invoice_docs, mov.get("orig_amount"), exclude_ids=matched_ids)
+            status, matched, _ = find_matching_invoice(
+                amt_val, invoice_docs, mov.get("orig_amount"), exclude_ids=matched_ids
+            )
             inv_title = matched["title"] if matched else ""
             doc_id = matched["id"] if matched else None
             if matched:
@@ -673,19 +739,47 @@ def collect_month(client: PaperlessClient, yyyy_mm: str,
 
             if status == "OK":
                 stats["ok"] += 1
-                result["rows"].append({"date": date_str, "desc": desc, "amount": amt_str,
-                                       "status": "ok", "label": "OK", "detail": inv_title, "doc_id": doc_id})
+                result["rows"].append(
+                    {
+                        "date": date_str,
+                        "desc": desc,
+                        "amount": amt_str,
+                        "status": "ok",
+                        "label": "OK",
+                        "detail": inv_title,
+                        "doc_id": doc_id,
+                    }
+                )
             elif status == "MANUAL CHECK":
                 stats["manual"] += 1
-                result["rows"].append({"date": date_str, "desc": desc, "amount": amt_str,
-                                       "status": "manual", "label": "MANUAL CHECK", "detail": inv_title, "doc_id": doc_id})
+                result["rows"].append(
+                    {
+                        "date": date_str,
+                        "desc": desc,
+                        "amount": amt_str,
+                        "status": "manual",
+                        "label": "MANUAL CHECK",
+                        "detail": inv_title,
+                        "doc_id": doc_id,
+                    }
+                )
             else:
                 stats["missing"] += 1
-                result["rows"].append({"date": date_str, "desc": desc, "amount": amt_str,
-                                       "status": "missing", "label": "MISSING INVOICE", "detail": ""})
+                result["rows"].append(
+                    {
+                        "date": date_str,
+                        "desc": desc,
+                        "amount": amt_str,
+                        "status": "missing",
+                        "label": "MISSING INVOICE",
+                        "detail": "",
+                    }
+                )
 
     # Alt-amount matching: invoices with total_amount_alt can match a second row
-    alt_invs = {inv["id"]: inv for inv in invoice_docs if inv.get("_alt_amount") is not None}
+    alt_invs = {
+        inv["id"]: inv for inv in invoice_docs if inv.get("_alt_amount") is not None
+    }
     if alt_invs:
         for row in result["rows"]:
             if row["status"] != "missing":
@@ -738,8 +832,11 @@ def collect_month(client: PaperlessClient, yyyy_mm: str,
 
     # Unmatched invoices tagged with this month
     unmatched = sorted(
-        [inv for inv in invoice_docs
-         if inv["id"] not in matched_ids and tag_id in inv.get("tags", [])],
+        [
+            inv
+            for inv in invoice_docs
+            if inv["id"] not in matched_ids and tag_id in inv.get("tags", [])
+        ],
         key=lambda d: d.get("original_file_name", d.get("title", "")),
     )
 
@@ -763,24 +860,38 @@ def collect_month(client: PaperlessClient, yyyy_mm: str,
         stats["info"] += 1
         amt = inv["_amounts"][0] if inv.get("_amounts") else 0.0
         if inv["id"] in cancelled_ids:
-            result["rows"].append({
-                "date": "", "desc": inv["title"][:40].ljust(40),
-                "amount": f"{amt:>10.2f} ", "status": "cancelled",
-                "label": "CANCELLED", "detail": "offset by credit note", "doc_id": inv["id"],
-            })
+            result["rows"].append(
+                {
+                    "date": "",
+                    "desc": inv["title"][:40].ljust(40),
+                    "amount": f"{amt:>10.2f} ",
+                    "status": "cancelled",
+                    "label": "CANCELLED",
+                    "detail": "offset by credit note",
+                    "doc_id": inv["id"],
+                }
+            )
         else:
-            result["rows"].append({
-                "date": "", "desc": inv["title"][:40].ljust(40),
-                "amount": f"{amt:>10.2f} ", "status": "info",
-                "label": "NEXT STATEMENT", "detail": "not in this statement", "doc_id": inv["id"],
-            })
+            result["rows"].append(
+                {
+                    "date": "",
+                    "desc": inv["title"][:40].ljust(40),
+                    "amount": f"{amt:>10.2f} ",
+                    "status": "info",
+                    "label": "NEXT STATEMENT",
+                    "detail": "not in this statement",
+                    "doc_id": inv["id"],
+                }
+            )
 
     # Enrich rows with paired document info
     for row in result["rows"]:
         doc_id = row.get("doc_id")
         if doc_id and doc_id in pair_map:
             paired = pair_map[doc_id]
-            matched_inv = next((inv for inv in invoice_docs if inv["id"] == doc_id), None)
+            matched_inv = next(
+                (inv for inv in invoice_docs if inv["id"] == doc_id), None
+            )
             if matched_inv:
                 row["paired_docs"] = [
                     {"title": matched_inv["title"], "doc_id": matched_inv["id"]},
@@ -838,10 +949,15 @@ def filter_resolved_unmatched(results: list[dict]) -> None:
 
 # ── P&L collection ────────────────────────────────────────────────────────
 
-def collect_pl(client: PaperlessClient, year: int,
-               statement_type_id: int, total_amount_field_id: int | None,
-               invoicing_tag_id: int | None,
-               total_amount_alt_field_id: int | None = None) -> dict:
+
+def collect_pl(
+    client: PaperlessClient,
+    year: int,
+    statement_type_id: int,
+    total_amount_field_id: int | None,
+    invoicing_tag_id: int | None,
+    total_amount_alt_field_id: int | None = None,
+) -> dict:
     """Collect P&L data for a given year.
 
     Returns dict with income, expenses (by category), excluded totals.
@@ -856,9 +972,16 @@ def collect_pl(client: PaperlessClient, year: int,
 
     # Process oldest-first: same-month invoices preferred over window invoices
     results = [
-        collect_month(client, m, statement_type_id, total_amount_field_id,
-                      doc_cache, invoicing_tag_id, global_matched_ids,
-                      total_amount_alt_field_id=total_amount_alt_field_id)
+        collect_month(
+            client,
+            m,
+            statement_type_id,
+            total_amount_field_id,
+            doc_cache,
+            invoicing_tag_id,
+            global_matched_ids,
+            total_amount_alt_field_id=total_amount_alt_field_id,
+        )
         for m in months
     ]
     filter_resolved_unmatched(results)
@@ -955,7 +1078,9 @@ def collect_pl(client: PaperlessClient, year: int,
                 inv_month = None
                 if doc_id:
                     inv_month = get_invoice_month(doc_id)
-                    attr_year = int(inv_month[:4]) if inv_month else int(statement_month[:4])
+                    attr_year = (
+                        int(inv_month[:4]) if inv_month else int(statement_month[:4])
+                    )
                     if attr_year != year:
                         continue
 
@@ -965,13 +1090,15 @@ def collect_pl(client: PaperlessClient, year: int,
                     vat_rate = 1.23 if attr_month >= "2025-01" else 1.20
                     net_amount = round(amount / vat_rate, 2)
                     income += net_amount
-                    income_items.append({
-                        "month": attr_month,
-                        "label": row.get("detail", "") or row["desc"].strip(),
-                        "amount": net_amount,
-                        "gross": round(amount, 2),
-                        "doc_id": doc_id,
-                    })
+                    income_items.append(
+                        {
+                            "month": attr_month,
+                            "label": row.get("detail", "") or row["desc"].strip(),
+                            "amount": net_amount,
+                            "gross": round(amount, 2),
+                            "doc_id": doc_id,
+                        }
+                    )
                 else:
                     expenses_by_category.setdefault("invoiced", 0.0)
                     expenses_by_category["invoiced"] += amount
@@ -1026,13 +1153,15 @@ def collect_pl(client: PaperlessClient, year: int,
             vat_rate = 1.23 if attr_month >= "2025-01" else 1.20
             net_amount = round(amount / vat_rate, 2)
             income += net_amount
-            income_items.append({
-                "month": attr_month,
-                "label": row["desc"].strip(),
-                "amount": net_amount,
-                "gross": round(amount, 2),
-                "doc_id": doc_id,
-            })
+            income_items.append(
+                {
+                    "month": attr_month,
+                    "label": row["desc"].strip(),
+                    "amount": net_amount,
+                    "gross": round(amount, 2),
+                    "doc_id": doc_id,
+                }
+            )
 
     total_expenses = sum(expenses_by_category.values())
 
@@ -1040,14 +1169,21 @@ def collect_pl(client: PaperlessClient, year: int,
         "year": year,
         "income": round(income, 2),
         "income_items": sorted(income_items, key=lambda x: (x["month"], -x["amount"])),
-        "expenses": {k: round(v, 2) for k, v in sorted(expenses_by_category.items(), key=lambda x: x[1])},
-        "expenses_detail": {k: {m: round(v, 2) for m, v in sorted(months.items())}
-                            for k, months in expenses_detail.items()},
+        "expenses": {
+            k: round(v, 2)
+            for k, v in sorted(expenses_by_category.items(), key=lambda x: x[1])
+        },
+        "expenses_detail": {
+            k: {m: round(v, 2) for m, v in sorted(months.items())}
+            for k, months in expenses_detail.items()
+        },
         "total_expenses": round(total_expenses, 2),
         "net_income": round(income + total_expenses, 2),
         "excluded": round(excluded, 2),
-        "excluded_detail": {k: {m: round(v, 2) for m, v in sorted(months.items())}
-                            for k, months in excluded_detail.items()},
+        "excluded_detail": {
+            k: {m: round(v, 2) for m, v in sorted(months.items())}
+            for k, months in excluded_detail.items()
+        },
     }
 
 
@@ -1066,6 +1202,7 @@ def _detail_to_pl_category(detail: str) -> PLCategory:
 
 
 # ── CLI output ────────────────────────────────────────────────────────────
+
 
 def print_results(results: list[dict]) -> None:
     """Print colored CLI output for all months."""
@@ -1105,20 +1242,31 @@ def print_results(results: list[dict]) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────
 
+
 def main():
     load_dotenv(Path(__file__).parent / ".env")
     # Also try parent .env if token not found
     if not os.getenv("PAPERLESS_API_TOKEN"):
         load_dotenv(Path(__file__).parent.parent / ".env")
 
+    if not PAPERLESS_URL:
+        print("Error: PAPERLESS_URL not set", file=sys.stderr)
+        sys.exit(1)
+
     token = os.getenv("PAPERLESS_API_TOKEN")
     if not token:
         print("Error: PAPERLESS_API_TOKEN not set in .env", file=sys.stderr)
         sys.exit(1)
 
-    parser = argparse.ArgumentParser(description="Match statement movements to invoices")
+    parser = argparse.ArgumentParser(
+        description="Match statement movements to invoices"
+    )
     parser.add_argument("--month", help="Process single month (YYYY-MM).")
-    parser.add_argument("--all", action="store_true", help="Process all months. Default: current + previous month.")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Process all months. Default: current + previous month.",
+    )
     args = parser.parse_args()
 
     client = PaperlessClient(PAPERLESS_URL, token)
@@ -1126,14 +1274,20 @@ def main():
 
     statement_type_id = client.get_document_type_id(DOCUMENT_TYPE_STATEMENT)
     if statement_type_id is None:
-        print(f"Error: document type '{DOCUMENT_TYPE_STATEMENT}' not found", file=sys.stderr)
+        print(
+            f"Error: document type '{DOCUMENT_TYPE_STATEMENT}' not found",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     total_amount_field_id = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     total_amount_alt_field_id = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
     invoicing_tag_id = client.get_tag_id(INVOICING_TAG_NAME)
     if invoicing_tag_id is None:
-        print(f"Warning: tag '{INVOICING_TAG_NAME}' not found, matching all documents", file=sys.stderr)
+        print(
+            f"Warning: tag '{INVOICING_TAG_NAME}' not found, matching all documents",
+            file=sys.stderr,
+        )
 
     if args.month:
         months = [args.month]
@@ -1147,6 +1301,7 @@ def main():
                 if re.match(r"\d{4}-\d{2}$", name):
                     month_tags.add(name)
         from datetime import date
+
         today = date.today()
         month_tags.add(f"{today.year:04d}-{today.month:02d}")
         months = sorted(month_tags)
@@ -1154,6 +1309,7 @@ def main():
         # Default: 2 months back + previous + current
         # Current month likely has no statement yet (invoices shown as pending)
         from datetime import date
+
         today = date.today()
         current = f"{today.year:04d}-{today.month:02d}"
         previous = month_offset(current, -1)
@@ -1175,13 +1331,31 @@ def main():
     # months' invoices when they share the same amount.
     if not args.all:
         for i in range(MONTH_WINDOW, 0, -1):
-            collect_month(client, month_offset(months[0], -i), statement_type_id,
-                          total_amount_field_id, doc_cache, invoicing_tag_id,
-                          global_matched_ids,
-                          total_amount_alt_field_id=total_amount_alt_field_id)
+            collect_month(
+                client,
+                month_offset(months[0], -i),
+                statement_type_id,
+                total_amount_field_id,
+                doc_cache,
+                invoicing_tag_id,
+                global_matched_ids,
+                total_amount_alt_field_id=total_amount_alt_field_id,
+            )
     # Process oldest-first: same-month invoices are preferred, so older months
     # claim their own invoices before newer months can steal them via window.
-    results = [collect_month(client, m, statement_type_id, total_amount_field_id, doc_cache, invoicing_tag_id, global_matched_ids, total_amount_alt_field_id=total_amount_alt_field_id) for m in months]
+    results = [
+        collect_month(
+            client,
+            m,
+            statement_type_id,
+            total_amount_field_id,
+            doc_cache,
+            invoicing_tag_id,
+            global_matched_ids,
+            total_amount_alt_field_id=total_amount_alt_field_id,
+        )
+        for m in months
+    ]
     filter_resolved_unmatched(results)
 
     totals = {"total": 0, "skipped": 0, "ok": 0, "manual": 0, "missing": 0, "info": 0}
@@ -1192,13 +1366,15 @@ def main():
     print_results(results)
 
     CYAN = "\033[36m"
-    print(f"\n{BOLD}{'='*70}")
-    print(f"TOTAL: {totals['total']} movements, "
-          f"{DIM}{totals['skipped']} skipped{RESET}{BOLD}, "
-          f"{GREEN}{totals['ok']} OK{RESET}{BOLD}, "
-          f"{YELLOW}{totals['manual']} MANUAL CHECK{RESET}{BOLD}, "
-          f"{RED}{totals['missing']} MISSING INVOICE{RESET}{BOLD}, "
-          f"{CYAN}{totals['info']} NEXT STATEMENT{RESET}")
+    print(f"\n{BOLD}{'=' * 70}")
+    print(
+        f"TOTAL: {totals['total']} movements, "
+        f"{DIM}{totals['skipped']} skipped{RESET}{BOLD}, "
+        f"{GREEN}{totals['ok']} OK{RESET}{BOLD}, "
+        f"{YELLOW}{totals['manual']} MANUAL CHECK{RESET}{BOLD}, "
+        f"{RED}{totals['missing']} MISSING INVOICE{RESET}{BOLD}, "
+        f"{CYAN}{totals['info']} NEXT STATEMENT{RESET}"
+    )
 
 
 if __name__ == "__main__":

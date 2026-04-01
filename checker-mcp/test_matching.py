@@ -5,10 +5,14 @@ Run: python -m pytest test_matching.py -v
 """
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from match_invoices import (
     MONTH_WINDOW,
+    PLCategory,
+    SKIP_ACCOUNT_RULES,
+    SkipReason,
+    SkipRule,
     build_pair_index,
     collect_month,
     collect_pl,
@@ -128,14 +132,23 @@ def _mock_client(documents_by_tag):
     return client
 
 
-def _collect(client, month, invoicing_tag_id=TAG_IDS["invoicing"],
-             doc_cache=None, global_matched_ids=None,
-             alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID):
+def _collect(
+    client,
+    month,
+    invoicing_tag_id=TAG_IDS["invoicing"],
+    doc_cache=None,
+    global_matched_ids=None,
+    alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID,
+):
     """Shorthand for collect_month with defaults."""
     return collect_month(
-        client, month, STATEMENT_TYPE_ID, TOTAL_AMOUNT_FIELD_ID,
+        client,
+        month,
+        STATEMENT_TYPE_ID,
+        TOTAL_AMOUNT_FIELD_ID,
         doc_cache if doc_cache is not None else {},
-        invoicing_tag_id, global_matched_ids,
+        invoicing_tag_id,
+        global_matched_ids,
         total_amount_alt_field_id=alt_field_id,
     )
 
@@ -145,9 +158,16 @@ def _process_months(client, months, invoicing_tag_id=TAG_IDS["invoicing"]):
     doc_cache = {}
     global_matched_ids = set()
     results = [
-        collect_month(client, m, STATEMENT_TYPE_ID, TOTAL_AMOUNT_FIELD_ID,
-                      doc_cache, invoicing_tag_id, global_matched_ids,
-                      total_amount_alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID)
+        collect_month(
+            client,
+            m,
+            STATEMENT_TYPE_ID,
+            TOTAL_AMOUNT_FIELD_ID,
+            doc_cache,
+            invoicing_tag_id,
+            global_matched_ids,
+            total_amount_alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID,
+        )
         for m in months
     ]
     filter_resolved_unmatched(results)
@@ -164,14 +184,27 @@ def _process_months_with_warmup(client, months, invoicing_tag_id=TAG_IDS["invoic
     doc_cache = {}
     global_matched_ids = set()
     for i in range(MONTH_WINDOW, 0, -1):
-        collect_month(client, month_offset(months[0], -i), STATEMENT_TYPE_ID,
-                      TOTAL_AMOUNT_FIELD_ID, doc_cache, invoicing_tag_id,
-                      global_matched_ids,
-                      total_amount_alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID)
+        collect_month(
+            client,
+            month_offset(months[0], -i),
+            STATEMENT_TYPE_ID,
+            TOTAL_AMOUNT_FIELD_ID,
+            doc_cache,
+            invoicing_tag_id,
+            global_matched_ids,
+            total_amount_alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID,
+        )
     results = [
-        collect_month(client, m, STATEMENT_TYPE_ID, TOTAL_AMOUNT_FIELD_ID,
-                      doc_cache, invoicing_tag_id, global_matched_ids,
-                      total_amount_alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID)
+        collect_month(
+            client,
+            m,
+            STATEMENT_TYPE_ID,
+            TOTAL_AMOUNT_FIELD_ID,
+            doc_cache,
+            invoicing_tag_id,
+            global_matched_ids,
+            total_amount_alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID,
+        )
         for m in months
     ]
     filter_resolved_unmatched(results)
@@ -322,10 +355,7 @@ class TestParseMovements:
         assert movs[0]["amount"] == 1500.00
 
     def test_multiple_movements(self):
-        content = (
-            "08.01.2026 First  70.07-\n----\n"
-            "09.01.2026 Second  100.00\n----"
-        )
+        content = "08.01.2026 First  70.07-\n----\n09.01.2026 Second  100.00\n----"
         movs = parse_movements(content)
         assert len(movs) == 2
         assert movs[0]["amount"] == -70.07
@@ -343,7 +373,7 @@ class TestParseMovements:
             "----\n"
             "Posledný výpis 28.02.2025  3,479.62\n"
             "04.03.2025 EUR NÁVRAT POS 01.03.2025  69.47\n"
-            "Číslo karty: 423473******9376\n"
+            "Číslo karty: 400000******1234\n"
             "----\n"
             "04.03.2025 EUR NÁKUP POS  69.47-\n"
             "----"
@@ -411,10 +441,14 @@ class TestSkipReason:
         assert skip_reason(mov) is not None
 
     def test_payroll_account(self):
-        mov = {"raw_block": "Prevod na účet 2938452410"}
-        result = skip_reason(mov)
-        assert result is not None
-        assert result.reason.name == "PAYROLL"
+        rules_with_acct = [
+            SkipRule("1234567890", SkipReason.PAYROLL, PLCategory.EXPENSE),
+        ] + SKIP_ACCOUNT_RULES
+        with patch("match_invoices.SKIP_ACCOUNT_RULES", rules_with_acct):
+            mov = {"raw_block": "Prevod na účet 1234567890"}
+            result = skip_reason(mov)
+            assert result is not None
+            assert result.reason.name == "PAYROLL"
 
     def test_account_rules_exact_match(self):
         """Account rules are exact (not case-insensitive)."""
@@ -427,7 +461,7 @@ class TestSkipReason:
 
     def test_dividend_before_personal_account(self):
         """Dividend rules must match before personal account rules (order matters)."""
-        mov = {"raw_block": "Výplata podielu na zisku 2938452410"}
+        mov = {"raw_block": "Výplata podielu na zisku 1234567890"}
         result = skip_reason(mov)
         assert result.reason.name == "DIVIDEND"
 
@@ -504,7 +538,7 @@ class TestFindMatchingInvoice:
 
     def test_sign_aware_prefers_compatible(self):
         """Pass 1 (sign-compatible) beats pass 2 (any sign)."""
-        inv_pos = self._inv(1, 100.00)   # positive = correct for debit
+        inv_pos = self._inv(1, 100.00)  # positive = correct for debit
         inv_neg = self._inv(2, -100.00)  # negative = wrong sign for debit
         _, matched, _ = find_matching_invoice(-100.00, [inv_neg, inv_pos])
         assert matched["id"] == 1  # pos invoice chosen over neg
@@ -608,57 +642,81 @@ class TestCollectMonthBasicMatching:
     """Basic single-month matching scenarios."""
 
     def test_single_movement_matched_ok(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "POS purchase", -70.07),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "POS purchase", -70.07),
+            ),
+        )
         inv = _make_invoice(1, "inv_shop", "inv_shop.pdf", "2026-01", 70.07)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["ok"] == 1
         assert result["rows"][0]["status"] == "ok"
         assert result["rows"][0]["doc_id"] == 1
 
     def test_multiple_movements_matched(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Purchase A", -50.00),
-            ("09.01.2026", "Purchase B", -100.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase A", -50.00),
+                ("09.01.2026", "Purchase B", -100.00),
+            ),
+        )
         inv_a = _make_invoice(1, "inv_a", "inv_a.pdf", "2026-01", 50.00)
         inv_b = _make_invoice(2, "inv_b", "inv_b.pdf", "2026-01", 100.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv_a, inv_b],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv_a, inv_b],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["ok"] == 2
 
     def test_missing_invoice(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Unmatched purchase", -99.99),
-        ))
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt],
-            TAG_IDS["2026-02"]: [],
-        })
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Unmatched purchase", -99.99),
+            ),
+        )
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["missing"] == 1
         assert result["rows"][0]["status"] == "missing"
 
     def test_skipped_movement(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Transakčná daň za obdobie", -5.00),
-        ))
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt],
-            TAG_IDS["2026-02"]: [],
-        })
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Transakčná daň za obdobie", -5.00),
+            ),
+        )
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["skipped"] == 1
         assert result["rows"][0]["status"] == "skipped"
@@ -666,17 +724,20 @@ class TestCollectMonthBasicMatching:
     def test_no_tag_found(self):
         client = MagicMock()
         client.get_tag_id.return_value = None
-        result = collect_month(client, "2099-01", STATEMENT_TYPE_ID,
-                               TOTAL_AMOUNT_FIELD_ID, {})
+        result = collect_month(
+            client, "2099-01", STATEMENT_TYPE_ID, TOTAL_AMOUNT_FIELD_ID, {}
+        )
         assert "No tag found" in result["header"]
         assert result["rows"] == []
 
     def test_no_statement_or_invoices(self):
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert "No statement or invoices" in result["header"]
 
@@ -686,11 +747,13 @@ class TestCollectMonthPending:
 
     def test_invoices_shown_as_pending(self):
         inv = _make_invoice(1, "inv_pending", "inv.pdf", "2026-01", 50.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["manual"] == 1
         assert result["rows"][0]["status"] == "pending"
@@ -700,12 +763,14 @@ class TestCollectMonthPending:
         """Invoice from window month shouldn't show as pending in current month."""
         inv_jan = _make_invoice(1, "jan_inv", "jan.pdf", "2026-01", 50.00)
         inv_feb = _make_invoice(2, "feb_inv", "feb.pdf", "2026-02", 80.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [inv_jan],
-            TAG_IDS["2026-02"]: [inv_feb],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [inv_jan],
+                TAG_IDS["2026-02"]: [inv_feb],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         # Feb has no statement — should only show feb_inv as pending, not jan_inv
         result = _collect(client, "2026-02")
         assert len(result["rows"]) == 1
@@ -716,30 +781,42 @@ class TestCollectMonthCancelledMovements:
     """Cancelled movement pairs: +X and -X both MISSING → CANCELLED."""
 
     def test_opposite_missing_movements_cancel(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Charge", -50.00),
-            ("09.01.2026", "Reversal", 50.00),
-        ))
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt],
-            TAG_IDS["2026-02"]: [],
-        })
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Charge", -50.00),
+                ("09.01.2026", "Reversal", 50.00),
+            ),
+        )
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         cancelled = [r for r in result["rows"] if r["status"] == "cancelled"]
         assert len(cancelled) == 2
         assert result["stats"]["missing"] == 0
 
     def test_non_matching_amounts_not_cancelled(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Charge", -50.00),
-            ("09.01.2026", "Different", 60.00),
-        ))
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt],
-            TAG_IDS["2026-02"]: [],
-        })
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Charge", -50.00),
+                ("09.01.2026", "Different", 60.00),
+            ),
+        )
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["missing"] == 2
         cancelled = [r for r in result["rows"] if r["status"] == "cancelled"]
@@ -750,17 +827,23 @@ class TestCollectMonthCancelledInvoices:
     """Cancelled invoice pairs: unmatched positive + negative invoices → CANCELLED."""
 
     def test_unmatched_invoice_and_credit_note_cancel(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Some purchase", -30.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Some purchase", -30.00),
+            ),
+        )
         inv_purchase = _make_invoice(1, "inv_purchase", "inv.pdf", "2026-01", 30.00)
         inv_pos = _make_invoice(10, "inv_pos", "inv_pos.pdf", "2026-01", 200.00)
         inv_neg = _make_invoice(11, "dobropis", "dobropis.pdf", "2026-01", -200.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv_purchase, inv_pos, inv_neg],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv_purchase, inv_pos, inv_neg],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         cancelled = [r for r in result["rows"] if r["status"] == "cancelled"]
         cancelled_ids = {r["doc_id"] for r in cancelled}
@@ -771,16 +854,22 @@ class TestCollectMonthUnmatchedInvoices:
     """Unmatched invoices → NEXT STATEMENT."""
 
     def test_unmatched_invoice_shown_as_next_statement(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Purchase", -50.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase", -50.00),
+            ),
+        )
         inv_matched = _make_invoice(1, "inv_matched", "m.pdf", "2026-01", 50.00)
         inv_extra = _make_invoice(2, "inv_extra", "e.pdf", "2026-01", 999.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv_matched, inv_extra],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv_matched, inv_extra],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         info_rows = [r for r in result["rows"] if r["status"] == "info"]
         assert len(info_rows) == 1
@@ -788,17 +877,23 @@ class TestCollectMonthUnmatchedInvoices:
 
     def test_unmatched_only_for_current_month_tag(self):
         """Invoices from window months don't show as unmatched for current month."""
-        stmt = _make_statement(900, "2026-02", _stmt(
-            ("08.02.2026", "Purchase", -50.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-02",
+            _stmt(
+                ("08.02.2026", "Purchase", -50.00),
+            ),
+        )
         inv_matched = _make_invoice(1, "inv", "inv.pdf", "2026-02", 50.00)
         # This invoice is tagged 2026-01 — in Feb's window but not Feb's month
         inv_jan = _make_invoice(2, "jan_extra", "j.pdf", "2026-01", 888.00)
-        client = _mock_client({
-            TAG_IDS["2026-01"]: [inv_jan],
-            TAG_IDS["2026-02"]: [stmt, inv_matched],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2026-01"]: [inv_jan],
+                TAG_IDS["2026-02"]: [stmt, inv_matched],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         result = _collect(client, "2026-02")
         info_rows = [r for r in result["rows"] if r["status"] == "info"]
         assert len(info_rows) == 0
@@ -809,32 +904,44 @@ class TestCollectMonthCrossWindowMatching:
 
     def test_invoice_from_previous_month_matches(self):
         """Invoice tagged Dec matches Jan movement (within window)."""
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("05.01.2026", "Late payment", -120.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("05.01.2026", "Late payment", -120.00),
+            ),
+        )
         inv_dec = _make_invoice(1, "dec_invoice", "dec.pdf", "2025-12", 120.00)
-        client = _mock_client({
-            TAG_IDS["2025-11"]: [],
-            TAG_IDS["2025-12"]: [inv_dec],
-            TAG_IDS["2026-01"]: [stmt],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-11"]: [],
+                TAG_IDS["2025-12"]: [inv_dec],
+                TAG_IDS["2026-01"]: [stmt],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["ok"] == 1
         assert result["rows"][0]["doc_id"] == 1
 
     def test_invoice_from_next_month_matches(self):
         """Invoice tagged Feb matches Jan movement (within window)."""
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("28.01.2026", "Early invoice", -80.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("28.01.2026", "Early invoice", -80.00),
+            ),
+        )
         inv_feb = _make_invoice(1, "feb_invoice", "feb.pdf", "2026-02", 80.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt],
-            TAG_IDS["2026-02"]: [inv_feb],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt],
+                TAG_IDS["2026-02"]: [inv_feb],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["ok"] == 1
 
@@ -843,31 +950,44 @@ class TestCollectMonthAmountSources:
     """Amount extraction: custom field vs regex from content."""
 
     def test_custom_field_preferred(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Purchase", -50.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase", -50.00),
+            ),
+        )
         inv = _make_invoice(1, "inv", "inv.pdf", "2026-01", 50.00)
         # Also put a different amount in content to verify field wins
         inv["content"] = "Total: 99.99 EUR"
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["ok"] == 1
 
     def test_regex_fallback_when_no_field(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Purchase", -75.50),
-        ))
-        inv = _make_invoice_no_field(1, "inv", "inv.pdf", "2026-01",
-                                     "Celkom k úhrade: 75,50 EUR")
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase", -75.50),
+            ),
+        )
+        inv = _make_invoice_no_field(
+            1, "inv", "inv.pdf", "2026-01", "Celkom k úhrade: 75,50 EUR"
+        )
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["ok"] == 1
 
@@ -876,17 +996,23 @@ class TestCollectMonthInvoicingTagFilter:
     """Only documents with the 'invoicing' tag should participate."""
 
     def test_doc_without_invoicing_tag_excluded(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Purchase", -50.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase", -50.00),
+            ),
+        )
         inv = _make_invoice(1, "inv", "inv.pdf", "2026-01", 50.00)
         # Remove the invoicing tag
         inv["tags"] = [TAG_IDS["2026-01"]]
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["missing"] == 1
 
@@ -895,16 +1021,24 @@ class TestCollectMonthPairedDocsEnrichment:
     """Rows matched to paired invoices show both docs."""
 
     def test_paired_docs_shown(self):
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Purchase", -90.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase", -90.00),
+            ),
+        )
         fa = _make_invoice(1, "20260106_fa", "20260106_fa.pdf", "2026-01", 90.00)
-        doklad = _make_invoice(2, "20260106_doklad", "20260106_doklad.pdf", "2026-01", 90.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, fa, doklad],
-            TAG_IDS["2026-02"]: [],
-        })
+        doklad = _make_invoice(
+            2, "20260106_doklad", "20260106_doklad.pdf", "2026-01", 90.00
+        )
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, fa, doklad],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         ok_row = result["rows"][0]
         assert ok_row["status"] == "ok"
@@ -918,19 +1052,29 @@ class TestCollectMonthGlobalMatchedIds:
 
     def test_invoice_not_rematched_in_second_month(self):
         """Same-amount movements in two months: invoice matched once."""
-        jan_stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Purchase", -50.00),
-        ))
-        feb_stmt = _make_statement(901, "2026-02", _stmt(
-            ("08.02.2026", "Purchase", -50.00),
-        ))
+        jan_stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase", -50.00),
+            ),
+        )
+        feb_stmt = _make_statement(
+            901,
+            "2026-02",
+            _stmt(
+                ("08.02.2026", "Purchase", -50.00),
+            ),
+        )
         inv = _make_invoice(1, "inv", "inv.pdf", "2026-01", 50.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [jan_stmt, inv],
-            TAG_IDS["2026-02"]: [feb_stmt],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [jan_stmt, inv],
+                TAG_IDS["2026-02"]: [feb_stmt],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         results = _process_months(client, ["2026-01", "2026-02"])
         all_matched = []
         for r in results:
@@ -941,15 +1085,21 @@ class TestCollectMonthGlobalMatchedIds:
 
     def test_global_ids_propagated(self):
         """After processing, global_matched_ids contains all matched doc IDs."""
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Purchase", -50.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase", -50.00),
+            ),
+        )
         inv = _make_invoice(1, "inv", "inv.pdf", "2026-01", 50.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         global_ids = set()
         _collect(client, "2026-01", global_matched_ids=global_ids)
         assert 1 in global_ids
@@ -960,16 +1110,24 @@ class TestAltAmountMatching:
 
     def test_invoice_matches_both_primary_and_alt_amount(self):
         """Invoice paid in two parts (card + transfer) matches both rows."""
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "EUR NÁKUP POS", -165.24),
-            ("08.01.2026", "EUR NÁKUP POS", -6.26),
-        ))
-        inv = _make_invoice_alt(244, "fa_hotel", "fa_hotel.pdf", "2026-01", 165.24, 6.26)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "EUR NÁKUP POS", -165.24),
+                ("08.01.2026", "EUR NÁKUP POS", -6.26),
+            ),
+        )
+        inv = _make_invoice_alt(
+            244, "fa_hotel", "fa_hotel.pdf", "2026-01", 165.24, 6.26
+        )
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         ok_rows = [r for r in result["rows"] if r["status"] == "ok"]
         assert len(ok_rows) == 2, f"Both amounts should match, got {result['stats']}"
@@ -978,19 +1136,31 @@ class TestAltAmountMatching:
 
     def test_alt_amount_matches_across_months(self):
         """Primary matched in Aug, alt amount matched in Sep (cross-month)."""
-        aug_stmt = _make_statement(900, "2026-01", _stmt(
-            ("22.01.2026", "EUR NÁKUP POS", -165.24),
-        ))
-        sep_stmt = _make_statement(901, "2026-02", _stmt(
-            ("01.02.2026", "EUR NÁKUP POS", -6.26),
-        ))
-        inv = _make_invoice_alt(244, "fa_hotel", "fa_hotel.pdf", "2026-01", 165.24, 6.26)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [aug_stmt, inv],
-            TAG_IDS["2026-02"]: [sep_stmt],
-            TAG_IDS["2026-03"]: [],
-        })
+        aug_stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("22.01.2026", "EUR NÁKUP POS", -165.24),
+            ),
+        )
+        sep_stmt = _make_statement(
+            901,
+            "2026-02",
+            _stmt(
+                ("01.02.2026", "EUR NÁKUP POS", -6.26),
+            ),
+        )
+        inv = _make_invoice_alt(
+            244, "fa_hotel", "fa_hotel.pdf", "2026-01", 165.24, 6.26
+        )
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [aug_stmt, inv],
+                TAG_IDS["2026-02"]: [sep_stmt],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         results = _process_months(client, ["2026-01", "2026-02"])
         jan_ok = [r for r in results[0]["rows"] if r["status"] == "ok"]
         feb_ok = [r for r in results[1]["rows"] if r["status"] == "ok"]
@@ -999,16 +1169,22 @@ class TestAltAmountMatching:
 
     def test_invoice_without_alt_still_matches_once(self):
         """Normal invoice (no alt) should still only match one row."""
-        stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Purchase A", -50.00),
-            ("09.01.2026", "Purchase B", -50.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase A", -50.00),
+                ("09.01.2026", "Purchase B", -50.00),
+            ),
+        )
         inv = _make_invoice(1, "inv", "inv.pdf", "2026-01", 50.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["ok"] == 1
         assert result["stats"]["missing"] == 1
@@ -1018,18 +1194,16 @@ class TestCollectMonthForeignCurrency:
     """Foreign currency orig_amount matching."""
 
     def test_orig_amount_matches(self):
-        content = (
-            "08.01.2026 INT NÁKUP POS EUR  90.00-\n"
-            "Orig. suma: 100.00- CZK\n"
-            "----"
-        )
+        content = "08.01.2026 INT NÁKUP POS EUR  90.00-\nOrig. suma: 100.00- CZK\n----"
         stmt = _make_statement(900, "2026-01", content)
         inv = _make_invoice(1, "inv_czk", "inv.pdf", "2026-01", 100.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         assert result["stats"]["ok"] == 1
 
@@ -1052,25 +1226,45 @@ class TestOlderInvoicePreference:
 
         With oldest-first, each month claims its own invoice before later months see it.
         """
-        dec_stmt = _make_statement(898, "2025-12", _stmt(
-            ("09.12.2025", "INT NÁKUP POS EUR", -90.00),
-        ))
-        jan_stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "INT NÁKUP POS EUR", -90.00),
-        ))
-        feb_stmt = _make_statement(901, "2026-02", _stmt(
-            ("09.02.2026", "INT NÁKUP POS EUR", -90.00),
-        ))
-        dec_inv = _make_invoice(10, "202512_fa_sw", "202512_fa_sw.pdf", "2025-12", 90.00)
-        jan_inv = _make_invoice(20, "20260106_fa_ai", "20260106_fa_ai.pdf", "2026-01", 90.00)
-        feb_inv = _make_invoice(30, "20260205_fa_ai", "20260205_fa_ai.pdf", "2026-02", 90.00)
-        client = _mock_client({
-            TAG_IDS["2025-11"]: [],
-            TAG_IDS["2025-12"]: [dec_stmt, dec_inv],
-            TAG_IDS["2026-01"]: [jan_stmt, jan_inv],
-            TAG_IDS["2026-02"]: [feb_stmt, feb_inv],
-            TAG_IDS["2026-03"]: [],
-        })
+        dec_stmt = _make_statement(
+            898,
+            "2025-12",
+            _stmt(
+                ("09.12.2025", "INT NÁKUP POS EUR", -90.00),
+            ),
+        )
+        jan_stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "INT NÁKUP POS EUR", -90.00),
+            ),
+        )
+        feb_stmt = _make_statement(
+            901,
+            "2026-02",
+            _stmt(
+                ("09.02.2026", "INT NÁKUP POS EUR", -90.00),
+            ),
+        )
+        dec_inv = _make_invoice(
+            10, "202512_fa_sw", "202512_fa_sw.pdf", "2025-12", 90.00
+        )
+        jan_inv = _make_invoice(
+            20, "20260106_fa_ai", "20260106_fa_ai.pdf", "2026-01", 90.00
+        )
+        feb_inv = _make_invoice(
+            30, "20260205_fa_ai", "20260205_fa_ai.pdf", "2026-02", 90.00
+        )
+        client = _mock_client(
+            {
+                TAG_IDS["2025-11"]: [],
+                TAG_IDS["2025-12"]: [dec_stmt, dec_inv],
+                TAG_IDS["2026-01"]: [jan_stmt, jan_inv],
+                TAG_IDS["2026-02"]: [feb_stmt, feb_inv],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         results = _process_months(client, ["2025-12", "2026-01", "2026-02"])
         dec_matched = _matched_doc_ids(results[0])
         jan_matched = _matched_doc_ids(results[1])
@@ -1085,58 +1279,87 @@ class TestOlderInvoicePreference:
         Feb payment should match Jan's older unclaimed invoice.
         Feb's own invoice should be NEXT STATEMENT (awaiting March payment).
         """
-        jan_stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Different purchase", -50.00),
-        ))
-        feb_stmt = _make_statement(901, "2026-02", _stmt(
-            ("08.02.2026", "Recurring payment", -90.00),
-        ))
+        jan_stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Different purchase", -50.00),
+            ),
+        )
+        feb_stmt = _make_statement(
+            901,
+            "2026-02",
+            _stmt(
+                ("08.02.2026", "Recurring payment", -90.00),
+            ),
+        )
         jan_inv = _make_invoice(1, "jan_recurring", "jan.pdf", "2026-01", 90.00)
         feb_inv = _make_invoice(2, "feb_recurring", "feb.pdf", "2026-02", 90.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [jan_stmt, jan_inv],
-            TAG_IDS["2026-02"]: [feb_stmt, feb_inv],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [jan_stmt, jan_inv],
+                TAG_IDS["2026-02"]: [feb_stmt, feb_inv],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         results = _process_months(client, ["2026-01", "2026-02"])
         feb_matched = _matched_doc_ids(results[1])
-        assert 1 in feb_matched, "Feb should match Jan's unclaimed invoice (older first)"
+        assert 1 in feb_matched, (
+            "Feb should match Jan's unclaimed invoice (older first)"
+        )
         # Feb's own invoice should be unmatched (awaiting March)
         feb_info = [r for r in results[1]["rows"] if r.get("doc_id") == 2]
-        assert any(r["status"] in ("info", "unaccounted") for r in feb_info), \
+        assert any(r["status"] in ("info", "unaccounted") for r in feb_info), (
             "Feb's own invoice should be NEXT STATEMENT"
+        )
 
     def test_window_invoice_used_when_no_same_month_match(self):
         """If no same-month invoice matches, window invoice should still work."""
-        stmt = _make_statement(900, "2026-02", _stmt(
-            ("08.02.2026", "Purchase", -90.00),
-        ))
+        stmt = _make_statement(
+            900,
+            "2026-02",
+            _stmt(
+                ("08.02.2026", "Purchase", -90.00),
+            ),
+        )
         jan_inv = _make_invoice(1, "jan_inv", "jan.pdf", "2026-01", 90.00)
-        client = _mock_client({
-            TAG_IDS["2026-01"]: [jan_inv],
-            TAG_IDS["2026-02"]: [stmt],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2026-01"]: [jan_inv],
+                TAG_IDS["2026-02"]: [stmt],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         result = _collect(client, "2026-02")
         assert result["stats"]["ok"] == 1
         assert result["rows"][0]["doc_id"] == 1
 
     def test_jan_claims_own_then_feb_missing(self):
         """Jan has payment + invoice. Feb has same-amount payment but no invoice → MISSING."""
-        jan_stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Purchase", -90.00),
-        ))
-        feb_stmt = _make_statement(901, "2026-02", _stmt(
-            ("08.02.2026", "Purchase", -90.00),
-        ))
+        jan_stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase", -90.00),
+            ),
+        )
+        feb_stmt = _make_statement(
+            901,
+            "2026-02",
+            _stmt(
+                ("08.02.2026", "Purchase", -90.00),
+            ),
+        )
         jan_inv = _make_invoice(1, "jan_inv", "jan.pdf", "2026-01", 90.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [jan_stmt, jan_inv],
-            TAG_IDS["2026-02"]: [feb_stmt],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [jan_stmt, jan_inv],
+                TAG_IDS["2026-02"]: [feb_stmt],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         results = _process_months(client, ["2026-01", "2026-02"])
         jan_matched = _matched_doc_ids(results[0])
         assert 1 in jan_matched, "Jan should claim its own invoice"
@@ -1149,14 +1372,26 @@ class TestPairedInvoiceDoubleMatching:
 
     @pytest.fixture()
     def setup(self):
-        jan_stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "INT NÁKUP POS EUR", -90.00),
-        ))
-        feb_stmt = _make_statement(901, "2026-02", _stmt(
-            ("09.02.2026", "INT NÁKUP POS EUR", -90.00),
-        ))
-        fa = _make_invoice(322, "20260106_fa_ai", "20260106_fa_ai.pdf", "2026-01", 90.00)
-        doklad = _make_invoice(332, "20260106_doklad_ai", "20260106_doklad_ai.pdf", "2026-01", 90.00)
+        jan_stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "INT NÁKUP POS EUR", -90.00),
+            ),
+        )
+        feb_stmt = _make_statement(
+            901,
+            "2026-02",
+            _stmt(
+                ("09.02.2026", "INT NÁKUP POS EUR", -90.00),
+            ),
+        )
+        fa = _make_invoice(
+            322, "20260106_fa_ai", "20260106_fa_ai.pdf", "2026-01", 90.00
+        )
+        doklad = _make_invoice(
+            332, "20260106_doklad_ai", "20260106_doklad_ai.pdf", "2026-01", 90.00
+        )
         docs = {
             TAG_IDS["2025-12"]: [],
             TAG_IDS["2026-01"]: [jan_stmt, fa, doklad],
@@ -1185,8 +1420,11 @@ class TestPairedInvoiceDoubleMatching:
         results = _process_months(client, ["2026-01", "2026-02"])
         doc_ids = [
             row["doc_id"]
-            for r in results for row in r["rows"]
-            if row["status"] in ("ok", "manual") and row.get("date") and row.get("doc_id")
+            for r in results
+            for row in r["rows"]
+            if row["status"] in ("ok", "manual")
+            and row.get("date")
+            and row.get("doc_id")
         ]
         assert len(doc_ids) == len(set(doc_ids))
 
@@ -1196,25 +1434,54 @@ class TestFilterResolvedUnmatched:
 
     def _make_results(self, jan_rows, feb_rows, jan_header_doc=900, feb_header_doc=901):
         return [
-            {"month": "2026-01", "header_doc_id": jan_header_doc,
-             "rows": jan_rows,
-             "stats": {"total": len(jan_rows), "skipped": 0, "ok": 0, "manual": 0,
-                        "missing": 0, "info": sum(1 for r in jan_rows if r["status"] == "info")}},
-            {"month": "2026-02", "header_doc_id": feb_header_doc,
-             "rows": feb_rows,
-             "stats": {"total": len(feb_rows), "skipped": 0, "ok": 0, "manual": 0,
-                        "missing": 0, "info": sum(1 for r in feb_rows if r["status"] == "info")}},
+            {
+                "month": "2026-01",
+                "header_doc_id": jan_header_doc,
+                "rows": jan_rows,
+                "stats": {
+                    "total": len(jan_rows),
+                    "skipped": 0,
+                    "ok": 0,
+                    "manual": 0,
+                    "missing": 0,
+                    "info": sum(1 for r in jan_rows if r["status"] == "info"),
+                },
+            },
+            {
+                "month": "2026-02",
+                "header_doc_id": feb_header_doc,
+                "rows": feb_rows,
+                "stats": {
+                    "total": len(feb_rows),
+                    "skipped": 0,
+                    "ok": 0,
+                    "manual": 0,
+                    "missing": 0,
+                    "info": sum(1 for r in feb_rows if r["status"] == "info"),
+                },
+            },
         ]
 
     def test_resolved_in_next_month_removed(self):
         """Invoice unmatched in Jan, matched in Feb → removed from Jan."""
         jan_rows = [
-            {"status": "info", "doc_id": 1, "label": "NEXT STATEMENT",
-             "detail": "not in this statement", "amount": "50.00 "},
+            {
+                "status": "info",
+                "doc_id": 1,
+                "label": "NEXT STATEMENT",
+                "detail": "not in this statement",
+                "amount": "50.00 ",
+            },
         ]
         feb_rows = [
-            {"status": "ok", "doc_id": 1, "label": "OK", "detail": "inv", "amount": "50.00-",
-             "date": "08.02.2026"},
+            {
+                "status": "ok",
+                "doc_id": 1,
+                "label": "OK",
+                "detail": "inv",
+                "amount": "50.00-",
+                "date": "08.02.2026",
+            },
         ]
         results = self._make_results(jan_rows, feb_rows)
         filter_resolved_unmatched(results)
@@ -1224,12 +1491,23 @@ class TestFilterResolvedUnmatched:
     def test_not_in_next_month_escalated(self):
         """Invoice unmatched in Jan, Feb has statement but no match → NOT IN STATEMENTS."""
         jan_rows = [
-            {"status": "info", "doc_id": 1, "label": "NEXT STATEMENT",
-             "detail": "not in this statement", "amount": "50.00 "},
+            {
+                "status": "info",
+                "doc_id": 1,
+                "label": "NEXT STATEMENT",
+                "detail": "not in this statement",
+                "amount": "50.00 ",
+            },
         ]
         feb_rows = [
-            {"status": "ok", "doc_id": 99, "label": "OK", "detail": "other",
-             "amount": "30.00-", "date": "08.02.2026"},
+            {
+                "status": "ok",
+                "doc_id": 99,
+                "label": "OK",
+                "detail": "other",
+                "amount": "30.00-",
+                "date": "08.02.2026",
+            },
         ]
         results = self._make_results(jan_rows, feb_rows)
         filter_resolved_unmatched(results)
@@ -1239,8 +1517,13 @@ class TestFilterResolvedUnmatched:
     def test_no_next_statement_keeps_info(self):
         """No Feb statement → Jan's NEXT STATEMENT kept as-is."""
         jan_rows = [
-            {"status": "info", "doc_id": 1, "label": "NEXT STATEMENT",
-             "detail": "not in this statement", "amount": "50.00 "},
+            {
+                "status": "info",
+                "doc_id": 1,
+                "label": "NEXT STATEMENT",
+                "detail": "not in this statement",
+                "amount": "50.00 ",
+            },
         ]
         results = self._make_results(jan_rows, [], feb_header_doc=None)
         filter_resolved_unmatched(results)
@@ -1252,12 +1535,20 @@ class TestDocCache:
 
     def test_doc_cache_reused(self):
         """Second month reuses cached docs from first month's window fetch."""
-        jan_stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Purchase", -50.00),
-        ))
-        feb_stmt = _make_statement(901, "2026-02", _stmt(
-            ("08.02.2026", "Purchase", -50.00),
-        ))
+        jan_stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase", -50.00),
+            ),
+        )
+        feb_stmt = _make_statement(
+            901,
+            "2026-02",
+            _stmt(
+                ("08.02.2026", "Purchase", -50.00),
+            ),
+        )
         inv = _make_invoice(1, "inv", "inv.pdf", "2026-01", 50.00)
         docs = {
             TAG_IDS["2025-12"]: [],
@@ -1273,7 +1564,8 @@ class TestDocCache:
 
         # Count calls for tag 2026-01 docs — should be fetched only once
         calls = [
-            c for c in client.get_documents.call_args_list
+            c
+            for c in client.get_documents.call_args_list
             if c[1].get("tags__id") == TAG_IDS["2026-01"]
             and "document_type__id" not in c[1]
         ]
@@ -1293,15 +1585,19 @@ class TestMixedStatuses:
         )
         stmt = _make_statement(900, "2026-01", content)
         inv = _make_invoice(1, "inv_purchase", "inv.pdf", "2026-01", 50.00)
-        client = _mock_client({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         result = _collect(client, "2026-01")
         stats = result["stats"]
-        assert stats["ok"] == 1      # 50.00 matched
-        assert stats["skipped"] >= 1  # bank fee + cancelled movements counted as skipped
+        assert stats["ok"] == 1  # 50.00 matched
+        assert (
+            stats["skipped"] >= 1
+        )  # bank fee + cancelled movements counted as skipped
         assert stats["missing"] >= 0
         # Total rows should account for all 5 movements + any unmatched invoices
         assert stats["total"] >= 5
@@ -1326,12 +1622,17 @@ def _mock_client_for_pl(documents_by_tag):
     return client
 
 
-def _collect_pl(client, year, inv_tag=TAG_IDS["invoicing"],
-                alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID):
+def _collect_pl(
+    client, year, inv_tag=TAG_IDS["invoicing"], alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID
+):
     """Shorthand for collect_pl with test defaults."""
     return collect_pl(
-        client, year, STATEMENT_TYPE_ID, TOTAL_AMOUNT_FIELD_ID,
-        inv_tag, total_amount_alt_field_id=alt_field_id,
+        client,
+        year,
+        STATEMENT_TYPE_ID,
+        TOTAL_AMOUNT_FIELD_ID,
+        inv_tag,
+        total_amount_alt_field_id=alt_field_id,
     )
 
 
@@ -1343,11 +1644,13 @@ class TestCollectPLMatchedIncome:
         content = _stmt(("11.01.2026", "Payment received", 1000.00))
         stmt = _make_statement(1, "2026-01", content)
         inv = _make_invoice(10, "Techlab_001", "Techlab_001.pdf", "2026-01", 1000.00)
-        client = _mock_client_for_pl({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         pl = _collect_pl(client, 2026)
         assert pl["income"] > 0
         assert len(pl["income_items"]) == 1
@@ -1363,11 +1666,13 @@ class TestCollectPLMatchedIncome:
         content = _stmt(("11.01.2026", "Outgoing payment", -500.00))
         stmt = _make_statement(1, "2026-01", content)
         inv = _make_invoice(10, "vendor_bill", "vendor.pdf", "2026-01", 500.00)
-        client = _mock_client_for_pl({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         pl = _collect_pl(client, 2026)
         assert "invoiced" in pl["expenses"]
         assert pl["expenses"]["invoiced"] == -500.00
@@ -1381,11 +1686,13 @@ class TestCollectPLUnmatchedIncome:
         content = _stmt(("11.01.2026", "Some other payment", -50.00))
         stmt = _make_statement(1, "2026-01", content)
         inv = _make_invoice(20, "Techlab_002", "Techlab_002.pdf", "2026-01", 5000.00)
-        client = _mock_client_for_pl({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         pl = _collect_pl(client, 2026)
         assert pl["income"] == round(5000.00 / 1.23, 2)
         assert len(pl["income_items"]) == 1
@@ -1395,12 +1702,14 @@ class TestCollectPLUnmatchedIncome:
     def test_no_statement_techlab_counted_as_income(self):
         """Techlab invoice for a month with no statement counts as income."""
         inv = _make_invoice(30, "Techlab_003", "Techlab_003.pdf", "2026-02", 8000.00)
-        client = _mock_client_for_pl({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [],
-            TAG_IDS["2026-02"]: [inv],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [],
+                TAG_IDS["2026-02"]: [inv],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         pl = _collect_pl(client, 2026)
         assert pl["income"] == round(8000.00 / 1.23, 2)
         assert len(pl["income_items"]) == 1
@@ -1409,11 +1718,13 @@ class TestCollectPLUnmatchedIncome:
     def test_non_techlab_unmatched_not_income(self):
         """Non-Techlab unmatched invoices are NOT income (could be expenses)."""
         inv = _make_invoice(40, "fa_ucto", "fa_ucto.pdf", "2026-01", 200.00)
-        client = _mock_client_for_pl({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         pl = _collect_pl(client, 2026)
         assert pl["income"] == 0.0
         assert len(pl["income_items"]) == 0
@@ -1423,11 +1734,13 @@ class TestCollectPLUnmatchedIncome:
         content = _stmt(("11.01.2026", "Payment received", 1000.00))
         stmt = _make_statement(1, "2026-01", content)
         inv = _make_invoice(10, "Techlab_001", "Techlab_001.pdf", "2026-01", 1000.00)
-        client = _mock_client_for_pl({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, inv],
-            TAG_IDS["2026-02"]: [],
-        })
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
         pl = _collect_pl(client, 2026)
         assert len(pl["income_items"]) == 1
 
@@ -1435,14 +1748,20 @@ class TestCollectPLUnmatchedIncome:
         """Matched + unmatched Techlab invoices both count in income total."""
         content = _stmt(("11.01.2026", "Payment received", 1000.00))
         stmt = _make_statement(1, "2026-01", content)
-        matched_inv = _make_invoice(10, "Techlab_001", "Techlab_001.pdf", "2026-01", 1000.00)
-        unmatched_inv = _make_invoice(20, "Techlab_002", "Techlab_002.pdf", "2026-02", 5000.00)
-        client = _mock_client_for_pl({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [stmt, matched_inv],
-            TAG_IDS["2026-02"]: [unmatched_inv],
-            TAG_IDS["2026-03"]: [],
-        })
+        matched_inv = _make_invoice(
+            10, "Techlab_001", "Techlab_001.pdf", "2026-01", 1000.00
+        )
+        unmatched_inv = _make_invoice(
+            20, "Techlab_002", "Techlab_002.pdf", "2026-02", 5000.00
+        )
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, matched_inv],
+                TAG_IDS["2026-02"]: [unmatched_inv],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         pl = _collect_pl(client, 2026)
         expected = round(1000.00 / 1.23, 2) + round(5000.00 / 1.23, 2)
         assert pl["income"] == expected
@@ -1451,12 +1770,14 @@ class TestCollectPLUnmatchedIncome:
     def test_label_uses_invoice_title(self):
         """Income label shows the invoice title, not status text."""
         inv = _make_invoice(30, "Techlab_003", "Techlab_003.pdf", "2026-02", 8000.00)
-        client = _mock_client_for_pl({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [],
-            TAG_IDS["2026-02"]: [inv],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [],
+                TAG_IDS["2026-02"]: [inv],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         pl = _collect_pl(client, 2026)
         assert len(pl["income_items"]) == 1
         assert "Techlab_003" in pl["income_items"][0]["label"]
@@ -1477,12 +1798,14 @@ class TestCollectPLMonthlyBreakdown:
         jan_stmt = _make_statement(1, "2026-01", jan_content)
         feb_stmt = _make_statement(2, "2026-02", feb_content)
         jan_inv = _make_invoice(10, "vendor", "vendor.pdf", "2026-01", 50.00)
-        client = _mock_client_for_pl({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [jan_stmt, jan_inv],
-            TAG_IDS["2026-02"]: [feb_stmt],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [jan_stmt, jan_inv],
+                TAG_IDS["2026-02"]: [feb_stmt],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         pl = _collect_pl(client, 2026)
         # Bank fee should have monthly breakdown
         bank_fee = pl["expenses_detail"]["bank fee"]
@@ -1502,19 +1825,20 @@ class TestCollectPLMonthlyBreakdown:
         )
         jan_stmt = _make_statement(1, "2026-01", jan_content)
         feb_stmt = _make_statement(2, "2026-02", feb_content)
-        client = _mock_client_for_pl({
-            TAG_IDS["2025-12"]: [],
-            TAG_IDS["2026-01"]: [jan_stmt],
-            TAG_IDS["2026-02"]: [feb_stmt],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [jan_stmt],
+                TAG_IDS["2026-02"]: [feb_stmt],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         pl = _collect_pl(client, 2026)
         assert "excluded_detail" in pl
         assert pl["excluded"] == -300.00
         # Tax should have per-month entries
         total_monthly = sum(
-            sum(months.values())
-            for months in pl["excluded_detail"].values()
+            sum(months.values()) for months in pl["excluded_detail"].values()
         )
         assert total_monthly == -300.00
 
@@ -1522,6 +1846,7 @@ class TestCollectPLMonthlyBreakdown:
 # ═════════════════════════════════════════════════════════════════════════════
 # Pre-processing warmup (default view fix)
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 class TestPreProcessingWarmup:
     """Default view must pre-process months before the display range.
@@ -1537,24 +1862,38 @@ class TestPreProcessingWarmup:
 
         Feb has a statement (needed for filter_resolved_unmatched).
         """
-        dec_stmt = _make_statement(898, "2025-12", _stmt(
-            ("09.12.2025", "Recurring service", -90.00),
-        ))
-        jan_stmt = _make_statement(900, "2026-01", _stmt(
-            ("08.01.2026", "Recurring service", -90.00),
-        ))
-        feb_stmt = _make_statement(901, "2026-02", _stmt(
-            ("09.02.2026", "Something else", -50.00),
-        ))
+        dec_stmt = _make_statement(
+            898,
+            "2025-12",
+            _stmt(
+                ("09.12.2025", "Recurring service", -90.00),
+            ),
+        )
+        jan_stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Recurring service", -90.00),
+            ),
+        )
+        feb_stmt = _make_statement(
+            901,
+            "2026-02",
+            _stmt(
+                ("09.02.2026", "Something else", -50.00),
+            ),
+        )
         dec_inv = _make_invoice(10, "Dec SaaS", "dec_saas.pdf", "2025-12", 90.00)
         jan_inv = _make_invoice(20, "Jan SaaS", "jan_saas.pdf", "2026-01", 90.00)
-        client = _mock_client({
-            TAG_IDS["2025-11"]: [],
-            TAG_IDS["2025-12"]: [dec_stmt, dec_inv],
-            TAG_IDS["2026-01"]: [jan_stmt, jan_inv],
-            TAG_IDS["2026-02"]: [feb_stmt],
-            TAG_IDS["2026-03"]: [],
-        })
+        client = _mock_client(
+            {
+                TAG_IDS["2025-11"]: [],
+                TAG_IDS["2025-12"]: [dec_stmt, dec_inv],
+                TAG_IDS["2026-01"]: [jan_stmt, jan_inv],
+                TAG_IDS["2026-02"]: [feb_stmt],
+                TAG_IDS["2026-03"]: [],
+            }
+        )
         return client, jan_inv
 
     def test_without_warmup_window_invoice_steals_match(self):
@@ -1569,22 +1908,25 @@ class TestPreProcessingWarmup:
         client, jan_inv = self._setup_same_amount_scenario()
         results = _process_months(client, ["2026-01", "2026-02", "2026-03"])
         jan_matched = _matched_doc_ids(results[0])
-        assert jan_inv["id"] not in jan_matched, \
+        assert jan_inv["id"] not in jan_matched, (
             "Bug: without warmup, Jan's invoice should be stolen by Dec's"
+        )
 
     def test_with_warmup_correct_match(self):
         """Fix: pre-processing Dec claims Dec's invoice, Jan matches correctly."""
         client, jan_inv = self._setup_same_amount_scenario()
         results = _process_months_with_warmup(client, ["2026-01", "2026-02", "2026-03"])
         jan_matched = _matched_doc_ids(results[0])
-        assert jan_inv["id"] in jan_matched, \
+        assert jan_inv["id"] in jan_matched, (
             "With warmup, Jan's invoice should correctly match Jan's payment"
+        )
 
     def test_warmup_does_not_appear_in_results(self):
         """Pre-processed months must not appear in the displayed results."""
         client, _ = self._setup_same_amount_scenario()
         results = _process_months_with_warmup(client, ["2026-01", "2026-02", "2026-03"])
         result_months = [r["month"] for r in results]
-        assert "2025-12" not in result_months, \
+        assert "2025-12" not in result_months, (
             "Pre-processed month should not be in results"
+        )
         assert result_months == ["2026-01", "2026-02", "2026-03"]

@@ -37,13 +37,24 @@ def index():
         load_dotenv(Path(__file__).parent.parent / ".env")
     token = os.getenv("PAPERLESS_API_TOKEN")
     if not token:
-        return "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_API_TOKEN not set</pre>", 500
+        return (
+            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_API_TOKEN not set</pre>",
+            500,
+        )
+    if not PAPERLESS_URL:
+        return (
+            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_URL not set</pre>",
+            500,
+        )
 
     client = PaperlessClient(PAPERLESS_URL, token)
     tag_map = client.get_all_tags()
     stmt_type = client.get_document_type_id(DOCUMENT_TYPE_STATEMENT)
     if stmt_type is None:
-        return f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Document type '{DOCUMENT_TYPE_STATEMENT}' not found</pre>", 500
+        return (
+            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Document type '{DOCUMENT_TYPE_STATEMENT}' not found</pre>",
+            500,
+        )
     ta_field = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     ta_alt_field = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
     inv_tag = client.get_tag_id(INVOICING_TAG_NAME)
@@ -77,12 +88,31 @@ def index():
     # months' invoices when they share the same amount.
     if not all_param:
         for i in range(MONTH_WINDOW, 0, -1):
-            collect_month(client, month_offset(months[0], -i), stmt_type, ta_field,
-                          doc_cache, inv_tag, global_matched_ids,
-                          total_amount_alt_field_id=ta_alt_field)
+            collect_month(
+                client,
+                month_offset(months[0], -i),
+                stmt_type,
+                ta_field,
+                doc_cache,
+                inv_tag,
+                global_matched_ids,
+                total_amount_alt_field_id=ta_alt_field,
+            )
     # Process oldest-first: same-month invoices are preferred, so older months
     # claim their own invoices before newer months can steal them via window.
-    results = [collect_month(client, m, stmt_type, ta_field, doc_cache, inv_tag, global_matched_ids, total_amount_alt_field_id=ta_alt_field) for m in months]
+    results = [
+        collect_month(
+            client,
+            m,
+            stmt_type,
+            ta_field,
+            doc_cache,
+            inv_tag,
+            global_matched_ids,
+            total_amount_alt_field_id=ta_alt_field,
+        )
+        for m in months
+    ]
     filter_resolved_unmatched(results)
     results.reverse()  # newest on top for display
 
@@ -112,8 +142,10 @@ def render_page(results, totals, months_display):
             if paired:
                 links = []
                 for d in paired:
-                    links.append(f'<a href="{PAPERLESS_URL}/documents/{d["doc_id"]}/details" target="_blank">{_esc(d["title"])}</a>')
-                detail_part = f'  [{" + ".join(links)}]'
+                    links.append(
+                        f'<a href="{PAPERLESS_URL}/documents/{d["doc_id"]}/details" target="_blank">{_esc(d["title"])}</a>'
+                    )
+                detail_part = f"  [{' + '.join(links)}]"
             else:
                 detail = r.get("detail", "")
                 doc_id = r.get("doc_id")
@@ -121,14 +153,14 @@ def render_page(results, totals, months_display):
                     detail_html = f'<a href="{PAPERLESS_URL}/documents/{doc_id}/details" target="_blank">{_esc(detail)}</a>'
                 else:
                     detail_html = _esc(detail)
-                detail_part = f'  [{detail_html}]' if detail else ""
+                detail_part = f"  [{detail_html}]" if detail else ""
             sections.append(
                 f'<div class="r {cls}">'
                 f'<span class="d">{_esc(date_s)}</span>  '
                 f'<span class="n">{_esc(r["desc"])}</span>  '
                 f'<span class="a">{_esc(r["amount"])}</span>  '
                 f'<span class="l">{_esc(r["label"])}</span>'
-                f'{detail_part}</div>'
+                f"{detail_part}</div>"
             )
 
     body = "\n".join(sections)
@@ -178,12 +210,12 @@ h1{{color:#58a6ff;font-size:15px;font-weight:600}}
 <div class="info">Months: {_esc(months_str)} &nbsp;|&nbsp; Window: &plusmn;{MONTH_WINDOW} month(s)</div>
 {body}
 <div class="sum">
-TOTAL: {totals['total']} movements, \
-<span class="sk">{totals['skipped']} skipped</span>, \
-<span class="ok">{totals['ok']} OK</span>, \
-<span class="ma">{totals['manual']} manual check</span>, \
-<span class="mi">{totals['missing']} missing</span>, \
-<span class="in">{totals['info']} next statement</span>
+TOTAL: {totals["total"]} movements, \
+<span class="sk">{totals["skipped"]} skipped</span>, \
+<span class="ok">{totals["ok"]} OK</span>, \
+<span class="ma">{totals["manual"]} manual check</span>, \
+<span class="mi">{totals["missing"]} missing</span>, \
+<span class="in">{totals["info"]} next statement</span>
 </div>
 </body></html>"""
 
@@ -195,12 +227,23 @@ def profit_loss():
         load_dotenv(Path(__file__).parent.parent / ".env")
     token = os.getenv("PAPERLESS_API_TOKEN")
     if not token:
-        return "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_API_TOKEN not set</pre>", 500
+        return (
+            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_API_TOKEN not set</pre>",
+            500,
+        )
+    if not PAPERLESS_URL:
+        return (
+            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_URL not set</pre>",
+            500,
+        )
 
     client = PaperlessClient(PAPERLESS_URL, token)
     stmt_type = client.get_document_type_id(DOCUMENT_TYPE_STATEMENT)
     if stmt_type is None:
-        return f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Document type '{DOCUMENT_TYPE_STATEMENT}' not found</pre>", 500
+        return (
+            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Document type '{DOCUMENT_TYPE_STATEMENT}' not found</pre>",
+            500,
+        )
     ta_field = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     ta_alt_field = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
     inv_tag = client.get_tag_id(INVOICING_TAG_NAME)
@@ -218,7 +261,14 @@ def profit_loss():
     available_years = sorted(years_with_data)
 
     year = int(req.args.get("year", date.today().year - 1))
-    pl = collect_pl(client, year, stmt_type, ta_field, inv_tag, total_amount_alt_field_id=ta_alt_field)
+    pl = collect_pl(
+        client,
+        year,
+        stmt_type,
+        ta_field,
+        inv_tag,
+        total_amount_alt_field_id=ta_alt_field,
+    )
     return render_pl(pl, available_years)
 
 
@@ -258,7 +308,8 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
     # All months with any data, filtered to requested year
     year_prefix = f"{year:04d}-"
     all_months = sorted(
-        m for m in set(list(exp_by_month.keys()) + list(income_by_month.keys()))
+        m
+        for m in set(list(exp_by_month.keys()) + list(income_by_month.keys()))
         if m.startswith(year_prefix)
     )
 
@@ -274,7 +325,7 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
             f'<div class="pl-row detail">'
             f'<span class="pl-label">{_esc(cat)}</span>'
             f'<span class="pl-amount neg">{amt:>12,.2f}</span>'
-            f'</div>'
+            f"</div>"
             for cat, amt in sorted(m_expenses.items(), key=lambda x: x[1])
         )
 
@@ -288,8 +339,16 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
             else:
                 label_html = _esc(label)
             gross = first.get("gross")
-            gross_html = f'<span class="pl-gross dim">({gross:,.2f} gross)</span>' if gross else ""
-            exp_html = f'<span class="pl-exp neg">{m_exp_total:>10,.2f}</span>' if m_exp_total else ""
+            gross_html = (
+                f'<span class="pl-gross dim">({gross:,.2f} gross)</span>'
+                if gross
+                else ""
+            )
+            exp_html = (
+                f'<span class="pl-exp neg">{m_exp_total:>10,.2f}</span>'
+                if m_exp_total
+                else ""
+            )
 
             # Additional income items for this month (inside accordion)
             extra_income = ""
@@ -301,13 +360,17 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
                 else:
                     elabel_html = _esc(elabel)
                 egross = item.get("gross")
-                egross_html = f'<span class="pl-gross dim">({egross:,.2f} gross)</span>' if egross else ""
+                egross_html = (
+                    f'<span class="pl-gross dim">({egross:,.2f} gross)</span>'
+                    if egross
+                    else ""
+                )
                 extra_income += (
                     f'<div class="pl-row detail income-extra">'
                     f'<span class="pl-label">{elabel_html}</span>'
                     f'<span class="pl-amount pos">{item["amount"]:>12,.2f}</span>'
-                    f'{egross_html}'
-                    f'</div>'
+                    f"{egross_html}"
+                    f"</div>"
                 )
 
             month_rows_html.append(
@@ -316,12 +379,12 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
                 f'<span class="pl-month">{_esc(m)}</span>'
                 f'<span class="pl-label">{label_html}</span>'
                 f'<span class="pl-amount pos">{first["amount"]:>12,.2f}</span>'
-                f'{gross_html}'
-                f'{exp_html}'
-                f'</summary>'
-                f'{extra_income}'
-                f'{exp_detail_rows}'
-                f'</details>'
+                f"{gross_html}"
+                f"{exp_html}"
+                f"</summary>"
+                f"{extra_income}"
+                f"{exp_detail_rows}"
+                f"</details>"
             )
         elif m_expenses:
             # Expense-only month (no income)
@@ -331,9 +394,9 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
                 f'<span class="pl-month">{_esc(m)}</span>'
                 f'<span class="pl-label dim">(no income)</span>'
                 f'<span class="pl-exp neg">{m_exp_total:>10,.2f}</span>'
-                f'</summary>'
-                f'{exp_detail_rows}'
-                f'</details>'
+                f"</summary>"
+                f"{exp_detail_rows}"
+                f"</details>"
             )
 
     months_html = "\n".join(month_rows_html)
@@ -343,7 +406,7 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
         f'<div class="pl-row detail">'
         f'<span class="pl-label">{_esc(cat)}</span>'
         f'<span class="pl-amount neg">{amt:>12,.2f}</span>'
-        f'</div>'
+        f"</div>"
         for cat, amt in expenses.items()
     )
 
@@ -355,7 +418,7 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
             f'<div class="pl-row detail">'
             f'<span class="pl-label">{_esc(cat)}</span>'
             f'<span class="pl-amount dim">{cat_total:>12,.2f}</span>'
-            f'</div>'
+            f"</div>"
         )
     excl_cats_html = "\n".join(excl_cat_rows)
 

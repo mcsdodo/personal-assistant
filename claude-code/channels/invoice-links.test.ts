@@ -48,21 +48,21 @@ describe("extractInvoiceLinks", () => {
       const links = extractInvoiceLinks(
         ALZA_ALZABOX_HTML,
         "info@alza.sk",
-        "Pripravené v AlzaBoxe / Obj. č. 590137549",
+        "Pripravené v AlzaBoxe / Obj. č. 100000001",
       );
 
       expect(links.length).toBeGreaterThanOrEqual(1);
       expect(links[0].url).toContain("pdfdoc.asp");
-      expect(links[0].url).toContain("d=5419358935");
+      expect(links[0].url).toContain("d=100000002");
       expect(links[0].text).toMatch(/Stiahnuť\s*faktúru/i);
-      expect(links[0].docId).toBe("5419358935");
+      expect(links[0].docId).toBe("100000002");
     });
 
     test("deduplicates links by URL", () => {
       const links = extractInvoiceLinks(
         ALZA_ALZABOX_HTML,
         "info@alza.sk",
-        "Pripravené v AlzaBoxe / Obj. č. 590137549",
+        "Pripravené v AlzaBoxe / Obj. č. 100000001",
       );
 
       const urls = links.map((l) => l.url);

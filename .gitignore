@@ -42,3 +42,7 @@ desktop.ini
 # Docker
 *.tar
 *.tar.gz
+
+# Golden test files (instance-specific, require live Paperless)
+checker-mcp/test_golden.py
+checker-mcp/test_golden.json

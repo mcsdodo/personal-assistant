@@ -46,13 +46,15 @@ def _env(key: str, default: str = "") -> str:
     return os.environ.get(key) or _dotenv.get(key) or default
 
 
-CREDENTIALS_FILE = Path(r"C:\_dev\invoice-automation\config\credentials.json")
-TOKEN_FILE = Path(r"C:\_dev\invoice-automation\config\token.json")
+CREDENTIALS_FILE = Path(
+    os.environ.get("GOOGLE_CREDENTIALS_FILE", "config/credentials.json")
+)
+TOKEN_FILE = Path(os.environ.get("GOOGLE_TOKEN_FILE", "config/token.json"))
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
-GMAIL_FROM = "lacny.jozef@gmail.com"
-GMAIL_TO = "lacny.jozef+dev@gmail.com"
-OUTLOOK_TO = "lacny.jozef+dev@hotmail.com"
+GMAIL_FROM = _env("GMAIL_EMAIL", "your-email@gmail.com")
+GMAIL_TO = _env("GMAIL_TO", "your-email+dev@gmail.com")
+OUTLOOK_TO = _env("OUTLOOK_TO", "your-email+dev@hotmail.com")
 
 # PAPERLESS_URL from .env is container-to-container (http://paperless:8010).
 # Tests run on the host, so always use localhost.
@@ -68,11 +70,11 @@ COMPOSE_CMD = "docker compose --profile local --env-file .env"
 
 # Subject templates matching what the email-classifier expects
 SUBJECT_MAP = {
-    "invoice.pdf": "Faktúra 5418090558 - Alza.sk",
+    "invoice.pdf": "Faktúra 1000000001 - Alza.sk",
     "fuel_invoice.pdf": "Blok tankovanie Slovnaft",
-    "refund.pdf": "Opravný doklad 6401551319 - Alza.sk",
+    "refund.pdf": "Opravný doklad 1000000002 - Alza.sk",
     "account_statement_locked.pdf": "Výpis z účtu za 03/2026 - Tatra banka",
-    "personal.pdf": "Faktúra 5419358935 - Alza.sk",
+    "personal.pdf": "Faktúra 1000000003 - Alza.sk",
 }
 
 
@@ -133,7 +135,13 @@ def send_email(
     msg["Date"] = formatdate(localtime=True)
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-    result = gmail_service().users().messages().send(userId="me", body={"raw": raw}).execute()
+    result = (
+        gmail_service()
+        .users()
+        .messages()
+        .send(userId="me", body={"raw": raw})
+        .execute()
+    )
     return result["id"]
 
 
@@ -148,7 +156,13 @@ def send_html_email(to: str, subject: str, html: str, text: str) -> str:
     msg.attach(MIMEText(html, "html", "utf-8"))
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-    result = gmail_service().users().messages().send(userId="me", body={"raw": raw}).execute()
+    result = (
+        gmail_service()
+        .users()
+        .messages()
+        .send(userId="me", body={"raw": raw})
+        .execute()
+    )
     return result["id"]
 
 
@@ -163,6 +177,7 @@ def send_test_pdf(filename: str, to: str) -> str:
 # ---------------------------------------------------------------------------
 # Paperless API
 # ---------------------------------------------------------------------------
+
 
 def _paperless_headers() -> dict:
     return {"Authorization": f"Token {PAPERLESS_TOKEN}"}
@@ -187,22 +202,21 @@ def paperless_documents() -> list[dict]:
         c["id"]: c["name"]
         for c in paperless_get("correspondents", page_size=100)["results"]
     }
-    tags = {
-        t["id"]: t["name"]
-        for t in paperless_get("tags", page_size=100)["results"]
-    }
+    tags = {t["id"]: t["name"] for t in paperless_get("tags", page_size=100)["results"]}
 
     results = []
     for d in docs["results"]:
-        results.append({
-            "id": d["id"],
-            "title": d["title"],
-            "correspondent": correspondents.get(d.get("correspondent")),
-            "tags": sorted(tags.get(t, str(t)) for t in d.get("tags", [])),
-            "custom_fields": {
-                cf["field"]: cf["value"] for cf in d.get("custom_fields", [])
-            },
-        })
+        results.append(
+            {
+                "id": d["id"],
+                "title": d["title"],
+                "correspondent": correspondents.get(d.get("correspondent")),
+                "tags": sorted(tags.get(t, str(t)) for t in d.get("tags", [])),
+                "custom_fields": {
+                    cf["field"]: cf["value"] for cf in d.get("custom_fields", [])
+                },
+            }
+        )
     return results
 
 
@@ -220,7 +234,9 @@ def paperless_wipe():
     # Delete documents
     docs = requests.get(
         f"{PAPERLESS_URL}/documents/",
-        headers=h, params={"page_size": 500, "fields": "id"}, timeout=10,
+        headers=h,
+        params={"page_size": 500, "fields": "id"},
+        timeout=10,
     ).json()
     doc_ids = [d["id"] for d in docs.get("results", [])]
     if doc_ids:
@@ -234,7 +250,9 @@ def paperless_wipe():
         # Empty trash
         trash = requests.get(
             f"{PAPERLESS_URL}/trash/",
-            headers=h, params={"page_size": 500}, timeout=10,
+            headers=h,
+            params={"page_size": 500},
+            timeout=10,
         ).json()
         trash_ids = [d["id"] for d in trash.get("results", [])]
         if trash_ids:
@@ -250,12 +268,15 @@ def paperless_wipe():
     for resource in ("correspondents", "tags", "document_types"):
         items = requests.get(
             f"{PAPERLESS_URL}/{resource}/",
-            headers=h, params={"page_size": 500}, timeout=10,
+            headers=h,
+            params={"page_size": 500},
+            timeout=10,
         ).json()
         for item in items.get("results", []):
             requests.delete(
                 f"{PAPERLESS_URL}/{resource}/{item['id']}/",
-                headers=h, timeout=10,
+                headers=h,
+                timeout=10,
             )
 
 
@@ -263,18 +284,20 @@ def paperless_wipe():
 # Email-watcher DB polling (via docker exec)
 # ---------------------------------------------------------------------------
 
+
 def _bun_query(db_path: str, sql: str) -> str:
     """Run a SQL query via bun inside the container. Returns stdout."""
     script = (
         f'import{{Database}}from"bun:sqlite";'
         f'const db=new Database("{db_path}",{{readonly:true}});'
         f'const r=db.prepare("{sql}").all();'
-        f'console.log(JSON.stringify(r));'
-        f'db.close();'
+        f"console.log(JSON.stringify(r));"
+        f"db.close();"
     )
     result = subprocess.run(
         ["docker", "exec", CONTAINER, "sh", "-c", f"bun -e '{script}'"],
-        capture_output=True, timeout=15,
+        capture_output=True,
+        timeout=15,
     )
     return result.stdout.decode("utf-8", errors="replace").strip()
 
@@ -282,6 +305,7 @@ def _bun_query(db_path: str, sql: str) -> str:
 def email_db_query(sql: str) -> list[dict]:
     """Query the email-watcher DB. Returns list of row dicts."""
     import json
+
     raw = _bun_query("/data/email-watcher/emails.db", sql)
     return json.loads(raw) if raw else []
 
@@ -289,6 +313,7 @@ def email_db_query(sql: str) -> list[dict]:
 def workflow_db_query(sql: str) -> list[dict]:
     """Query the workflow DB. Returns list of row dicts."""
     import json
+
     raw = _bun_query("/data/email-watcher/workflow.db", sql)
     return json.loads(raw) if raw else []
 
@@ -321,16 +346,20 @@ def poll_email_status(
     while time.time() < deadline:
         rows = email_db_query(
             f"SELECT id,source,subject,status,action,vendor,process_result "
-            f"FROM emails WHERE subject LIKE \\\"%{subject_contains}%\\\""
-            f"{source_clause} AND status!=\\\"seed\\\" "
+            f'FROM emails WHERE subject LIKE \\"%{subject_contains}%\\"'
+            f'{source_clause} AND status!=\\"seed\\" '
             f"ORDER BY discovered_at DESC LIMIT 1"
         )
         if rows and rows[0].get("status") in target_statuses:
             r = rows[0]
             return EmailStatus(
-                id=r["id"], source=r["source"], subject=r["subject"],
-                status=r["status"], action=r.get("action"),
-                vendor=r.get("vendor"), process_result=r.get("process_result"),
+                id=r["id"],
+                source=r["source"],
+                subject=r["subject"],
+                status=r["status"],
+                action=r.get("action"),
+                vendor=r.get("vendor"),
+                process_result=r.get("process_result"),
             )
         time.sleep(poll_interval)
 
@@ -344,11 +373,14 @@ def poll_email_status(
 # Container & DB management
 # ---------------------------------------------------------------------------
 
+
 def stop_claude():
     """Stop the claude-code container."""
     subprocess.run(
         f"cd {PA_STACK} && {COMPOSE_CMD} stop claude-code",
-        shell=True, capture_output=True, timeout=60,
+        shell=True,
+        capture_output=True,
+        timeout=60,
     )
 
 
@@ -356,14 +388,19 @@ def start_claude():
     """Start the claude-code container."""
     subprocess.run(
         f"cd {PA_STACK} && {COMPOSE_CMD} start claude-code",
-        shell=True, capture_output=True, timeout=60,
+        shell=True,
+        capture_output=True,
+        timeout=60,
     )
 
 
 def clear_dbs():
     """Delete email-watcher, workflow, and gdrive-watcher DBs (container must be stopped)."""
-    for pattern in ("email-watcher/emails.db*", "email-watcher/workflow.db*",
-                     "gdrive-watcher/gdrive.db*"):
+    for pattern in (
+        "email-watcher/emails.db*",
+        "email-watcher/workflow.db*",
+        "gdrive-watcher/gdrive.db*",
+    ):
         for f in PA_DATA.glob(pattern):
             f.unlink(missing_ok=True)
     # Clear downloads
@@ -393,6 +430,7 @@ def preseed_source_state(*sources: str):
     flow. This prevents Claude from getting stuck waiting for Telegram input.
     """
     import sqlite3
+
     db_dir = PA_DATA / "email-watcher"
     db_dir.mkdir(parents=True, exist_ok=True)
     db_path = db_dir / "emails.db"

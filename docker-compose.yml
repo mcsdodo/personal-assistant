@@ -80,7 +80,7 @@ services:
       - BANK_PDF_PASSWORD=${BANK_PDF_PASSWORD:-}
       # gdrive-watcher channel
       - GDRIVE_POLL_INTERVAL_MS=${GDRIVE_POLL_INTERVAL_MS:-30000}
-      - GDRIVE_LEVEL1=${GDRIVE_LEVEL1:-techlab}
+      - GDRIVE_LEVEL1=${GDRIVE_LEVEL1:-}
       - GDRIVE_LEVEL2=${GDRIVE_LEVEL2:-invoicing,documents}
       - GDRIVE_MCP_URL=${GDRIVE_MCP_URL:-http://gmail-mcp:8000/mcp}
       - GDRIVE_WATCHER_METRICS_PORT=${GDRIVE_WATCHER_METRICS_PORT:-9466}
@@ -109,7 +109,7 @@ services:
     restart: unless-stopped
     labels:
       com.centurylinklabs.watchtower.monitor: "false"
-      caddy: invoices.lacny.me
+      caddy: ${CHECKER_DOMAIN:-invoices.example.com}
       caddy.reverse_proxy: "{{upstreams 5000}}"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8001),2); s.close()\" && python -c \"import socket; s=socket.create_connection(('localhost',5000),2); s.close()\""]
@@ -131,7 +131,7 @@ services:
     restart: unless-stopped
     labels:
       com.centurylinklabs.watchtower.monitor: "false"
-      caddy: gmail-mcp.lacny.me
+      caddy: ${GMAIL_MCP_DOMAIN:-gmail-mcp.example.com}
       caddy.reverse_proxy: "{{upstreams 8000}}"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),5); s.close()\""]
@@ -148,7 +148,7 @@ services:
     environment:
       - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}
       - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET}
-      - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI:-https://gmail-mcp.lacny.me/oauth2callback}
+      - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI:-}
       - GOOGLE_MCP_CREDENTIALS_DIR=/app/store_creds
       - GOOGLE_CLIENT_SECRET_JSON=${GOOGLE_CLIENT_SECRET_JSON}
     entrypoint: ["/bin/sh", "-c"]

@@ -437,7 +437,7 @@ cd compose.stacks/_komodo
 1. Reads secrets from `core.config.toml`
 2. Builds 3 images (claude-code, checker-mcp, outlook-mcp) -> tag by git commit
 3. Pushes to registry (if configured)
-4. Deploys stack to infra LXC (192.168.0.112)
+4. Deploys stack to Docker host
 5. Creates bind mount dirs on `/mnt/shared_configs/personal-assistant/`
 
 **Post-deploy auth:**

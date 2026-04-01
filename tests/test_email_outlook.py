@@ -1,6 +1,6 @@
 """E2E smoke test: Outlook email pipeline.
 
-Sends a real email via Gmail API to lacny.jozef+dev@hotmail.com,
+Sends a real email via Gmail API to the configured test address (OUTLOOK_TO),
 waits for the Outlook pipeline to process it, and verifies Paperless.
 
 Run:

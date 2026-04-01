@@ -370,7 +370,7 @@ Dashboard JSON files live in `observability/dashboards/`. Production Grafana mou
 **After editing a dashboard JSON:**
 ```bash
 # Copy to production Grafana (provisioner picks up changes automatically)
-scp observability/dashboards/claude-code.json root@192.168.0.112:/mnt/shared_configs/grafana/dashboards/claude-code.json
+scp observability/dashboards/claude-code.json root@YOUR_HOST_IP:/mnt/shared_configs/grafana/dashboards/claude-code.json
 ```
 
 No Grafana restart needed — the file provisioner detects changes and reloads.

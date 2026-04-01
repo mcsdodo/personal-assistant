@@ -1,6 +1,6 @@
 """E2E smoke test: Gmail email pipeline.
 
-Sends a real email via Gmail API to lacny.jozef+dev@gmail.com,
+Sends a real email via Gmail API to the configured test address (GMAIL_TO),
 waits for the pipeline (email-watcher -> email-classifier -> document-classifier -> worker),
 and verifies the document in Paperless.
 
@@ -41,5 +41,7 @@ class TestGmailAttachments:
             assert "invoicing" in doc["tags"]
             assert "techlab" in doc["tags"]
         else:
-            assert "duplicate" in (result.process_result or "").lower() or \
-                   "already" in (result.process_result or "").lower()
+            assert (
+                "duplicate" in (result.process_result or "").lower()
+                or "already" in (result.process_result or "").lower()
+            )

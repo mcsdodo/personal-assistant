@@ -59,7 +59,7 @@ Single Dockerfile builds the `claude-code` container.
 
 ## Komodo Deployment
 
-The stack deploys to **infra LXC** (192.168.0.112) via Komodo.
+The stack deploys to your **Docker host** via Komodo.
 
 **3 builds:**
 1. `claude-code` — Dockerfile in `claude-code/`
@@ -156,7 +156,7 @@ All state persists on NAS at `/mnt/shared_configs/personal-assistant/`:
 
 **Config:** [`docker-compose.yml:27-30`](../docker-compose.yml#L27) — volume mounts.
 
-NAS: WD MyCloud at 192.168.0.79, NFS → PVE host → bind mount into LXC → Docker volume.
+NAS storage (e.g. NFS share) → PVE host → bind mount into LXC → Docker volume.
 
 ## Version Management
 
