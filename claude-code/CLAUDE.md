@@ -136,11 +136,11 @@ Process emails using the Haiku subagents and durable workflow jobs:
 
 3. **Report** — after the job completes, briefly summarize what happened (e.g., "Uploaded Alza invoice FA2026030123 to Paperless with tags [invoicing, 2026-03]").
 
-4. **Record** — after each step, call `update_email_status` on the email-watcher:
-   - After classification: `update_email_status(id, status="classified", classification=<json>, action=..., vendor=..., confidence=...)`
-   - After job completion: `update_email_status(id, status="processed", process_result="Uploaded X to Paperless")`
-   - On job failure: `update_email_status(id, status="failed", process_result="error details")`
-   - On ignore: `update_email_status(id, status="ignored")`
+4. **Record** — after each step, call `update_email_status` on the email-watcher (see "Recording email status" section below for full details). Always pass `source`:
+   - After classification: `update_email_status(id, status="classified", source=<email_source>, classification=<json>, action=..., vendor=..., confidence=...)`
+   - After job completion: `update_email_status(id, status="processed", source=<email_source>, process_result="Uploaded X to Paperless")`
+   - On job failure: `update_email_status(id, status="failed", source=<email_source>, process_result="error details")`
+   - On ignore: `update_email_status(id, status="ignored", source=<email_source>)`
 
 This pipeline keeps routine classification on Haiku (fast, cheap), deterministic execution in the workflow worker, and only escalates edge cases to you (Sonnet).
 
@@ -170,3 +170,15 @@ Use the telegram `reply` tool to notify the user. The chat_id is available via t
 - Respond concisely
 - When processing events, explain what you found and what action you took
 - Use Slovak if the user writes in Slovak
+
+## Recording email status (ALWAYS do this)
+
+**Every email you process must be recorded in the audit trail** — whether it came from an email-watcher channel event or the user asked you to process it manually.
+
+Call `update_email_status` after classification and after processing:
+- After classification: `update_email_status(id, status="classified", source="gmail", classification=<json>, action=..., vendor=..., confidence=...)`
+- After successful processing: `update_email_status(id, status="processed", source="gmail", process_result="Uploaded X to Paperless")`
+- On failure: `update_email_status(id, status="failed", source="gmail", process_result="error details")`
+- On ignore: `update_email_status(id, status="ignored", source="gmail")`
+
+**Always pass `source`** (`gmail` or `outlook`). When the email was detected by the watcher, the DB row already exists and `source` is optional. When processing manually (user asks you to check a specific email), the row likely doesn't exist — `source` enables auto-creation. Without it, the call fails with "not found".
