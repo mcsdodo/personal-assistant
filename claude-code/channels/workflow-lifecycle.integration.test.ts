@@ -372,10 +372,11 @@ describe("workflow lifecycle: error handling", () => {
       sourceRef: `outlook:${input.message_id}`,
     });
 
-    // First fetch call throws an exception (simulating network failure)
-    mockFetch(() => {
-      throw new Error("Network connection refused");
-    });
+    // Every fetch call throws (simulating persistent network failure).
+    // callMcpTool does 1 initial + MAX_RETRIES (3) retries = 4 total attempts,
+    // so we need a handler for each.
+    const networkError = () => { throw new Error("Network connection refused"); };
+    mockFetch(networkError, networkError, networkError, networkError);
 
     const claimed = await executeNextJob(db, logger, registry);
 
