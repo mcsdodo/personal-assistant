@@ -57,6 +57,17 @@ import {
 } from "./gdrive-watcher";
 
 // ---------------------------------------------------------------------------
+// Read the same env vars the production code uses so mocks match reality.
+// ---------------------------------------------------------------------------
+
+const LEVEL1 = (process.env.GDRIVE_LEVEL1 ?? "techlab").split(",").map(s => s.trim()).filter(Boolean);
+const LEVEL2 = (process.env.GDRIVE_LEVEL2 ?? "invoicing").split(",").map(s => s.trim()).filter(Boolean);
+// Use first resolved level2 as the "primary" for assertions
+const PRIMARY_L1 = LEVEL1[0];
+const PRIMARY_L2 = LEVEL2[0];
+const PRIMARY_WATCH = `${PRIMARY_L1}/${PRIMARY_L2}`;
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -87,11 +98,11 @@ function jsonArrayResult(items: any[]) {
 
 /**
  * Standard callTool mock that resolves watch folders and returns file listings.
+ * Uses env-derived LEVEL1/LEVEL2 so the mock matches whatever the production
+ * code actually queries (e.g. "invoicing_dev" in dev, "invoicing" in prod).
  *
- * - search_drive_files for level1 "techlab" → returns folder ID
- * - search_drive_files for level2 "invoicing" under techlab → returns folder ID
- * - search_drive_files for "processed"/"errors" subfolders → returns existing
- * - list_drive_items → returns the provided files
+ * Only the first level2 folder resolves — others are intentionally "not found"
+ * (mirrors reality where not all folders exist yet).
  */
 function createStandardCallTool(files: any[] = []) {
   return async (params: { name: string; arguments: Record<string, any> }) => {
@@ -100,12 +111,12 @@ function createStandardCallTool(files: any[] = []) {
     if (name === "search_drive_files") {
       const query = args.query as string;
       // Level1 folder lookup
-      if (query.includes("name = 'techlab'") && query.includes("mimeType = 'application/vnd.google-apps.folder'") && !query.includes("in parents")) {
-        return jsonArrayResult([{ id: "techlab-folder-id", name: "techlab" }]);
+      if (query.includes(`name = '${PRIMARY_L1}'`) && query.includes("mimeType = 'application/vnd.google-apps.folder'") && !query.includes("in parents")) {
+        return jsonArrayResult([{ id: "techlab-folder-id", name: PRIMARY_L1 }]);
       }
-      // Level2 folder lookup
-      if (query.includes("name = 'invoicing'") && query.includes("'techlab-folder-id' in parents")) {
-        return jsonArrayResult([{ id: "invoicing-folder-id", name: "invoicing" }]);
+      // Level2 folder lookup — only PRIMARY_L2 resolves
+      if (query.includes(`name = '${PRIMARY_L2}'`) && query.includes("'techlab-folder-id' in parents")) {
+        return jsonArrayResult([{ id: "invoicing-folder-id", name: PRIMARY_L2 }]);
       }
       // Processed/errors subfolder check
       if (query.includes("name = 'processed'") || query.includes("name = 'errors'")) {
@@ -181,7 +192,7 @@ describe("gdrive-watcher integration", () => {
     expect(notif.params.meta.name).toBe("scan_invoice_march.pdf");
     expect(notif.params.meta.mime_type).toBe("application/pdf");
     expect(notif.params.meta.month_tag).toBe("2026-03");
-    expect(notif.params.meta.watch_folder).toBe("techlab/invoicing");
+    expect(notif.params.meta.watch_folder).toBe(PRIMARY_WATCH);
   });
 
   // -------------------------------------------------------------------------
@@ -194,7 +205,7 @@ describe("gdrive-watcher integration", () => {
       filename: "already_seen.pdf",
       mime_type: "application/pdf",
       created_at: "2026-03-20T10:00:00Z",
-      watch_folder: "techlab/invoicing",
+      watch_folder: PRIMARY_WATCH,
       status: "completed",
     });
 
@@ -225,11 +236,11 @@ describe("gdrive-watcher integration", () => {
       const { name, arguments: args } = params;
       if (name === "search_drive_files") {
         const query = args.query as string;
-        if (query.includes("name = 'techlab'") && !query.includes("in parents")) {
-          return jsonArrayResult([{ id: "techlab-folder-id", name: "techlab" }]);
+        if (query.includes(`name = '${PRIMARY_L1}'`) && !query.includes("in parents")) {
+          return jsonArrayResult([{ id: "techlab-folder-id", name: PRIMARY_L1 }]);
         }
-        if (query.includes("name = 'invoicing'") && query.includes("'techlab-folder-id' in parents")) {
-          return jsonArrayResult([{ id: "invoicing-folder-id", name: "invoicing" }]);
+        if (query.includes(`name = '${PRIMARY_L2}'`) && query.includes("'techlab-folder-id' in parents")) {
+          return jsonArrayResult([{ id: "invoicing-folder-id", name: PRIMARY_L2 }]);
         }
         if (query.includes("name = 'processed'") || query.includes("name = 'errors'")) {
           return jsonArrayResult([{ id: "sub", name: "sub" }]);
@@ -313,7 +324,7 @@ describe("gdrive-watcher integration", () => {
       filename: "old_scan.pdf",
       mime_type: "application/pdf",
       created_at: "2026-03-01T08:00:00Z",
-      watch_folder: "techlab/invoicing",
+      watch_folder: PRIMARY_WATCH,
       status: "new",
     });
 
@@ -396,11 +407,11 @@ describe("gdrive-watcher integration", () => {
       const { name, arguments: args } = params;
       if (name === "search_drive_files") {
         const query = args.query as string;
-        if (query.includes("name = 'techlab'") && !query.includes("in parents")) {
-          return textResult('- Name: "techlab" (ID: techlab-folder-id, Type: application/vnd.google-apps.folder, Modified: 2026-01-01T00:00:00Z) Link: url');
+        if (query.includes(`name = '${PRIMARY_L1}'`) && !query.includes("in parents")) {
+          return textResult(`- Name: "${PRIMARY_L1}" (ID: techlab-folder-id, Type: application/vnd.google-apps.folder, Modified: 2026-01-01T00:00:00Z) Link: url`);
         }
-        if (query.includes("name = 'invoicing'") && query.includes("'techlab-folder-id' in parents")) {
-          return textResult('- Name: "invoicing" (ID: invoicing-folder-id, Type: application/vnd.google-apps.folder, Modified: 2026-01-01T00:00:00Z) Link: url');
+        if (query.includes(`name = '${PRIMARY_L2}'`) && query.includes("'techlab-folder-id' in parents")) {
+          return textResult(`- Name: "${PRIMARY_L2}" (ID: invoicing-folder-id, Type: application/vnd.google-apps.folder, Modified: 2026-01-01T00:00:00Z) Link: url`);
         }
         if (query.includes("name = 'processed'") || query.includes("name = 'errors'")) {
           return textResult('- Name: "processed" (ID: sub-id, Type: application/vnd.google-apps.folder, Modified: 2026-01-01T00:00:00Z) Link: url');
@@ -450,7 +461,7 @@ describe("gdrive-watcher integration", () => {
     expect(notif.params.content).toContain("Scanned: 2026-06-15T08:45:00Z");
     expect(notif.params.content).toContain("Month tag: 2026-06");
     expect(notif.params.content).toContain("File ID: file-detail-check");
-    expect(notif.params.content).toContain("Folder: techlab/invoicing");
+    expect(notif.params.content).toContain(`Folder: ${PRIMARY_WATCH}`);
 
     // Meta should have all fields
     expect(notif.params.meta).toEqual(
@@ -461,7 +472,7 @@ describe("gdrive-watcher integration", () => {
         mime_type: "application/pdf",
         created_time: "2026-06-15T08:45:00Z",
         month_tag: "2026-06",
-        watch_folder: "techlab/invoicing",
+        watch_folder: PRIMARY_WATCH,
       })
     );
     // timestamp should be a valid ISO string
@@ -494,7 +505,7 @@ describe("gdrive-watcher integration", () => {
     expect(row.filename).toBe("db_verify.pdf");
     expect(row.mime_type).toBe("application/pdf");
     expect(row.created_at).toBe("2026-04-10T12:00:00Z");
-    expect(row.watch_folder).toBe("techlab/invoicing");
+    expect(row.watch_folder).toBe(PRIMARY_WATCH);
     expect(row.status).toBe("new");
   });
 
@@ -535,13 +546,11 @@ describe("gdrive-watcher integration", () => {
       const { name, arguments: args } = params;
       if (name === "search_drive_files") {
         const query = args.query as string;
-        if (query.includes("name = 'techlab'") && !query.includes("in parents")) {
-          return jsonArrayResult([{ id: "techlab-folder-id", name: "techlab" }]);
+        if (query.includes(`name = '${PRIMARY_L1}'`) && !query.includes("in parents")) {
+          return jsonArrayResult([{ id: "techlab-folder-id", name: PRIMARY_L1 }]);
         }
-        // Level2 "invoicing" not found
-        if (query.includes("name = 'invoicing'")) {
-          return textResult("No results found");
-        }
+        // All level2 folders not found
+        return textResult("No results found");
       }
       return { content: [] };
     };
@@ -583,7 +592,7 @@ describe("gdrive-watcher integration", () => {
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("poll-file-1");
     expect(result[0].name).toBe("poll_test.pdf");
-    expect(result[0].watchFolder).toBe("techlab/invoicing");
+    expect(result[0].watchFolder).toBe(PRIMARY_WATCH);
   });
 
   // -------------------------------------------------------------------------
