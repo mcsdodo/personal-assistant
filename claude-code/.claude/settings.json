@@ -1,0 +1,47 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(curl -X *)",
+      "Bash(curl --data *)",
+      "Bash(curl -d *)",
+      "Bash(node *)",
+      "Bash(cat *)",
+      "Bash(env *)"
+    ],
+    "allow": [
+      "mcp__email-watcher",
+      "mcp__gdrive-watcher",
+      "mcp__telegram",
+      "mcp__workflow",
+      "mcp__checker",
+      "mcp__outlook",
+      "mcp__paperless",
+
+      "mcp__gmail__get_gmail_message_content",
+      "mcp__gmail__get_gmail_messages_content_batch",
+      "mcp__gmail__get_gmail_attachment_content",
+      "mcp__gmail__get_drive_file_download_url",
+      "mcp__gmail__search_gmail_messages",
+      "mcp__gmail__start_google_auth",
+
+      "Bash(curl -o /workspace/downloads/*)",
+      "Bash(curl -sL -o /workspace/downloads/*)",
+      "Bash(curl -s -o /workspace/downloads/*)",
+      "Bash(curl -sS -o /workspace/downloads/*)",
+      "Bash(curl --max-time *)",
+      "Bash(qpdf *)",
+      "Bash(rm /workspace/downloads/*)",
+      "Bash(rm -f /workspace/downloads/*)",
+      "Bash(mkdir *)",
+      "Bash(ls *)",
+      "Bash(sleep *)",
+      "Bash(echo *)",
+      "Bash(bun run /app/channels/download-helper.ts *)",
+      "Bash(find /workspace/*)",
+      "Bash(base64 *)",
+      "Bash(cp /workspace/*)",
+
+      "Edit(/home/node/.claude/projects/-workspace/memory/*)"
+    ]
+  }
+}

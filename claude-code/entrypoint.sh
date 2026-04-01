@@ -1,16 +1,8 @@
 #!/bin/bash
 set -e
 
-# First-run: create settings.json if missing (volume mount overlays Dockerfile version)
-if [ ! -f /home/node/.claude/settings.json ]; then
-  if [ -w /home/node/.claude ]; then
-    echo '{"skipDangerousModePermissionPrompt": true}' > /home/node/.claude/settings.json
-    echo "Created settings.json (first run)"
-  else
-    echo "WARNING: Cannot create /home/node/.claude/settings.json (directory not writable)"
-    echo "Claude will continue with the mounted config as-is"
-  fi
-fi
+# Deploy settings.json from image to volume (always overwrite to pick up config changes)
+cp /app/settings.json /home/node/.claude/settings.json
 
 # First-run: check for Claude credentials
 if [ ! -f /home/node/.claude/.credentials.json ]; then
@@ -38,7 +30,7 @@ tmux new-session -d -s claude \
     --dangerously-load-development-channels server:email-watcher \
     --dangerously-load-development-channels server:gdrive-watcher \
     --dangerously-load-development-channels server:telegram \
-    --dangerously-skip-permissions \
+    --permission-mode dontAsk \
     --mcp-config /workspace/.mcp.json"
 
 # Wait for the development channels TUI prompt, then accept it

@@ -91,6 +91,7 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | `.env` / `.env.example` | Local dev secrets (Komodo manages prod secrets) |
 | `claude-code/Dockerfile` | node:20 + bun + claude-code CLI, non-root user |
 | `claude-code/.mcp.json` | MCP server config (channels + HTTP tools) |
+| `claude-code/.claude/settings.json` | Permission allowlist (dontAsk mode) |
 | `claude-code/CLAUDE.md` | Instructions for the Claude session |
 | `claude-code/entrypoint.sh` | tmux wrapper, prompt detection, health monitor |
 | `claude-code/channels/email-watcher.ts` | Email-watcher channel (polls Gmail+Outlook, SQLite audit) |
@@ -122,24 +123,25 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 - After auth, restart Claude to reconnect MCPs: `docker restart personal-assistant-claude`
 
 ### Settings
-`entrypoint.sh` creates `settings.json` on first boot if missing (no manual setup needed).
+`claude-code/.claude/settings.json` is committed to the repo with `permissions.allow` and `permissions.deny` lists.
 
-Required settings (auto-created):
-```json
-{
-  "skipDangerousModePermissionPrompt": true
-}
-```
+Permission model: `--permission-mode dontAsk` auto-denies any tool not in the allowlist.
+
+- **No permission needed** (always available): `Read`, `Glob`, `Grep`, `Agent`, `ToolSearch`
+- **Allowed via settings**: MCP tools (wildcards for our servers, individual for gmail), scoped Bash commands, `Edit`/`Write` for memory dir only
+- **Denied**: gmail write/browse tools, arbitrary curl POST, `cat`, `env`, `node`
+
+See `_tasks/26-permission-lockdown/03-design.md` for full rationale.
 
 ### Flags
 ```bash
 claude \
-  --dangerously-skip-permissions \        # bypass tool approval prompts
+  --permission-mode dontAsk \              # auto-deny tools not in allowlist
   --dangerously-load-development-channels server:name \  # load custom channel from .mcp.json
   --mcp-config /workspace/.mcp.json       # explicit MCP config path
 ```
 
-- `--dangerously-skip-permissions`: can't run as root (use non-root user)
+- `--permission-mode dontAsk`: replaces `--dangerously-skip-permissions`. Denies anything not in `permissions.allow` (settings.json).
 - `--dangerously-load-development-channels`: has unskippable TUI prompt — entrypoint polls for it and sends Enter (replaces old blind `sleep 5`)
 - `--channels plugin:name@marketplace`: loads approved channel plugins without prompt
 - `--mcp-config`: needed because `-p` mode doesn't auto-discover workspace `.mcp.json`
