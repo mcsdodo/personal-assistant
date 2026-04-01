@@ -43,7 +43,7 @@ export function readFileAsDownload(filePath: string): {
 }
 
 /** Try to decrypt a PDF if it's password-protected. No-op if not encrypted. */
-function tryDecrypt(filePath: string): void {
+export function tryDecrypt(filePath: string): void {
   if (!BANK_PDF_PASSWORD) return;
   try {
     execSync(`qpdf --is-encrypted "${filePath}"`, { stdio: "ignore" });

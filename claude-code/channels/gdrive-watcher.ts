@@ -84,7 +84,7 @@ const log = createLogger("gdrive-watcher");
 
 let lastSuccessfulPollAt: number = Date.now();
 
-function renderMetrics(db: Database): string {
+export function renderMetrics(db: Database): string {
   const lines: string[] = [];
 
   const stats = getFileStats(db);
@@ -174,7 +174,7 @@ function resetDriveClient(): void {
  * each individually and return an array. Single block: try JSON.parse, fall
  * back to raw text.
  */
-function parseToolResult(result: any): any {
+export function parseToolResult(result: any): any {
   if (!result?.content) return null;
 
   const texts: string[] = [];
@@ -216,7 +216,7 @@ interface WatchedFolder {
 
 let watchedFolders: WatchedFolder[] | null = null;
 
-function extractFolderId(data: unknown): string | undefined {
+export function extractFolderId(data: unknown): string | undefined {
   if (!data) return undefined;
   if (Array.isArray(data) && data.length > 0) {
     return (data[0] as Record<string, string>).id ?? (data[0] as Record<string, string>).fileId;
@@ -342,7 +342,7 @@ interface DriveFile {
  * Format per line:
  *   - Name: "filename" (ID: xxx, Type: mime, Size: n, Modified: iso) Link: url
  */
-function parseDriveTextOutput(text: string, watchFolder: string): DriveFile[] {
+export function parseDriveTextOutput(text: string, watchFolder: string): DriveFile[] {
   const files: DriveFile[] = [];
   const lineRegex =
     /Name:\s*"([^"]+)"\s*\(ID:\s*([^,]+),\s*Type:\s*([^,]+)(?:,\s*Size:\s*\d+)?,\s*Modified:\s*([^)]+)\)/g;
@@ -741,7 +741,9 @@ async function main(): Promise<void> {
   }, POLL_INTERVAL_MS);
 }
 
-main().catch((e) => {
-  log(`Fatal error: ${e.message}`);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((e) => {
+    log(`Fatal error: ${e.message}`);
+    process.exit(1);
+  });
+}

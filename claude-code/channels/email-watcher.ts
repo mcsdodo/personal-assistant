@@ -37,7 +37,7 @@ import { extractInvoiceLinks } from "./invoice-links";
 // Types
 // ---------------------------------------------------------------------------
 
-interface EmailInfo {
+export interface EmailInfo {
   id: string;
   source: "gmail" | "outlook";
   sender?: string;
@@ -78,14 +78,14 @@ import { filterEmailsByRecipient } from "./email-filter";
 
 const gmailEnabled = GMAIL_EMAIL.length > 0;
 
-function buildGmailQuery(lastChecked: string | null): string {
+export function buildGmailQuery(lastChecked: string | null): string {
   const base = GMAIL_SEARCH_BASE;
   if (!lastChecked) return base;
   const epoch = Math.floor(new Date(lastChecked).getTime() / 1000);
   return base ? `${base} after:${epoch}` : `after:${epoch}`;
 }
 
-function parseDuration(duration: string): number {
+export function parseDuration(duration: string): number {
   const match = duration.match(/^(\d+)\s*(h|d|w|m)$/i);
   if (!match) return 24 * 60 * 60 * 1000;
   const value = parseInt(match[1], 10);
@@ -111,14 +111,14 @@ const tracer = getTracer("email-watcher");
 
 const log = createLogger("email-watcher");
 
-function esc(value: string | null | undefined): string {
+export function esc(value: string | null | undefined): string {
   return String(value ?? "")
     .replace(/\\/g, "\\\\")
     .replace(/\n/g, "\\n")
     .replace(/"/g, '\\"');
 }
 
-function metricLine(
+export function metricLine(
   name: string,
   labels: Record<string, string | null | undefined>,
   value: number,
@@ -420,7 +420,7 @@ function resetOutlookClient(): void {
  * each individually and return an array. Single block: try JSON.parse, fall
  * back to raw text.
  */
-function parseToolResult(result: any): any {
+export function parseToolResult(result: any): any {
   if (!result?.content) return null;
 
   const texts: string[] = [];
@@ -456,7 +456,7 @@ function parseToolResult(result: any): any {
  * Handles: JSON array of strings, JSON object with messages key,
  * or raw text with hex IDs.
  */
-function extractGmailIds(data: any): string[] {
+export function extractGmailIds(data: any): string[] {
   // Array of strings (IDs directly)
   if (Array.isArray(data)) {
     if (data.length > 0 && typeof data[0] === "string") return data;
@@ -487,7 +487,7 @@ function extractGmailIds(data: any): string[] {
  * Parse gmail email data into EmailInfo[].
  * Handles JSON array of email objects or minimal fallback.
  */
-function parseGmailEmails(data: any, ids: string[]): EmailInfo[] {
+export function parseGmailEmails(data: any, ids: string[]): EmailInfo[] {
   const emails: EmailInfo[] = [];
 
   if (Array.isArray(data)) {

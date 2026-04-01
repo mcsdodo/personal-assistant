@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { executeInvoiceIntake, type InvoiceIntakeInput } from "./invoice-worker";
+import { executeInvoiceIntake, executeScanIntake, type InvoiceIntakeInput, type ScanIntakeInput } from "./invoice-worker";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import {
   createJob,
@@ -915,5 +915,433 @@ describe("invoice-worker unified tag derivation", () => {
     expect(output.tags).toContain("2026-03");
     expect(output.tags).not.toContain("techlab");
     expect(output.tags).not.toContain("invoicing");
+  });
+});
+
+// ── Scan intake helpers ─────────────────────────────────────────────────
+
+/** Build a minimal valid ScanIntakeInput */
+function makeScanInput(overrides: Partial<ScanIntakeInput> = {}): ScanIntakeInput {
+  return {
+    source: "gdrive",
+    file_id: "gdrive-file-abc",
+    filename: "scan_invoice.pdf",
+    month_tag: "2026-03",
+    watch_folder: "techlab/invoicing",
+    classification: {
+      doc_type: "invoice",
+      vendor: "Alza",
+      total_amount: 59.99,
+      currency: "EUR",
+      is_fuel: false,
+      owner: "techlab",
+      confidence: "high",
+      order_id: "FA2026030001",
+      subtitle: null,
+    },
+    ...overrides,
+  };
+}
+
+/** Create a scan_intake job and set it to running */
+function createRunningScanJob(input: ScanIntakeInput): JobRow {
+  const job = createJob(db, {
+    workflowType: "scan_intake",
+    inputJson: JSON.stringify(input),
+    sourceRef: `gdrive:${input.file_id}`,
+    idempotencyKey: `gdrive:${input.file_id}`,
+  });
+  db.prepare("UPDATE jobs SET state = 'running', started_at = datetime('now') WHERE id = ?").run(
+    job.id,
+  );
+  return getJob(db, job.id)!;
+}
+
+/** Mock handlers for moveGdriveFile: search watch folder, search target folder, move file */
+function moveGdriveMockHandlers(): FetchHandler[] {
+  return [
+    // search_drive_files → watch folder ID
+    () => jsonResponse(rpcResponse([{ id: "watch-folder-id", name: "invoicing" }])),
+    // search_drive_files → target subfolder ("processed") ID
+    () => jsonResponse(rpcResponse([{ id: "processed-folder-id", name: "processed" }])),
+    // update_drive_file → move file
+    () => jsonResponse(rpcResponse({ id: "gdrive-file-abc" })),
+  ];
+}
+
+// ── Scan intake tests ───────────────────────────────────────────────────
+
+describe("executeScanIntake", () => {
+  test("happy path: scan file read from disk, uploaded, moved to processed", async () => {
+    const filePath = join(tmpDir, "scan_invoice.pdf");
+    writeFileSync(filePath, Buffer.from("JVBER-fake-pdf"));
+
+    const input = makeScanInput({ file_path: filePath });
+    const job = createRunningScanJob(input);
+
+    mockFetch(
+      // 1. list_correspondents → match found
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 2. dedup check (direct Paperless API) → no duplicate
+      () => jsonResponse({ results: [] }),
+      // 3. list_tags → "techlab" exists, "invoicing" exists
+      () => jsonResponse(rpcResponse([
+        { id: 1, name: "invoicing" },
+        { id: 3, name: "techlab" },
+      ])),
+      // 4. create_tag for "2026-03" (month tag not in existing tags)
+      () => jsonResponse(rpcResponse({ id: 20 })),
+      // 5. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 6. post_document → task UUID
+      () => new Response('"task-uuid-scan"', { status: 200 }),
+      // 7-9. setDocumentCustomFields: task poll, PATCH, verify
+      ...customFieldsMockHandlers(),
+      // 10-12. moveGdriveFile: search watch folder, search target folder, move file
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("uploaded");
+    expect(output.title).toBe("Alza - FA2026030001");
+    expect(output.correspondent).toBe("Alza");
+    expect(output.tags).toEqual(["techlab", "invoicing", "2026-03"]);
+    expect(output.total_amount).toBe(59.99);
+
+    // Verify events were recorded
+    const events = getJobEvents(db, job.id);
+    const stepNames = events
+      .filter((e) => e.event_type === "step_started" && e.payload_json)
+      .map((e) => JSON.parse(e.payload_json!).step);
+    expect(stepNames).toContain("read_from_disk");
+    expect(stepNames).toContain("resolve_correspondent");
+    expect(stepNames).toContain("deduplicate");
+    expect(stepNames).toContain("resolve_tags");
+    expect(stepNames).toContain("upload");
+    expect(stepNames).toContain("set_custom_fields");
+  });
+
+  test("detects exact duplicate, completes and moves to processed", async () => {
+    const filePath = join(tmpDir, "dup_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const input = makeScanInput({ file_path: filePath });
+    const job = createRunningScanJob(input);
+
+    mockFetch(
+      // 1. list_correspondents → match found
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 2. dedup check → exact duplicate (same order_id + same amount)
+      () => jsonResponse({ results: [{
+        id: 77,
+        title: "Alza - FA2026030001",
+        custom_fields: [{ field: 4, value: "FA2026030001" }, { field: 1, value: 59.99 }],
+      }] }),
+      // 3-5. moveGdriveFile to processed/
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("duplicate");
+    expect(output.duplicate_of).toBe(77);
+  });
+
+  test("detects likely duplicate (amount differs) and pauses without moving", async () => {
+    const filePath = join(tmpDir, "likely_dup_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const input = makeScanInput({ file_path: filePath });
+    const job = createRunningScanJob(input);
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 2. dedup check → match but different amount
+      () => jsonResponse({ results: [{
+        id: 77,
+        title: "Alza - FA2026030001",
+        custom_fields: [{ field: 4, value: "FA2026030001" }, { field: 1, value: 100.0 }],
+      }] }),
+      // No moveGdriveFile — job pauses for approval
+    );
+
+    await executeScanIntake(db, job, logger, registry);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("awaiting_approval");
+  });
+
+  test("unknown vendor creates new correspondent", async () => {
+    const filePath = join(tmpDir, "unknown_vendor.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const input = makeScanInput({
+      file_path: filePath,
+      classification: {
+        ...makeScanInput().classification,
+        vendor: "NewCorp",
+        order_id: null,
+      },
+    });
+    const job = createRunningScanJob(input);
+
+    mockFetch(
+      // 1. list_correspondents → no match
+      () => jsonResponse(rpcResponse([{ id: 1, name: "Alza" }, { id: 2, name: "Orange" }])),
+      // 2. create_correspondent
+      () => jsonResponse(rpcResponse({ id: 50, name: "NewCorp" })),
+      // NO dedup (order_id is null)
+      // 3. list_tags → techlab exists, invoicing exists
+      () => jsonResponse(rpcResponse([
+        { id: 1, name: "invoicing" },
+        { id: 3, name: "techlab" },
+      ])),
+      // 4. create_tag for "2026-03"
+      () => jsonResponse(rpcResponse({ id: 20 })),
+      // 5. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 6. post_document
+      () => new Response('"task-uuid-new"', { status: 200 }),
+      // 7-9. setDocumentCustomFields (total_amount is set)
+      ...customFieldsMockHandlers(),
+      // 10-12. moveGdriveFile
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("uploaded");
+    expect(output.correspondent).toBe("NewCorp");
+  });
+
+  test("upload failure marks job failed and moves file to errors/", async () => {
+    const filePath = join(tmpDir, "fail_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const input = makeScanInput({
+      file_path: filePath,
+      classification: {
+        ...makeScanInput().classification,
+        order_id: null,
+        total_amount: null,
+      },
+    });
+    const job = createRunningScanJob(input);
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // NO dedup (order_id is null)
+      // 2. list_tags
+      () => jsonResponse(rpcResponse([
+        { id: 1, name: "invoicing" },
+        { id: 3, name: "techlab" },
+      ])),
+      // 3. create_tag for "2026-03"
+      () => jsonResponse(rpcResponse({ id: 20 })),
+      // 4. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 5. post_document → 500 error
+      () => jsonResponse({ error: "Internal server error" }, 500),
+      // 6-8. moveGdriveFile to errors/
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("failed");
+    expect(updated.error_json).toContain("500");
+  });
+
+  test("skips custom fields when no total_amount or order_id", async () => {
+    const filePath = join(tmpDir, "no_fields_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const input = makeScanInput({
+      file_path: filePath,
+      classification: {
+        ...makeScanInput().classification,
+        order_id: null,
+        total_amount: null,
+      },
+    });
+    const job = createRunningScanJob(input);
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // NO dedup (order_id is null)
+      // 2. list_tags
+      () => jsonResponse(rpcResponse([
+        { id: 1, name: "invoicing" },
+        { id: 3, name: "techlab" },
+      ])),
+      // 3. create_tag for "2026-03"
+      () => jsonResponse(rpcResponse({ id: 20 })),
+      // 4. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 5. post_document → OK (no custom fields step follows)
+      () => new Response('"task-uuid-nf"', { status: 200 }),
+      // 6-8. moveGdriveFile (no custom fields mock handlers needed)
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("uploaded");
+  });
+
+  test("tags derived from watch_folder path segments", async () => {
+    const filePath = join(tmpDir, "custom_folder_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const input = makeScanInput({
+      file_path: filePath,
+      watch_folder: "personal/receipts",
+      month_tag: "2026-01",
+      classification: {
+        ...makeScanInput().classification,
+        order_id: null,
+        total_amount: null,
+        is_fuel: true,
+      },
+    });
+    const job = createRunningScanJob(input);
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // NO dedup (order_id is null)
+      // 2. list_tags → "personal" exists, others need creating
+      () => jsonResponse(rpcResponse([{ id: 8, name: "personal" }])),
+      // 3. create_tag for "receipts"
+      () => jsonResponse(rpcResponse({ id: 30 })),
+      // 4. create_tag for "fuel"
+      () => jsonResponse(rpcResponse({ id: 31 })),
+      // 5. create_tag for "2026-01"
+      () => jsonResponse(rpcResponse({ id: 32 })),
+      // 6. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 7. post_document
+      () => new Response('"task-uuid-tags"', { status: 200 }),
+      // 8-10. moveGdriveFile
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.tags).toEqual(["personal", "receipts", "fuel", "2026-01"]);
+  });
+
+  test("title uses subtitle when no order_id", async () => {
+    const filePath = join(tmpDir, "subtitle_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const input = makeScanInput({
+      file_path: filePath,
+      classification: {
+        ...makeScanInput().classification,
+        order_id: null,
+        total_amount: null,
+        subtitle: "Dochádzka marec 2026",
+      },
+    });
+    const job = createRunningScanJob(input);
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // NO dedup
+      // 2. list_tags
+      () => jsonResponse(rpcResponse([
+        { id: 1, name: "invoicing" },
+        { id: 3, name: "techlab" },
+        { id: 7, name: "2026-03" },
+      ])),
+      // 3. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 4. post_document
+      () => new Response('"task-uuid-sub"', { status: 200 }),
+      // 5-7. moveGdriveFile
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry);
+
+    const output = JSON.parse(getJob(db, job.id)!.output_json!);
+    expect(output.title).toBe("Alza - Dochádzka marec 2026");
+  });
+
+  test("title uses filename (stripped extension) when no order_id or subtitle", async () => {
+    const filePath = join(tmpDir, "20260325_blok_tankovanie.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const input = makeScanInput({
+      file_path: filePath,
+      filename: "20260325_blok_tankovanie.pdf",
+      classification: {
+        ...makeScanInput().classification,
+        order_id: null,
+        total_amount: null,
+        subtitle: null,
+      },
+    });
+    const job = createRunningScanJob(input);
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // NO dedup
+      // 2. list_tags
+      () => jsonResponse(rpcResponse([
+        { id: 1, name: "invoicing" },
+        { id: 3, name: "techlab" },
+        { id: 7, name: "2026-03" },
+      ])),
+      // 3. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 4. post_document
+      () => new Response('"task-uuid-fn"', { status: 200 }),
+      // 5-7. moveGdriveFile
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry);
+
+    const output = JSON.parse(getJob(db, job.id)!.output_json!);
+    expect(output.title).toBe("Alza - 20260325_blok_tankovanie");
+  });
+
+  test("fails with invalid input_json", async () => {
+    const job = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: "not-valid-json{{{",
+    });
+    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
+    const runningJob = getJob(db, job.id)!;
+
+    await executeScanIntake(db, runningJob, logger, registry);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("failed");
+    expect(updated.error_json).toContain("invalid_input");
   });
 });
