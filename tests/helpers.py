@@ -38,9 +38,9 @@ GMAIL_TO = "lacny.jozef+dev@gmail.com"
 OUTLOOK_TO = "lacny.jozef+dev@hotmail.com"
 
 PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "http://localhost:8010/api")
-PAPERLESS_TOKEN = os.environ.get(
-    "PAPERLESS_TOKEN", "890b1029600bdeaf13dcfc3d2875789eb71b713a"
-)
+PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN") or os.environ.get("PAPERLESS_API_TOKEN")
+if not PAPERLESS_TOKEN:
+    raise RuntimeError("PAPERLESS_TOKEN or PAPERLESS_API_TOKEN env var required for E2E tests")
 
 CONTAINER = "personal-assistant-claude"
 COMPOSE_CMD = "docker compose --profile local --env-file .env"
@@ -315,7 +315,7 @@ def poll_email_status(
 
     raise TimeoutError(
         f"Email matching '{subject_contains}' did not reach {target_statuses} "
-        f"within {timeout}s. Last rows: {rows if 'rows' in dir() else 'none'}"
+        f"within {timeout}s. Last rows: {rows if 'rows' in locals() else 'none'}"
     )
 
 

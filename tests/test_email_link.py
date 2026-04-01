@@ -15,6 +15,7 @@ Run:
 
 from __future__ import annotations
 
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -30,7 +31,24 @@ from .helpers import (
     paperless_find_by_title,
 )
 
-pytestmark = [pytest.mark.link, pytest.mark.slow]
+
+def _host_reachable(host: str, port: int = 22, timeout: float = 3) -> bool:
+    try:
+        s = socket.create_connection((host, port), timeout)
+        s.close()
+        return True
+    except (OSError, TimeoutError):
+        return False
+
+
+pytestmark = [
+    pytest.mark.link,
+    pytest.mark.slow,
+    pytest.mark.skipif(
+        not _host_reachable("192.168.0.96"),
+        reason="host1 not reachable for PDF server",
+    ),
+]
 
 PDF_SERVER_HOST = "192.168.0.96"
 PDF_SERVER_PORT = 8888
@@ -122,7 +140,7 @@ def pdf_server():
 class TestDownloadLink:
     """Test invoice download via link in email body."""
 
-    def test_alza_known_link(self, reset_pipeline_outlook_only, clean_paperless, pdf_server):
+    def test_alza_known_link(self, reset_pipeline, clean_paperless, pdf_server):
         """Alza-style email with Stiahnuť faktúru link: extracted, downloaded, uploaded."""
         send_html_email(
             to=OUTLOOK_TO,
@@ -178,7 +196,7 @@ GMAIL_LINK_TEXT = (
 class TestGmailDownloadLink:
     """Test invoice download via link in Gmail email body (HTML extraction)."""
 
-    def test_gmail_alza_known_link(self, reset_pipeline_gmail_only, clean_paperless, pdf_server):
+    def test_gmail_alza_known_link(self, reset_pipeline, clean_paperless, pdf_server):
         """Gmail Alza email with Stiahnuť faktúru link: HTML extracted, downloaded, uploaded."""
         send_html_email(
             to=GMAIL_TO,

@@ -31,20 +31,6 @@ def reset_pipeline():
     yield
 
 
-@pytest.fixture(scope="module")
-def reset_pipeline_gmail_only():
-    """Reset with both sources pre-seeded (prevents first_start Telegram prompt)."""
-    full_reset("gmail", "outlook")
-    yield
-
-
-@pytest.fixture(scope="module")
-def reset_pipeline_outlook_only():
-    """Reset with both sources pre-seeded (prevents first_start Telegram prompt)."""
-    full_reset("gmail", "outlook")
-    yield
-
-
 @pytest.fixture
 def clean_paperless():
     """Wipe Paperless between tests (without full container restart)."""
