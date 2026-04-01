@@ -15,11 +15,22 @@ from mcp.server.fastmcp import FastMCP
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 SCOPES = ["Mail.Read"]
+HTTP_TIMEOUT = 30  # seconds — prevents infinite hangs on Azure AD / Graph API
 
 mcp_server = FastMCP("outlook")
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────
+
+# Singleton MSAL app + cache — created once at startup, reused for all calls.
+# Avoids re-fetching Azure AD OpenID discovery on every tool invocation
+# (the old code created a new PublicClientApplication per call, whose __init__
+# makes a sync HTTP request to /.well-known/openid-configuration — when Azure
+# was slow this blocked the event loop for 16+ minutes, killing health checks).
+_msal_app: msal.PublicClientApplication | None = None
+_msal_cache: msal.SerializableTokenCache | None = None
+_msal_lock = threading.Lock()
+
 
 def _token_cache_path() -> Path:
     return Path(os.environ.get("TOKEN_CACHE_PATH", "/data/token_cache.json"))
@@ -40,16 +51,37 @@ def _save_cache(cache: msal.SerializableTokenCache):
         path.write_text(cache.serialize())
 
 
+class _TimeoutSession(requests.Session):
+    """requests.Session with a default timeout on every request."""
+
+    def request(self, *args, **kwargs):  # type: ignore[override]
+        kwargs.setdefault("timeout", HTTP_TIMEOUT)
+        return super().request(*args, **kwargs)
+
+
 def _get_app_and_cache():
-    client_id = os.environ["AZURE_CLIENT_ID"]
-    tenant_id = os.environ.get("AZURE_TENANT_ID", "common")
-    cache = _load_cache()
-    app = msal.PublicClientApplication(
-        client_id,
-        authority=f"https://login.microsoftonline.com/{tenant_id}",
-        token_cache=cache,
-    )
-    return app, cache
+    """Return cached MSAL app + token cache (created once, reused)."""
+    global _msal_app, _msal_cache
+    if _msal_app is not None and _msal_cache is not None:
+        return _msal_app, _msal_cache
+
+    with _msal_lock:
+        # Double-check after acquiring lock
+        if _msal_app is not None and _msal_cache is not None:
+            return _msal_app, _msal_cache
+
+        client_id = os.environ["AZURE_CLIENT_ID"]
+        tenant_id = os.environ.get("AZURE_TENANT_ID", "common")
+        cache = _load_cache()
+        app = msal.PublicClientApplication(
+            client_id,
+            authority=f"https://login.microsoftonline.com/{tenant_id}",
+            token_cache=cache,
+            http_client=_TimeoutSession(),
+        )
+        _msal_app = app
+        _msal_cache = cache
+        return app, cache
 
 
 def get_access_token() -> str:
@@ -68,13 +100,13 @@ def get_access_token() -> str:
     if "user_code" not in flow:
         raise RuntimeError(f"Device flow failed: {flow.get('error_description')}")
 
-    print(f"\n{'='*60}", flush=True)
+    print(f"\n{'=' * 60}", flush=True)
     print(f"OUTLOOK AUTH REQUIRED", flush=True)
-    print(f"{'='*60}", flush=True)
+    print(f"{'=' * 60}", flush=True)
     print(f"  1. Open:  {flow['verification_uri']}", flush=True)
     print(f"  2. Enter: {flow['user_code']}", flush=True)
     print(f"  Waiting for you to complete sign-in...", flush=True)
-    print(f"{'='*60}\n", flush=True)
+    print(f"{'=' * 60}\n", flush=True)
 
     result = app.acquire_token_by_device_flow(flow)
     if "access_token" not in result:
@@ -87,15 +119,21 @@ def get_access_token() -> str:
 
 def _session() -> requests.Session:
     token = get_access_token()
-    s = requests.Session()
+    s = _TimeoutSession()
     s.headers["Authorization"] = f"Bearer {token}"
     return s
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────
 
+
 @mcp_server.tool()
-def list_emails(top: int = 20, sender: str | None = None, folder: str | None = None, received_after: str | None = None) -> list[dict]:
+def list_emails(
+    top: int = 20,
+    sender: str | None = None,
+    folder: str | None = None,
+    received_after: str | None = None,
+) -> list[dict]:
     """List recent emails from Outlook.
 
     Args:
@@ -136,7 +174,8 @@ def list_emails(top: int = 20, sender: str | None = None, folder: str | None = N
             "to": ", ".join(
                 r.get("emailAddress", {}).get("address", "")
                 for r in m.get("toRecipients", [])
-            ) or None,
+            )
+            or None,
             "subject": m.get("subject", ""),
             "received_at": m.get("receivedDateTime", ""),
             "has_attachments": m.get("hasAttachments", False),
@@ -154,8 +193,10 @@ def get_email(message_id: str) -> dict:
         message_id: Outlook message ID.
     """
     s = _session()
-    resp = s.get(f"{GRAPH_BASE}/me/messages/{message_id}",
-                 params={"$select": "id,subject,from,receivedDateTime,body,hasAttachments"})
+    resp = s.get(
+        f"{GRAPH_BASE}/me/messages/{message_id}",
+        params={"$select": "id,subject,from,receivedDateTime,body,hasAttachments"},
+    )
     resp.raise_for_status()
     msg = resp.json()
     return {
@@ -198,6 +239,7 @@ def download_attachment(message_id: str, attachment_id: str) -> dict:
         attachment_id: Attachment ID.
     """
     import base64
+
     s = _session()
     resp = s.get(f"{GRAPH_BASE}/me/messages/{message_id}/attachments/{attachment_id}")
     resp.raise_for_status()
@@ -212,6 +254,7 @@ def download_attachment(message_id: str, attachment_id: str) -> dict:
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
+
 def _find_folder(s: requests.Session, name: str) -> str | None:
     resp = s.get(f"{GRAPH_BASE}/me/mailFolders", params={"$top": 100})
     resp.raise_for_status()
@@ -221,8 +264,8 @@ def _find_folder(s: requests.Session, name: str) -> str | None:
     return None
 
 
-
 # ── Startup ───────────────────────────────────────────────────────────────
+
 
 def _startup_auth():
     """Authenticate at startup. Blocks until complete if interactive flow needed."""
@@ -250,13 +293,18 @@ if __name__ == "__main__":
         if scope["type"] == "http":
             path = scope.get("path", "")
             if path == "/health":
-                await send({"type": "http.response.start", "status": 200, "headers": [[b"content-type", b"text/plain"]]})
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": [[b"content-type", b"text/plain"]],
+                    }
+                )
                 await send({"type": "http.response.body", "body": b"ok"})
                 return
             headers = list(scope.get("headers", []))
             scope["headers"] = [
-                (k, b"localhost:8002") if k == b"host" else (k, v)
-                for k, v in headers
+                (k, b"localhost:8002") if k == b"host" else (k, v) for k, v in headers
             ]
         await app(scope, receive, send)
 
