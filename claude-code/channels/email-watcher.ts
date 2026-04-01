@@ -404,11 +404,11 @@ async function getOutlookClient(): Promise<Client> {
   return client;
 }
 
-function resetGmailClient(): void {
+export function resetGmailClient(): void {
   gmailClient = null;
 }
 
-function resetOutlookClient(): void {
+export function resetOutlookClient(): void {
   outlookClient = null;
 }
 
@@ -543,7 +543,7 @@ export function parseGmailEmails(data: any, ids: string[]): EmailInfo[] {
   return [];
 }
 
-async function pollGmail(db: Database, query: string): Promise<EmailInfo[]> {
+export async function pollGmail(db: Database, query: string): Promise<EmailInfo[]> {
   if (!gmailEnabled) return [];
 
   try {
@@ -645,7 +645,7 @@ async function pollGmail(db: Database, query: string): Promise<EmailInfo[]> {
 // Outlook polling
 // ---------------------------------------------------------------------------
 
-async function pollOutlook(db: Database, receivedAfter: string | null): Promise<EmailInfo[]> {
+export async function pollOutlook(db: Database, receivedAfter: string | null): Promise<EmailInfo[]> {
   if (!OUTLOOK_ENABLED) return [];
 
   try {
@@ -692,7 +692,7 @@ async function pollOutlook(db: Database, receivedAfter: string | null): Promise<
 // Process new emails (insert + push channel notifications)
 // ---------------------------------------------------------------------------
 
-async function processNewEmails(db: Database, channel: Server, emails: EmailInfo[]): Promise<void> {
+export async function processNewEmails(db: Database, channel: Server, emails: EmailInfo[]): Promise<void> {
   if (emails.length === 0) return;
 
   // Cap to avoid flooding
@@ -1094,7 +1094,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!queued || queued.length === 0) {
           return { content: [{ type: "text", text: `No catchup emails queued for ${source}` }], isError: true };
         }
-        await processNewEmails(db, mcp, queued);
+        // Process in batches — processNewEmails caps at MAX_NEW_PER_CYCLE
+        for (let i = 0; i < queued.length; i += MAX_NEW_PER_CYCLE) {
+          await processNewEmails(db, mcp, queued.slice(i, i + MAX_NEW_PER_CYCLE));
+        }
         setLastChecked(db, source, new Date().toISOString());
         catchupQueue.delete(source);
         log(`Approved catchup for ${source}: processed ${queued.length} emails`);
@@ -1260,7 +1263,9 @@ async function main(): Promise<void> {
   }, POLL_INTERVAL_MS);
 }
 
-main().catch((e) => {
-  log(`Fatal error: ${e.message}`);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((e) => {
+    log(`Fatal error: ${e.message}`);
+    process.exit(1);
+  });
+}
