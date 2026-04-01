@@ -29,6 +29,31 @@ interface McpJsonRpcResponse {
 
 let requestId = 0;
 
+/** Max retries for transient network errors (connection refused, DNS failures). */
+const MAX_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 1000;
+
+/**
+ * Check if an error is a transient network error worth retrying.
+ * Bun's fetch throws these when the TCP connection itself fails.
+ */
+function isTransientNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = error.message.toLowerCase();
+  return (
+    msg.includes("unable to connect") ||
+    msg.includes("connection refused") ||
+    msg.includes("econnrefused") ||
+    msg.includes("enotfound") ||
+    msg.includes("dns") ||
+    msg.includes("etimedout") ||
+    msg.includes("econnreset") ||
+    (error as any).code === "ConnectionRefused" ||
+    (error as any).code === "ECONNREFUSED" ||
+    (error as any).code === "ENOTFOUND"
+  );
+}
+
 /**
  * Call an MCP tool on a Streamable HTTP server.
  *
@@ -36,8 +61,9 @@ let requestId = 0;
  * this is a simple POST. For stateful servers (paperless-mcp, gmail-mcp), an MCP
  * session may be needed — we initialize one on first call.
  *
- * Note: Streamable HTTP servers may require an initialize handshake first.
- * We handle this transparently.
+ * Retries transient network errors (connection refused, DNS failures) up to 3 times
+ * with exponential backoff. This handles cases where Docker DNS or a container
+ * isn't fully ready yet.
  */
 export async function callMcpTool(
   serverUrl: string,
@@ -49,51 +75,92 @@ export async function callMcpTool(
     "mcp.server": server,
     "mcp.tool": toolName,
   }, async (span) => {
-    const id = ++requestId;
+    let lastError: Error | undefined;
 
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
-    };
-    injectTraceHeaders(headers);
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+          span.addEvent("retry", { attempt, delay_ms: delay });
+          await new Promise((r) => setTimeout(r, delay));
+        }
 
-    // Try direct tool call first (works for stateless servers)
-    const response = await fetch(serverUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id,
-        method: "tools/call",
-        params: { name: toolName, arguments: args },
-      }),
-    });
-
-    if (!response.ok) {
-      // If we get a 400/405, the server may need initialization first
-      if (response.status === 400 || response.status === 405) {
-        return callMcpToolWithSession(serverUrl, toolName, args);
+        const result = await callMcpToolOnce(serverUrl, toolName, args, span);
+        if (attempt > 0) {
+          span.setAttribute("mcp.retries", attempt);
+        }
+        return result;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (!isTransientNetworkError(error) || attempt === MAX_RETRIES) {
+          throw lastError;
+        }
+        // Log retry for observability
+        span.addEvent("transient_error", {
+          attempt,
+          error: lastError.message,
+        });
       }
-      span.setAttribute("http.status_code", response.status);
-      throw new Error(`MCP call failed: ${response.status} ${response.statusText}`);
     }
 
-    span.setAttribute("http.status_code", response.status);
-
-    const contentType = response.headers.get("content-type") ?? "";
-
-    // Handle SSE response (some servers use text/event-stream)
-    if (contentType.includes("text/event-stream")) {
-      return parseSseResponse(response);
-    }
-
-    // Handle plain JSON response
-    const json = (await response.json()) as McpJsonRpcResponse;
-    if (json.error) {
-      throw new Error(`MCP error ${json.error.code}: ${json.error.message}`);
-    }
-    return json.result!;
+    // Should not reach here, but satisfy TypeScript
+    throw lastError ?? new Error("MCP call failed after retries");
   });
+}
+
+/**
+ * Single attempt to call an MCP tool. Handles stateless vs stateful servers.
+ */
+async function callMcpToolOnce(
+  serverUrl: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  span: Span,
+): Promise<McpToolResult> {
+  const id = ++requestId;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+  };
+  injectTraceHeaders(headers);
+
+  // Try direct tool call first (works for stateless servers)
+  const response = await fetch(serverUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: toolName, arguments: args },
+    }),
+  });
+
+  if (!response.ok) {
+    // If we get a 400/405, the server may need initialization first
+    if (response.status === 400 || response.status === 405) {
+      return callMcpToolWithSession(serverUrl, toolName, args);
+    }
+    span.setAttribute("http.status_code", response.status);
+    throw new Error(`MCP call failed: ${response.status} ${response.statusText}`);
+  }
+
+  span.setAttribute("http.status_code", response.status);
+
+  const contentType = response.headers.get("content-type") ?? "";
+
+  // Handle SSE response (some servers use text/event-stream)
+  if (contentType.includes("text/event-stream")) {
+    return parseSseResponse(response);
+  }
+
+  // Handle plain JSON response
+  const json = (await response.json()) as McpJsonRpcResponse;
+  if (json.error) {
+    throw new Error(`MCP error ${json.error.code}: ${json.error.message}`);
+  }
+  return json.result!;
 }
 
 /**
