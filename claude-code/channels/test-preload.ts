@@ -7,7 +7,8 @@ import { mock } from "bun:test";
 // Set env vars required by production code but not needed in tests.
 // PAPERLESS_URL: invoice-worker.ts and workflow-mcp.ts throw if missing;
 // tests mock all HTTP calls so the actual value is irrelevant.
-process.env.PAPERLESS_URL ??= "http://paperless-mock";
+// Use || to also handle empty string (??= only handles null/undefined).
+process.env.PAPERLESS_URL = process.env.PAPERLESS_URL || "http://paperless-mock";
 
 const noopSpan = {
   setAttribute: () => {},
