@@ -1,28 +1,15 @@
-import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
-// MCP SDK mocks are in test-preload.ts (loaded before all tests via bunfig.toml).
-// No ./db mock needed here �� import.meta.main guard prevents main() from running,
-// so openDb() is never called. The integration test provides the real ./db mock.
-
-// Dynamic import — the mocks above MUST be registered before this runs.
-let buildGmailQuery: any;
-let parseDuration: any;
-let esc: any;
-let metricLine: any;
-let parseToolResult: any;
-let extractGmailIds: any;
-let parseGmailEmails: any;
-
-beforeAll(async () => {
-  const mod = await import("./email-watcher");
-  buildGmailQuery = mod.buildGmailQuery;
-  parseDuration = mod.parseDuration;
-  esc = mod.esc;
-  metricLine = mod.metricLine;
-  parseToolResult = mod.parseToolResult;
-  extractGmailIds = mod.extractGmailIds;
-  parseGmailEmails = mod.parseGmailEmails;
-});
+// Import directly from the pure utils module — no mocks needed, no side effects.
+import {
+  buildGmailQuery,
+  parseDuration,
+  esc,
+  metricLine,
+  parseToolResult,
+  extractGmailIds,
+  parseGmailEmails,
+} from "./email-watcher-utils";
 
 // ---------------------------------------------------------------------------
 // buildGmailQuery
@@ -33,18 +20,18 @@ beforeAll(async () => {
 
 describe("buildGmailQuery", () => {
   test("returns empty string when no lastChecked and no base", () => {
-    expect(buildGmailQuery(null)).toBe("");
+    expect(buildGmailQuery("", null)).toBe("");
   });
 
   test("returns after:epoch when lastChecked is provided", () => {
     const ts = "2026-03-15T12:00:00Z";
     const epoch = Math.floor(new Date(ts).getTime() / 1000);
-    expect(buildGmailQuery(ts)).toBe(`after:${epoch}`);
+    expect(buildGmailQuery("", ts)).toBe(`after:${epoch}`);
   });
 
   test("epoch is correct for a known timestamp", () => {
     // 2026-01-01T00:00:00Z = 1767225600
-    const result = buildGmailQuery("2026-01-01T00:00:00Z");
+    const result = buildGmailQuery("", "2026-01-01T00:00:00Z");
     expect(result).toBe("after:1767225600");
   });
 });

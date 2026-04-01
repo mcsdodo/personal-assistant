@@ -33,21 +33,12 @@ import {
 import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId } from "./tracing";
 import { extractInvoiceLinks } from "./invoice-links";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface EmailInfo {
-  id: string;
-  source: "gmail" | "outlook";
-  sender?: string;
-  to?: string;
-  subject?: string;
-  preview?: string;
-  hasAttachments?: boolean;
-  receivedAt?: string;
-  invoiceLinks?: Array<{ url: string; text: string; docId?: string }>;
-}
+// Pure functions live in email-watcher-utils.ts (no side effects, safe to import from tests).
+// Re-export for backward compatibility + import for internal use.
+export type { EmailInfo } from "./email-watcher-utils";
+export { parseDuration, esc, metricLine, parseToolResult, extractGmailIds, parseGmailEmails } from "./email-watcher-utils";
+import type { EmailInfo } from "./email-watcher-utils";
+import { buildGmailQuery as _buildGmailQuery, parseDuration, esc, metricLine, parseToolResult, extractGmailIds, parseGmailEmails } from "./email-watcher-utils";
 
 // ---------------------------------------------------------------------------
 // Config (env vars)
@@ -78,25 +69,12 @@ import { filterEmailsByRecipient } from "./email-filter";
 
 const gmailEnabled = GMAIL_EMAIL.length > 0;
 
-export function buildGmailQuery(lastChecked: string | null): string {
-  const base = GMAIL_SEARCH_BASE;
-  if (!lastChecked) return base;
-  const epoch = Math.floor(new Date(lastChecked).getTime() / 1000);
-  return base ? `${base} after:${epoch}` : `after:${epoch}`;
+// buildGmailQuery wrapper — passes module-level GMAIL_SEARCH_BASE to the pure function
+function buildGmailQuery(lastChecked: string | null): string {
+  return _buildGmailQuery(GMAIL_SEARCH_BASE, lastChecked);
 }
-
-export function parseDuration(duration: string): number {
-  const match = duration.match(/^(\d+)\s*(h|d|w|m)$/i);
-  if (!match) return 24 * 60 * 60 * 1000;
-  const value = parseInt(match[1], 10);
-  switch (match[2].toLowerCase()) {
-    case "h": return value * 60 * 60 * 1000;
-    case "d": return value * 24 * 60 * 60 * 1000;
-    case "w": return value * 7 * 24 * 60 * 60 * 1000;
-    case "m": return value * 30 * 24 * 60 * 60 * 1000;
-    default: return 24 * 60 * 60 * 1000;
-  }
-}
+// Re-export with the base param for direct testing
+export { buildGmailQuery as _buildGmailQueryWithBase } from "./email-watcher-utils";
 
 // ---------------------------------------------------------------------------
 // Tracing
@@ -111,25 +89,7 @@ const tracer = getTracer("email-watcher");
 
 const log = createLogger("email-watcher");
 
-export function esc(value: string | null | undefined): string {
-  return String(value ?? "")
-    .replace(/\\/g, "\\\\")
-    .replace(/\n/g, "\\n")
-    .replace(/"/g, '\\"');
-}
-
-export function metricLine(
-  name: string,
-  labels: Record<string, string | null | undefined>,
-  value: number,
-): string {
-  const parts = Object.entries(labels)
-    .filter(([, v]) => v !== undefined && v !== null && v !== "")
-    .map(([k, v]) => `${k}="${esc(v)}"`);
-  return parts.length > 0
-    ? `${name}{${parts.join(",")}} ${value}`
-    : `${name} ${value}`;
-}
+// esc and metricLine imported from ./email-watcher-utils
 
 function renderMetrics(db: Database): string {
   const lines: string[] = [
@@ -412,136 +372,11 @@ export function resetOutlookClient(): void {
   outlookClient = null;
 }
 
-/**
- * Extract data from MCP tool result content blocks.
- *
- * FastMCP (Python) serialises list[dict] as separate text content blocks —
- * one JSON object per block. If there are multiple text blocks, try to parse
- * each individually and return an array. Single block: try JSON.parse, fall
- * back to raw text.
- */
-export function parseToolResult(result: any): any {
-  if (!result?.content) return null;
-
-  const texts: string[] = [];
-  for (const block of result.content) {
-    if (block.type === "text" && typeof block.text === "string") {
-      texts.push(block.text);
-    }
-  }
-  if (texts.length === 0) return null;
-
-  // Multiple text blocks → likely one JSON object per block (FastMCP list)
-  if (texts.length > 1) {
-    const items = texts.map((t) => {
-      try { return JSON.parse(t); } catch { return t; }
-    });
-    return items;
-  }
-
-  // Single block → try JSON.parse, fall back to raw text
-  try {
-    return JSON.parse(texts[0]);
-  } catch {
-    return texts[0];
-  }
-}
+// parseToolResult, extractGmailIds, parseGmailEmails imported from ./email-watcher-utils
 
 // ---------------------------------------------------------------------------
 // Gmail polling
 // ---------------------------------------------------------------------------
-
-/**
- * Extract message IDs from gmail search results.
- * Handles: JSON array of strings, JSON object with messages key,
- * or raw text with hex IDs.
- */
-export function extractGmailIds(data: any): string[] {
-  // Array of strings (IDs directly)
-  if (Array.isArray(data)) {
-    if (data.length > 0 && typeof data[0] === "string") return data;
-    // Array of objects with id field
-    if (data.length > 0 && typeof data[0] === "object" && data[0]?.id) {
-      return data.map((m: any) => String(m.id));
-    }
-    return [];
-  }
-
-  // Object with messages array
-  if (data && typeof data === "object") {
-    if (Array.isArray(data.messages)) return extractGmailIds(data.messages);
-    if (Array.isArray(data.messageIds)) return data.messageIds;
-    if (data.id) return [String(data.id)];
-  }
-
-  // Raw text — look for 16+ character hex IDs
-  if (typeof data === "string") {
-    const matches = data.match(/\b[0-9a-f]{16,}\b/gi);
-    return matches ?? [];
-  }
-
-  return [];
-}
-
-/**
- * Parse gmail email data into EmailInfo[].
- * Handles JSON array of email objects or minimal fallback.
- */
-export function parseGmailEmails(data: any, ids: string[]): EmailInfo[] {
-  const emails: EmailInfo[] = [];
-
-  if (Array.isArray(data)) {
-    for (const item of data) {
-      if (typeof item === "object" && item !== null) {
-        const id = String(item.id ?? item.messageId ?? item.message_id ?? "");
-        if (!id) continue;
-        emails.push({
-          id,
-          source: "gmail",
-          sender: item.sender ?? item.from ?? item.fromAddress ?? undefined,
-          to: item.to ?? item.toAddress ?? item.recipient ?? undefined,
-          subject: item.subject ?? undefined,
-          preview: item.snippet ?? item.preview ?? item.body?.substring(0, 200) ?? undefined,
-          hasAttachments: item.hasAttachments ?? item.has_attachments ?? false,
-          receivedAt: item.receivedAt ?? item.received_at ?? item.date ?? item.internalDate ?? undefined,
-        });
-      }
-    }
-    if (emails.length > 0) return emails;
-  }
-
-  // Formatted text from google_workspace_mcp — parse Subject/From/Date
-  if (typeof data === "string" && data.includes("Message ID:")) {
-    const blocks = data.split(/(?=Message ID:)/);
-    for (const block of blocks) {
-      const idMatch = block.match(/Message ID:\s*(\S+)/);
-      if (!idMatch) continue;
-      const fromMatch = block.match(/From:\s*(.+)/);
-      const toMatch = block.match(/To:\s*(.+)/);
-      const subjectMatch = block.match(/Subject:\s*(.+)/);
-      const dateMatch = block.match(/Date:\s*(.+)/);
-      // Extract email from "Display Name" <email> format
-      const rawFrom = fromMatch?.[1]?.trim() ?? "";
-      const emailMatch = rawFrom.match(/<([^>]+)>/);
-      const rawTo = toMatch?.[1]?.trim() ?? "";
-      const toEmailMatch = rawTo.match(/<([^>]+)>/);
-      emails.push({
-        id: idMatch[1],
-        source: "gmail",
-        sender: emailMatch ? emailMatch[1] : rawFrom,
-        to: toEmailMatch ? toEmailMatch[1] : rawTo || undefined,
-        subject: subjectMatch?.[1]?.trim(),
-        hasAttachments: false,
-        receivedAt: dateMatch?.[1]?.trim(),
-      });
-    }
-    if (emails.length > 0) return emails;
-  }
-
-  // No fallback — IDs without metadata are useless (can't classify).
-  // The same IDs will appear on the next poll when the MCP is healthy.
-  return [];
-}
 
 export async function pollGmail(db: Database, query: string): Promise<EmailInfo[]> {
   if (!gmailEnabled) return [];
