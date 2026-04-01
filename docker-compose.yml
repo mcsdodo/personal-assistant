@@ -17,7 +17,7 @@ services:
       gmail-mcp:
         condition: service_healthy
       outlook-mcp:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "tmux has-session -t claude 2>/dev/null && curl -sf http://localhost:9465/health > /dev/null"]
       interval: 30s
