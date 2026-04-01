@@ -28,7 +28,7 @@ Outlook email access via Microsoft Graph:
 ### email-watcher (channel + tools)
 
 The email-watcher is both a channel (pushes events) and a tool server:
-- `update_email_status(id, status, classification?, action?, vendor?, confidence?, process_result?)` — record classification/processing results
+- `update_email_status(id, status, source?, classification?, action?, vendor?, confidence?, process_result?)` — record classification/processing results. Provide `source` (gmail/outlook) when the email wasn't detected by the watcher to auto-create the DB record (upsert).
 - `get_recent_emails(limit?, status?, source?)` — query the email audit trail
 - `get_email_stats()` — processing statistics (counts by status, last 24h)
 

@@ -157,13 +157,19 @@ export function emailExists(db: Database, id: string): boolean {
  * Auto-sets `classified_at` when `classification` is provided.
  * Auto-sets `processed_at` when `process_result` is provided.
  *
- * Returns `true` if the row was found (regardless of whether anything changed).
+ * When `source` is provided and the row doesn't exist, inserts a new row
+ * (upsert behavior). Without `source`, returns `"not_found"` for missing rows.
+ *
+ * Returns `"updated"` if an existing row was changed, `"inserted"` if a new
+ * row was created, or `"not_found"` if the row doesn't exist and no `source`
+ * was provided for upsert.
  */
 export function updateEmail(
   db: Database,
   id: string,
   fields: Partial<Record<string, string | null>>,
-): boolean {
+  source?: string,
+): "updated" | "inserted" | "not_found" {
   // Filter to allowed fields only
   const filtered: Record<string, string | null> = {};
   for (const [key, value] of Object.entries(fields)) {
@@ -184,9 +190,10 @@ export function updateEmail(
   if (keys.length === 0) {
     // Nothing to update — check if the row exists
     const row = db.prepare("SELECT 1 FROM emails WHERE id = ? LIMIT 1").get(id);
-    return row !== null;
+    return row !== null ? "updated" : "not_found";
   }
 
+  // Try UPDATE first
   const setClauses = keys.map((k) => `${k} = ?`).join(", ");
   const values = keys.map((k) => filtered[k]);
 
@@ -194,7 +201,29 @@ export function updateEmail(
     .prepare(`UPDATE emails SET ${setClauses} WHERE id = ?`)
     .run(...values, id);
 
-  return result.changes > 0;
+  if (result.changes > 0) {
+    return "updated";
+  }
+
+  // Row doesn't exist — upsert if source is provided
+  if (!source) {
+    return "not_found";
+  }
+
+  const insertFields: Record<string, string | null> = {
+    id,
+    source,
+    ...filtered,
+  };
+  const insertKeys = Object.keys(insertFields);
+  const insertPlaceholders = insertKeys.map(() => "?").join(", ");
+  const insertValues = insertKeys.map((k) => insertFields[k]);
+
+  db.prepare(
+    `INSERT INTO emails (${insertKeys.join(", ")}) VALUES (${insertPlaceholders})`,
+  ).run(...insertValues);
+
+  return "inserted";
 }
 
 /**

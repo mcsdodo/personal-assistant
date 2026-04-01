@@ -159,7 +159,7 @@ describe("updateEmail", () => {
       confidence: "high",
       status: "classified",
     });
-    expect(result).toBe(true);
+    expect(result).toBe("updated");
 
     const row = db.query("SELECT * FROM emails WHERE id = ?").get("msg-upd") as EmailRow;
     expect(row.classification).toBe(classificationJson);
@@ -175,7 +175,7 @@ describe("updateEmail", () => {
       process_result: "Uploaded to Paperless as doc #456",
       status: "processed",
     });
-    expect(result).toBe(true);
+    expect(result).toBe("updated");
 
     const row = db.query("SELECT * FROM emails WHERE id = ?").get("msg-upd") as EmailRow;
     expect(row.process_result).toBe("Uploaded to Paperless as doc #456");
@@ -183,9 +183,9 @@ describe("updateEmail", () => {
     expect(row.status).toBe("processed");
   });
 
-  test("returns false for nonexistent ID", () => {
+  test("returns not_found for nonexistent ID without source", () => {
     const result = updateEmail(db, "msg-nonexistent", { status: "failed" });
-    expect(result).toBe(false);
+    expect(result).toBe("not_found");
   });
 
   test("silently ignores disallowed fields (id, source)", () => {
@@ -194,7 +194,7 @@ describe("updateEmail", () => {
       source: "hacked-source",
       status: "classified",
     } as any);
-    expect(result).toBe(true);
+    expect(result).toBe("updated");
 
     const row = db.query("SELECT * FROM emails WHERE id = ?").get("msg-upd") as EmailRow;
     // Original values should be preserved
@@ -209,13 +209,68 @@ describe("updateEmail", () => {
       id: "hacked",
       source: "hacked",
     } as any);
-    // Row exists but no allowed fields to update — return true (row was found) or false
-    // The spec says "returns true if row was found", so since msg-upd exists, should be true
-    // But if nothing to update, implementation may skip. Let's accept either behavior.
-    // Actually: let's test that the row is unchanged.
+    // Row exists but no allowed fields to update — return "updated" (row was found)
+    expect(result).toBe("updated");
     const row = db.query("SELECT * FROM emails WHERE id = ?").get("msg-upd") as EmailRow;
     expect(row.id).toBe("msg-upd");
     expect(row.source).toBe("gmail");
+  });
+
+  // --- Upsert behavior ---
+
+  test("inserts new row when source is provided and row doesn't exist", () => {
+    const result = updateEmail(
+      db,
+      "msg-new-adhoc",
+      { status: "processed", process_result: "Uploaded manually" },
+      "gmail",
+    );
+    expect(result).toBe("inserted");
+
+    const row = db.query("SELECT * FROM emails WHERE id = ?").get("msg-new-adhoc") as EmailRow;
+    expect(row).toBeTruthy();
+    expect(row.id).toBe("msg-new-adhoc");
+    expect(row.source).toBe("gmail");
+    expect(row.status).toBe("processed");
+    expect(row.process_result).toBe("Uploaded manually");
+    expect(row.processed_at).toBeTruthy();
+    expect(row.discovered_at).toBeTruthy(); // SQLite default
+  });
+
+  test("upsert updates existing row instead of inserting duplicate", () => {
+    const result = updateEmail(
+      db,
+      "msg-upd",
+      { status: "processed", process_result: "Done" },
+      "gmail",
+    );
+    expect(result).toBe("updated");
+
+    // Should still be only one row
+    const rows = db.query("SELECT * FROM emails WHERE id = ?").all("msg-upd");
+    expect(rows).toHaveLength(1);
+    expect((rows[0] as EmailRow).status).toBe("processed");
+  });
+
+  test("upsert with classification sets classified_at on new row", () => {
+    const result = updateEmail(
+      db,
+      "msg-classified-new",
+      {
+        status: "classified",
+        classification: '{"action":"ignore"}',
+        vendor: "TestVendor",
+        confidence: "high",
+      },
+      "outlook",
+    );
+    expect(result).toBe("inserted");
+
+    const row = db.query("SELECT * FROM emails WHERE id = ?").get("msg-classified-new") as EmailRow;
+    expect(row.source).toBe("outlook");
+    expect(row.classification).toBe('{"action":"ignore"}');
+    expect(row.vendor).toBe("TestVendor");
+    expect(row.classified_at).toBeTruthy();
   });
 });
 

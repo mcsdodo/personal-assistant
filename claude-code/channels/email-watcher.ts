@@ -769,7 +769,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "update_email_status",
       description:
         "Update the status and classification details of a tracked email. " +
-        "Call this after classifying or processing an email to record the result.",
+        "Call this after classifying or processing an email to record the result. " +
+        "If the email wasn't detected by the watcher, provide 'source' to auto-create the record.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -778,6 +779,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             enum: ["classified", "processed", "failed", "ignored"],
             description: "New status for the email",
+          },
+          source: {
+            type: "string",
+            enum: ["gmail", "outlook"],
+            description: "Email source. Required when the email wasn't detected by email-watcher (enables auto-creation of the DB record).",
           },
           classification: { type: "string", description: "Classification JSON from email-classifier" },
           action: { type: "string", description: "Action taken (download_and_upload, notify_user, ignore)" },
@@ -866,6 +872,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
 
+        const source = args?.source as string | undefined;
         const fields: Record<string, string | null> = { status };
         if (args?.classification) fields.classification = args.classification as string;
         if (args?.action) fields.action = args.action as string;
@@ -873,16 +880,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (args?.confidence) fields.confidence = args.confidence as string;
         if (args?.process_result) fields.process_result = args.process_result as string;
 
-        const found = updateEmail(db, id, fields);
-        if (!found) {
+        const result = updateEmail(db, id, fields, source);
+        if (result === "not_found") {
           return {
-            content: [{ type: "text", text: `Email ${id} not found in database` }],
+            content: [{ type: "text", text: `Email ${id} not found in database. Provide 'source' (gmail/outlook) to auto-create the record.` }],
             isError: true,
           };
         }
 
+        const verb = result === "inserted" ? "Created and updated" : "Updated";
         return {
-          content: [{ type: "text", text: `Updated email ${id}: status=${status}` }],
+          content: [{ type: "text", text: `${verb} email ${id}: status=${status}` }],
         };
       }
 
