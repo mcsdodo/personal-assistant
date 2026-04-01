@@ -13,7 +13,7 @@ flowchart LR
         claude["Claude CLI (Sonnet)"]
         ew["email-watcher<br/>(stdio channel)"]
         tg["telegram<br/>(stdio channel)"]
-        wf["workflow-mcp<br/>(stdio server)<br/>includes invoice-worker"]
+        wf["workflow-mcp<br/>(HTTP :8003)<br/>includes invoice-worker"]
     end
 
     subgraph mcp["MCP containers"]
@@ -46,22 +46,36 @@ sequenceDiagram
     participant TG as Telegram
 
     rect rgb(40, 40, 60)
-    note over G,TG: First scan (per source)
-    G-->>EW: emails[]
-    EW->>DB: INSERT status="seed" (all emails)
-    note over DB: Seeds are terminal — never processed
+    note over G,TG: Startup — first run (no last_checked for source)
+    EW->>DB: getLastChecked(source)?
+    DB-->>EW: null
+    EW--)C: channel event<br/>(event_type: first_start)
+    note over C: Ask user via Telegram:<br/>"How far back to check?"
+    C->>EW: init_source(source, since)
+    EW->>DB: INSERT source_state(last_checked)
     end
 
     rect rgb(40, 40, 60)
-    note over G,TG: Subsequent polls — new email detected
+    note over G,TG: Startup — catchup required (too many since last_checked)
+    EW->>DB: getLastChecked(source)?
+    DB-->>EW: timestamp
+    G-->>EW: emails[] (count > threshold)
+    EW--)C: channel event<br/>(event_type: catchup_required, count: N)
+    note over C: Ask user via Telegram:<br/>"Process all N or skip?"
+    C->>EW: approve_catchup(source) | skip_catchup(source)
+    end
+
+    rect rgb(40, 40, 60)
+    note over G,TG: Normal poll — new email detected
     loop Every 30s
-        EW->>G: poll
+        EW->>G: poll (since last_checked)
         G-->>EW: emails[]
     end
     EW->>DB: emailExists(id)?
     DB-->>EW: false
     EW->>DB: INSERT status="new"
     EW--)C: channel notification<br/>(sender, subject, message_id, source)
+    EW->>DB: setLastChecked(source, now)
     end
 
     rect rgb(50, 40, 40)
@@ -137,8 +151,8 @@ Polls Gmail via the community `google_workspace_mcp` image (pinned `1.16.2`, sup
 `extractGmailIds` deduplicates IDs with `new Set()` because Gmail search results can return the same message as Message ID, Thread ID, and URL hex — without dedup, batch-fetch would process the same email multiple times.
 
 **Code:**
-- [`email-watcher.ts:521-605`](../claude-code/channels/email-watcher.ts#L521) — `pollGmail()`: search + batch-fetch + parse
-- [`email-watcher.ts:531`](../claude-code/channels/email-watcher.ts#L531) — search query from `GMAIL_SEARCH_QUERY` env (default: `newer_than:1d`)
+- [`email-watcher.ts:381-480`](../claude-code/channels/email-watcher.ts#L381) — `pollGmail()`: search + batch-fetch + parse
+- [`email-watcher.ts:56`](../claude-code/channels/email-watcher.ts#L56) — search query from `GMAIL_SEARCH_BASE` env (default: `newer_than:1d`)
 
 **Auth:** OAuth via `https://gmail-mcp.lacny.me/oauth2callback`. Trigger `start_google_auth` tool from inside the Claude session. Tokens persist in `/mnt/shared_configs/personal-assistant/gmail/`.
 
@@ -152,7 +166,7 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 **Flow:** `list_emails(top=20)` → parse response array → map to `EmailInfo`.
 
 **Code:**
-- [`email-watcher.ts:611-645`](../claude-code/channels/email-watcher.ts#L611) — `pollOutlook()`: call `list_emails`, parse array
+- [`email-watcher.ts:483-525`](../claude-code/channels/email-watcher.ts#L483) — `pollOutlook()`: call `list_emails`, parse array
 - [`outlook-mcp/server.py`](../outlook-mcp/server.py) — 4 tools: `list_emails`, `get_email`, `get_attachments`, `download_attachment`
 
 **Auth:** MSAL device code flow. On first start (no cached token), prints URL + code in container logs. Tokens persist in `/mnt/shared_configs/personal-assistant/outlook/token_cache.json`.
@@ -173,7 +187,7 @@ Haiku subagent classifies each new email by sender, subject, and body excerpt.
 
 **Code:**
 - [`agents/email-classifier.md`](../claude-code/agents/email-classifier.md) — Haiku classifier prompt defining all output fields and decision rules
-- [`invoice-worker.ts:40-92`](../claude-code/channels/invoice-worker.ts#L40) — `InvoiceIntakeInput` type definition with all classification fields
+- [`invoice-worker.ts:42-76`](../claude-code/channels/invoice-worker.ts#L42) — `InvoiceIntakeInput` type definition with all classification fields
 
 **Document classification (post-download):** After downloading the PDF, Claude runs the `document-classifier` Haiku subagent ([`agents/document-classifier.md`](../claude-code/agents/document-classifier.md)) which visually inspects the PDF and returns 9 fields: `doc_type`, `vendor`, `total_amount`, `currency`, `is_fuel`, `confidence`, `order_id`, `subtitle`, `owner`. Non-null values override the email-classifier's guesses. `doc_type`, `subtitle`, and `owner` come exclusively from this classifier. This same classifier handles GDrive scans.
 
@@ -226,11 +240,11 @@ flowchart TD
 **`month_tag` source** also differs: email path infers it from email context (subject, document date, `received_at` fallback); GDrive path uses the file's `created_time` (hard rule — always scan date, not document content date).
 
 **Code:**
-- [`invoice-worker.ts:534-575`](../claude-code/channels/invoice-worker.ts#L534) — `resolveCorrespondent()`: list → fuzzy match (via `fuzzy-match.ts`) → create if needed
-- [`invoice-worker.ts:578-655`](../claude-code/channels/invoice-worker.ts#L578) — `checkDuplicate()`: search by order_id + correspondent, compare amounts
-- [`invoice-worker.ts:660-735`](../claude-code/channels/invoice-worker.ts#L660) — `resolveTags()`: list → match → create missing
-- [`invoice-worker.ts:740-820`](../claude-code/channels/invoice-worker.ts#L740) — `uploadToPaperless()`: assemble args, call `post_document`
-- [`invoice-worker.ts:824`](../claude-code/channels/invoice-worker.ts#L824) — `buildTitle()`: title generation logic
+- [`invoice-worker.ts:596-637`](../claude-code/channels/invoice-worker.ts#L596) — `resolveCorrespondent()`: list → fuzzy match (via `fuzzy-match.ts`) → create if needed
+- [`invoice-worker.ts:640-720`](../claude-code/channels/invoice-worker.ts#L640) — `checkDuplicate()`: search by order_id + correspondent, compare amounts
+- [`invoice-worker.ts:722-804`](../claude-code/channels/invoice-worker.ts#L722) — `resolveTags()`: list → match → create missing
+- [`invoice-worker.ts:806-888`](../claude-code/channels/invoice-worker.ts#L806) — `uploadToPaperless()`: assemble args, call `post_document`
+- [`invoice-worker.ts:890`](../claude-code/channels/invoice-worker.ts#L890) — `buildTitle()`: title generation logic
 
 ## UC-1.5: Telegram Notification
 
@@ -243,7 +257,7 @@ Claude notifies the user via the Telegram channel's `reply` tool after processin
 - Auth expired: `"⚠ {service} auth expired — re-authenticate"`
 
 **Channel notifications (email-watcher → Claude):**
-- [`email-watcher.ts:769-810`](../claude-code/channels/email-watcher.ts#L769) — channel notification format: meta fields include `email_source`, `message_id`, `sender`, `subject`, `has_attachments`, `received_at`
+- [`email-watcher.ts:595-606`](../claude-code/channels/email-watcher.ts#L595) — channel notification format: meta fields include `email_source`, `message_id`, `sender`, `subject`, `has_attachments`, `received_at`
 
 **Telegram plugin:** Official Anthropic plugin, cloned at Docker build time from `github.com/anthropics/claude-plugins-official`.
 - [`Dockerfile:33-36`](../claude-code/Dockerfile#L33) — git clone + bun install
@@ -258,11 +272,11 @@ The invoice-worker pauses automatically for edge cases and waits for human appro
 Gates for unknown vendor, low confidence, browser_required, and requires_review were removed — triage now happens in Claude before job creation, using the document-classifier's higher-quality PDF analysis.
 
 **Code:**
-- [`invoice-worker.ts:203-212`](../claude-code/channels/invoice-worker.ts#L203) — `duplicate_likely` approval gate
+- [`invoice-worker.ts:234-244`](../claude-code/channels/invoice-worker.ts#L234) — `duplicate_likely` approval gate
 
 **Workflow tools for approval:**
-- [`workflow-mcp.ts:182-194`](../claude-code/channels/workflow-mcp.ts#L182) — `approve_job` tool definition
-- [`workflow-mcp.ts:195-207`](../claude-code/channels/workflow-mcp.ts#L195) — `cancel_job` tool definition
+- [`workflow-mcp.ts:188-199`](../claude-code/channels/workflow-mcp.ts#L188) — `approve_job` tool definition
+- [`workflow-mcp.ts:201-211`](../claude-code/channels/workflow-mcp.ts#L201) — `cancel_job` tool definition
 
 **Status:** Simplified to single dedup gate. Deployed.
 
@@ -271,8 +285,8 @@ Gates for unknown vendor, low confidence, browser_required, and requires_review 
 Claude can query Paperless directly using `search_documents` from the community Paperless MCP. Example: "do I have March invoices?" triggers a search with month filter.
 
 **Also available:** email-watcher audit trail queries:
-- [`email-watcher.ts:861-871`](../claude-code/channels/email-watcher.ts#L861) — `get_recent_emails` tool (filter by status, source, limit)
-- [`email-watcher.ts:873-879`](../claude-code/channels/email-watcher.ts#L873) — `get_email_stats` tool (counts by status, last 24h breakdown)
+- [`email-watcher.ts:798-808`](../claude-code/channels/email-watcher.ts#L798) — `get_recent_emails` tool (filter by status, source, limit)
+- [`email-watcher.ts:810-816`](../claude-code/channels/email-watcher.ts#L810) — `get_email_stats` tool (counts by status, last 24h breakdown)
 
 ## UC-1.8: GDrive Scan Auto-Upload
 
@@ -303,9 +317,9 @@ The classifier assigns a `download_strategy` that determines how the worker gets
 
 | Strategy | Handler | Description |
 |----------|---------|-------------|
-| `attachment` | [`invoice-worker.ts:342-470`](../claude-code/channels/invoice-worker.ts#L342) | Download single email attachment via MCP (prefers PDF). Works for both Gmail (`get_gmail_message_content` + `get_gmail_attachment_content`) and Outlook (`get_attachments` + `download_attachment`). |
+| `attachment` | [`invoice-worker.ts:374-491`](../claude-code/channels/invoice-worker.ts#L374) | Download single email attachment via MCP (prefers PDF). Works for both Gmail (`get_gmail_message_content` + `get_gmail_attachment_content`) and Outlook (`get_attachments` + `download_attachment`). |
 | `claude_download` | Claude pre-downloads | Multi-attachment emails — Claude inspects attachments, picks the invoice, downloads to disk, passes `file_path` to the job. Worker refuses to proceed without `file_path`. |
-| `known_link` | [`invoice-worker.ts:471-570`](../claude-code/channels/invoice-worker.ts#L471) | Extract invoice link from email body using vendor rules, download via MCP |
+| `known_link` | [`invoice-worker.ts:493-535`](../claude-code/channels/invoice-worker.ts#L493) | Extract invoice link from email body using vendor rules, download via MCP |
 | `direct_url` | Same as known_link | Direct URL in email body |
 | `browser_required` | Pauses for approval | Requires browser interaction (e.g., login-gated portal) |
 | `manual_review` | Pauses for approval | Classifier unsure, needs human review |
@@ -326,22 +340,23 @@ Jobs survive container restarts. The workflow layer provides:
 **Code:**
 - [`workflow-db.ts:46-78`](../claude-code/channels/workflow-db.ts#L46) — schema: `jobs` + `job_events` tables
 - [`workflow-core.ts:56`](../claude-code/channels/workflow-core.ts#L56) — `executeNextJob()`: claim + dispatch by workflow_type
-- [`workflow-mcp.ts:368`](../claude-code/channels/workflow-mcp.ts#L368) — worker loop: poll every `WORKFLOW_POLL_MS` (default 2s)
-- [`workflow-mcp.ts:62-207`](../claude-code/channels/workflow-mcp.ts#L62) — 7 MCP tools exposed to Claude
-- [`mcp-client.ts:32-75`](../claude-code/channels/mcp-client.ts#L32) — HTTP MCP client for worker → MCP server calls (stateless path)
-- [`mcp-client.ts:81-170`](../claude-code/channels/mcp-client.ts#L81) — stateful MCP client with initialize handshake (for paperless-mcp, gmail-mcp)
+- [`workflow-mcp.ts:398`](../claude-code/channels/workflow-mcp.ts#L398) — worker loop: poll every `WORKFLOW_POLL_MS` (default 2s)
+- [`workflow-mcp.ts:64-213`](../claude-code/channels/workflow-mcp.ts#L64) — 7 MCP tools exposed to Claude
+- [`mcp-client.ts:68-109`](../claude-code/channels/mcp-client.ts#L68) — HTTP MCP client for worker → MCP server calls (with retry for transient errors)
+- [`mcp-client.ts:170-272`](../claude-code/channels/mcp-client.ts#L170) — stateful MCP client with initialize handshake (for paperless-mcp, gmail-mcp)
 
 ## Email Audit Trail
 
 Every email is tracked in SQLite from discovery to final outcome.
 
-**Schema:** [`db.ts:47-66`](../claude-code/channels/db.ts#L47) — `emails` table with fields: id, source, sender, subject, preview, has_attachments, received_at, discovered_at, classified_at, classification, action, vendor, confidence, processed_at, process_result, status.
+**Schema:** [`db.ts:49-66`](../claude-code/channels/db.ts#L49) — `emails` table with fields: id, source, sender, subject, preview, has_attachments, received_at, discovered_at, classified_at, classification, action, vendor, confidence, processed_at, process_result, status.
+
+[`db.ts:70-73`](../claude-code/channels/db.ts#L70) — `source_state` table with fields: source, last_checked. Tracks per-source polling checkpoint (replaces the old per-source seeding model).
 
 ### Status Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> seed : First scan<br/>(per source)
     [*] --> new : New email<br/>detected
 
     new --> classified : email-classifier<br/>subagent
@@ -350,17 +365,36 @@ stateDiagram-v2
     classified --> ignored : action = ignore
     classified --> failed : download/upload error
 
-    seed --> [*]
     processed --> [*]
     ignored --> [*]
     failed --> [*]
 ```
 
+### Startup Events
+
+On startup, the email-watcher checks `source_state.last_checked` for each source:
+
+```mermaid
+stateDiagram-v2
+    [*] --> first_start : No last_checked<br/>(new source)
+    [*] --> catchup_required : Too many emails<br/>since last_checked
+    [*] --> normal_poll : Few/no new emails<br/>since last_checked
+
+    first_start --> waiting : Ask user via Telegram<br/>"How far back?"
+    catchup_required --> waiting : Ask user via Telegram<br/>"Process N emails or skip?"
+
+    waiting --> normal_poll : init_source / approve_catchup
+    waiting --> normal_poll : skip_catchup
+
+    normal_poll --> [*] : Resume 30s polling
+```
+
+**Tools:** `init_source(source, since)`, `approve_catchup(source)`, `skip_catchup(source)` — defined at [`email-watcher.ts:818-856`](../claude-code/channels/email-watcher.ts#L818)
+
 ### Status Reference
 
 | Status | Meaning | Set by | Timestamp |
 |--------|---------|--------|-----------|
-| `seed` | Pre-existing email from first scan — never processed | email-watcher `pollCycle` | `discovered_at` |
 | `new` | Newly detected, pushed to Claude as channel event | email-watcher `pollCycle` | `discovered_at` |
 | `classified` | email-classifier returned classification JSON | Claude via `update_email_status` | `classified_at` (auto) |
 | `processed` | invoice-worker completed (uploaded or duplicate) | Claude via `update_email_status` | `processed_at` (auto) |
@@ -369,11 +403,12 @@ stateDiagram-v2
 
 ### Design Decisions
 
-- **Per-source seeding**: Gmail and Outlook seed independently via `hasAnyEmailsForSource()` — prevents false "new" notifications when one source seeds before the other
+- **Checkpoint-based polling**: Each source tracks a `last_checked` timestamp in `source_state`. On startup, the watcher checks how many emails exist since `last_checked` — if too many, it asks the user via Telegram before processing (catchup flow)
 - **Capping**: Max 5 new emails per poll cycle (`MAX_NEW_PER_CYCLE`) to avoid flooding Claude's context
 - **Two-stage update**: Classification and processing are separate `update_email_status` calls — shows where in the pipeline an email stalled
 - **Auto-timestamps**: `classified_at` set when `classification` provided, `processed_at` when `process_result` provided
 - **Idempotent inserts**: `INSERT OR IGNORE` on email ID prevents duplicate pushes across restarts
+- **MCP client retry**: The invoice-worker calls MCP servers (gmail, outlook, paperless) via HTTP. Transient network errors (DNS resolution, connection refused) are retried with exponential backoff (3 retries, 1s→2s→4s). See [`mcp-client.ts:40-55`](../claude-code/channels/mcp-client.ts#L40)
 
-**First-run seeding:** On startup, if no emails exist for a source, existing emails are inserted as `seed` status without triggering notifications. Only subsequent new emails generate channel events.
-- [`email-watcher.ts:649-810`](../claude-code/channels/email-watcher.ts#L649) — `pollCycle()`: seed detection, dedup, notification push
+**Startup flow:** On first run for a source, a `first_start` event triggers user interaction (init_source). On subsequent starts, if too many emails accumulated, a `catchup_required` event triggers approval (approve_catchup/skip_catchup). Normal polls resume after.
+- [`email-watcher.ts:624-730`](../claude-code/channels/email-watcher.ts#L624) — `pollCycle()`: checkpoint check, catchup detection, dedup, notification push

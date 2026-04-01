@@ -1,8 +1,49 @@
 # Changelog
 
-All notable changes to this project, generated from 166 commits (2026-03-25 to 2026-03-31).
+All notable changes to this project, generated from 186 commits (2026-03-25 to 2026-04-01).
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
+
+## 2026-04-01 — Testing, Retry Logic & Architecture Cleanup
+
+### Added
+- **MCP client retry logic** — exponential backoff (1s→2s→4s, 3 retries) for transient network errors (DNS, connection refused) in invoice-worker HTTP calls `979dea4`
+- **Integration test suite** — email-watcher, workflow lifecycle, gdrive-watcher integration tests `0391263`
+- **147 unit tests** covering email-watcher, gdrive-watcher, scan intake, tryDecrypt `1b85de1`
+- **CI pipeline** — GitHub Actions running Bun tests (15 files) + pytest (113 tests) on push `cc19c78`
+
+### Refactored
+- Convert workflow-mcp from stdio to HTTP server on :8003 `0f73fa0`
+- Extract pure functions to `email-watcher-utils.ts` for testability `1a03c52`
+- Merge compose overlay into single file with `local` profile, eliminate `local/` directory `a6de93e`
+
+### Fixed
+- Process all catchup emails instead of silently dropping after first batch `f14099d`
+- Resolve all test failures — remove poisoning mock, fix stale db imports `61460a8`
+- Resolve bun executable cross-platform in tryDecrypt tests `116de14`
+- Use env-derived folder names in gdrive-watcher integration tests `a6b0e8a`
+- Provide 4 fetch handlers for retry test (1 initial + 3 retries) `e9b9c78`
+- Slim E2E to 3 smoke tests, fix isolation issues `1157996`
+
+## 2026-03-31 — Catchup Model & Open-Source Prep
+
+### Added
+- **Checkpoint-based polling** — replace per-source `seed` status with `source_state.last_checked` timestamps, `first_start` and `catchup_required` startup events `a84550a` `46ac90b`
+- **Catchup tools** — `init_source`, `approve_catchup`, `skip_catchup` for user-controlled startup behavior `a84550a`
+- Open-source preparation — audit, changelog, gitignore `ce3527b`
+
+### Fixed
+- Preseed source_state before container start, handle single-email Outlook response `e84701d`
+- Preseed both sources in all test fixtures to prevent Telegram blocking `a5f3e2a`
+- Skip polling for sources with pending catchup approval `8da1d3f`
+- Restore paperless volume paths to `./local/data/` in local compose `817de99`
+
+### Refactored
+- Move app source dirs out of `local/` in personal-assistant `774bcc3`
+
+### Chores
+- Remove mail reader POC files and configuration `6e0655a`
+- Anonymize PII in test data PDFs `d5b7359`
 
 ## 2026-03-31
 
@@ -149,11 +190,14 @@ This project was developed as part of a private monorepo. This changelog was gen
 | Mar 28 | Unified document-classifier, E2E test suite, PDF decryption |
 | Mar 29 | Fuzzy matching, owner-aware tags, Gmail link extraction |
 | Mar 31 | OTel metrics, claude_download strategy, dashboard fixes |
+| Mar 31 | Checkpoint-based polling (replaces seed model), open-source prep |
+| Apr 1  | MCP retry logic, 300+ unit/integration tests, CI pipeline, workflow-mcp HTTP |
 
 ## Stats
 
-- **166 commits** over 7 days
+- **186 commits** over 8 days
 - **5 containers**: claude-code, checker-mcp, gmail-mcp, outlook-mcp, paperless-mcp
 - **3 channels**: email-watcher, gdrive-watcher, telegram
 - **2 subagents**: email-classifier (Haiku), document-classifier (Haiku)
-- **Full observability**: Prometheus metrics, Loki logs, Tempo traces, Grafana dashboards
+- **~300 unit/integration tests** across 15 test files + 113 pytest tests (CI via GitHub Actions)
+- **Full observability**: Prometheus metrics, Loki logs, Grafana dashboards

@@ -23,6 +23,7 @@ claude-code container (node:20-slim, user: node, --model sonnet)
 ├── email-watcher channel+tools (stdio, polls gmail+outlook every 30s, SQLite audit trail)
 ├── gdrive-watcher channel+tools (stdio, polls GDrive LEVEL1×LEVEL2 folders every 30s, SQLite audit trail)
 ├── telegram channel (official plugin, cloned at build, two-way)
+├── workflow-mcp (HTTP server on :8003, durable job queue + invoice-worker)
 ├── subagents: email-classifier (haiku), document-classifier (haiku, returns owner field)
 └── connects to MCP tool servers via Streamable HTTP
 
@@ -93,10 +94,15 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | `claude-code/CLAUDE.md` | Instructions for the Claude session |
 | `claude-code/entrypoint.sh` | tmux wrapper, prompt detection, health monitor |
 | `claude-code/channels/email-watcher.ts` | Email-watcher channel (polls Gmail+Outlook, SQLite audit) |
-| `claude-code/channels/db.ts` | Email-watcher SQLite module |
+| `claude-code/channels/email-watcher-utils.ts` | Pure functions extracted from email-watcher (parsing, metrics, duration) |
+| `claude-code/channels/db.ts` | Email-watcher SQLite module (emails + source_state tables) |
 | `claude-code/channels/gdrive-watcher.ts` | GDrive-watcher channel (polls Google Drive, SQLite audit) |
 | `claude-code/channels/gdrive-db.ts` | GDrive-watcher SQLite module |
 | `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice-worker) |
+| `claude-code/channels/mcp-client.ts` | HTTP MCP client with retry logic (exponential backoff for transient network errors) |
+| `claude-code/channels/workflow-mcp.ts` | Durable job queue HTTP server (:8003) + invoice/scan workers |
+| `claude-code/channels/invoice-worker.ts` | Invoice intake worker (download, dedup, upload to Paperless) |
+| `claude-code/channels/fuzzy-match.ts` | Jaro-Winkler fuzzy correspondent matching |
 | `claude-code/agents/` | Haiku subagents (email-classifier, document-classifier — classifier returns `owner` field for personal/business tag routing) |
 | `checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
 | `checker-mcp/webapp.py` | Flask web UI (matching view + P&L view) |
@@ -291,13 +297,37 @@ python -m pytest tests/ -v -m gmail --timeout=300
 
 **Prerequisites:** Local compose stack running (personal-assistant + Paperless), Gmail OAuth token, Outlook auth active. See `tests/README.md` for full setup.
 
-### Unit Tests (invoice-worker)
+### Unit & Integration Tests
 
-The invoice-worker has 68 unit tests with mocked MCP calls:
+~300 tests across 15 test files covering all channels, workers, and DB modules. Run with Bun:
 ```bash
-cd claude-code
+cd claude-code/channels
 bun test
 ```
+
+| Test file | Scope |
+|-----------|-------|
+| `invoice-worker.test.ts` | Invoice/scan intake with mocked MCP calls |
+| `email-watcher.integration.test.ts` | Email polling, dedup, notification push |
+| `gdrive-watcher.integration.test.ts` | GDrive polling, multi-folder resolution |
+| `workflow-lifecycle.integration.test.ts` | Full job lifecycle (create → execute → complete/fail) |
+| `email-watcher-utils.test.ts` | Pure parsing functions (Gmail IDs, duration, metrics) |
+| `gdrive-watcher.test.ts` | Drive response parsing, folder ID extraction |
+| `gdrive-db.test.ts` | GDrive SQLite operations |
+| `db.test.ts` | Email SQLite operations |
+| `download-helper.test.ts` | File reading, PDF decryption |
+| `invoice-links.test.ts` | Invoice link extraction from HTML |
+| `workflow-db.test.ts` | Job queue SQLite operations |
+| `fuzzy-match.test.ts` | Correspondent fuzzy matching |
+| `paperless-fields.test.ts` | Paperless custom field registry |
+| `email-watcher.test.ts` | Recipient filtering |
+| `workflow-core.test.ts` | Job dispatch logic |
+
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on push to main when relevant paths change:
+- **channels (Bun)** — runs `bun test` for all 15 test files
+- **checker-mcp (Python)** — runs `pytest test_matching.py` (113 tests)
 
 ## Observability
 
@@ -370,7 +400,7 @@ No Grafana restart needed — the file provisioner detects changes and reloads.
 | `email_watcher_processed_results_total` | Processed email counts grouped by final `status` |
 | `email_watcher_latency_seconds` | Average workflow latency from discovery to classification / processing |
 
-### Invoice Worker Metrics (OTLP push from `workflow-mcp`)
+### Invoice Worker Metrics (OTLP push from `workflow-mcp` on :8003)
 
 | Metric | Meaning |
 |--------|---------|

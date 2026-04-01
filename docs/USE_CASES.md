@@ -72,3 +72,5 @@ Not implemented.
 | [Stateless MCP sessions](./infrastructure.md#stateless-mcp) | DONE |
 | [NAS-backed persistence](./infrastructure.md#persistence) | DONE |
 | [Watchtower exclusion & version pinning](./infrastructure.md#version-management) | DONE |
+| [MCP client retry logic](./infrastructure.md#mcp-client-retry-logic) | DONE |
+| [Testing & CI](./infrastructure.md#testing--ci) | DONE |

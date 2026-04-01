@@ -14,8 +14,8 @@ flowchart TB
             ew["email-watcher (channel, stdio)"]
             gw["gdrive-watcher (channel, stdio)"]
             tg["telegram (channel, stdio)"]
-            wf["workflow-mcp (stdio, durable jobs)"]
-            metrics[":9465 metrics + health"]
+        wf["workflow-mcp (HTTP, :8003)"]
+        metrics[":9465/:9466 metrics + health"]
 
             tmux --- ew
             tmux --- gw
@@ -177,14 +177,25 @@ NAS: WD MyCloud at 192.168.0.79, NFS → PVE host → bind mount into LXC → Do
 | Server | Type | Transport |
 |--------|------|-----------|
 | `email-watcher` | channel | stdio (bun) |
+| `gdrive-watcher` | channel | stdio (bun) |
 | `telegram` | channel | stdio (bun, official plugin) |
-| `workflow` | tool server | stdio (bun) |
+| `workflow` | tool server | HTTP `:8003/mcp` (inside claude-code container) |
 | `paperless` | tool server | HTTP `:3000/mcp` |
 | `checker` | tool server | HTTP `:8001/mcp` |
 | `gmail` | tool server | HTTP `:8000/mcp` |
 | `outlook` | tool server | HTTP `:8002/mcp` |
 
-Channels are stdio subprocesses of Claude Code — they MUST run in the same container. HTTP tool servers are separate containers connected via Docker networking.
+Channels are stdio subprocesses of Claude Code — they MUST run in the same container. HTTP tool servers are separate containers connected via Docker networking, except `workflow` which runs inside the `claude-code` container as a co-process on port 8003.
+
+### MCP Client Retry Logic
+
+The `mcp-client.ts` HTTP client wraps all tool calls with retry logic for transient network errors:
+- **Retries:** 3 attempts with exponential backoff (1s, 2s, 4s)
+- **Transient errors:** connection refused, DNS failures, timeouts, connection reset
+- **Non-transient errors:** thrown immediately (HTTP 4xx/5xx, auth failures)
+- **Observability:** retry attempts logged as OTel span events
+
+**Code:** [`mcp-client.ts:32-108`](../claude-code/channels/mcp-client.ts#L32) — `isTransientNetworkError()`, `callMcpTool()` retry wrapper.
 
 ## Model Strategy
 
