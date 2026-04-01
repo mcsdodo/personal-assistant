@@ -162,7 +162,7 @@ async function getDriveClient(): Promise<Client> {
   return client;
 }
 
-function resetDriveClient(): void {
+export function resetDriveClient(): void {
   driveClient = null;
 }
 
@@ -215,6 +215,11 @@ interface WatchedFolder {
 }
 
 let watchedFolders: WatchedFolder[] | null = null;
+
+/** Reset cached watch folders (for testing). */
+export function resetWatchFolders(): void {
+  watchedFolders = null;
+}
 
 export function extractFolderId(data: unknown): string | undefined {
   if (!data) return undefined;
@@ -362,7 +367,7 @@ export function parseDriveTextOutput(text: string, watchFolder: string): DriveFi
   return files;
 }
 
-async function pollGdrive(): Promise<DriveFile[]> {
+export async function pollGdrive(): Promise<DriveFile[]> {
   try {
     const folders = await resolveWatchFolders();
     const client = await getDriveClient();
@@ -406,7 +411,7 @@ async function pollGdrive(): Promise<DriveFile[]> {
 // Poll cycle
 // ---------------------------------------------------------------------------
 
-async function pollCycle(db: Database, channel: Server): Promise<void> {
+export async function pollCycle(db: Database, channel: Server): Promise<void> {
   return withSpan(tracer, "gdrive-watcher.poll", {}, async (span) => {
     const files = await pollGdrive();
 

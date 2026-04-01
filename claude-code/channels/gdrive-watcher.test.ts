@@ -1,10 +1,7 @@
 import { mock } from "bun:test";
 
-// ---------------------------------------------------------------------------
-// Mock MCP SDK modules to prevent side effects from gdrive-watcher.ts module
-// initialization (Server creation, main() calling openDb on non-existent path)
-// ---------------------------------------------------------------------------
-
+// MCP SDK mocks — must match test-preload.ts pattern (globalThis delegation)
+// to avoid conflicts when running alongside integration tests.
 mock.module("@modelcontextprotocol/sdk/server/index.js", () => ({
   Server: class {
     connect() { return Promise.resolve(); }
@@ -12,27 +9,32 @@ mock.module("@modelcontextprotocol/sdk/server/index.js", () => ({
     setRequestHandler() {}
   },
 }));
-
 mock.module("@modelcontextprotocol/sdk/server/stdio.js", () => ({
   StdioServerTransport: class {},
 }));
-
 mock.module("@modelcontextprotocol/sdk/types.js", () => ({
   ListToolsRequestSchema: Symbol("ListToolsRequestSchema"),
   CallToolRequestSchema: Symbol("CallToolRequestSchema"),
 }));
-
 mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
   Client: class {
+    _name = "";
+    constructor(opts?: any) { this._name = opts?.name ?? ""; }
     connect() { return Promise.resolve(); }
-    callTool() { return Promise.resolve({ content: [] }); }
+    callTool(args: any) {
+      const g = globalThis as any;
+      if (this._name.includes("gmail") && typeof g.__ewIntegGmailCallTool === "function")
+        return g.__ewIntegGmailCallTool(args);
+      if (this._name.includes("outlook") && typeof g.__ewIntegOutlookCallTool === "function")
+        return g.__ewIntegOutlookCallTool(args);
+      if (typeof g.__gdriveCallTool === "function")
+        return g.__gdriveCallTool(args);
+      return Promise.resolve({ content: [] });
+    }
   },
 }));
-
 mock.module("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
-  StreamableHTTPClientTransport: class {
-    constructor() {}
-  },
+  StreamableHTTPClientTransport: class { constructor() {} },
 }));
 
 // ---------------------------------------------------------------------------

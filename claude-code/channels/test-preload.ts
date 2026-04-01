@@ -67,3 +67,41 @@ mock.module("@opentelemetry/sdk-metrics", () => ({
 mock.module("@opentelemetry/exporter-metrics-otlp-http", () => ({
   OTLPMetricExporter: class {},
 }));
+
+// MCP SDK mocks — prevent real network connections during tests.
+// Client.callTool delegates to globalThis hooks so integration tests
+// can control behavior dynamically.
+mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
+  Client: class {
+    _name = "";
+    constructor(opts?: any) { this._name = opts?.name ?? ""; }
+    connect() { return Promise.resolve(); }
+    callTool(args: any) {
+      const g = globalThis as any;
+      if (this._name.includes("gmail") && typeof g.__ewIntegGmailCallTool === "function")
+        return g.__ewIntegGmailCallTool(args);
+      if (this._name.includes("outlook") && typeof g.__ewIntegOutlookCallTool === "function")
+        return g.__ewIntegOutlookCallTool(args);
+      if (typeof g.__gdriveCallTool === "function")
+        return g.__gdriveCallTool(args);
+      return Promise.resolve({ content: [] });
+    }
+  },
+}));
+mock.module("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
+  StreamableHTTPClientTransport: class { constructor() {} },
+}));
+mock.module("@modelcontextprotocol/sdk/server/index.js", () => ({
+  Server: class {
+    setRequestHandler() {}
+    connect() { return Promise.resolve(); }
+    async notification() {}
+  },
+}));
+mock.module("@modelcontextprotocol/sdk/server/stdio.js", () => ({
+  StdioServerTransport: class {},
+}));
+mock.module("@modelcontextprotocol/sdk/types.js", () => ({
+  ListToolsRequestSchema: Symbol("ListToolsRequestSchema"),
+  CallToolRequestSchema: Symbol("CallToolRequestSchema"),
+}));

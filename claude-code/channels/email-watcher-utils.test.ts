@@ -1,46 +1,8 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test";
 
-// ---------------------------------------------------------------------------
-// Module mocks — registered BEFORE the dynamic import of email-watcher so
-// top-level side effects (Server creation, main(), db open) don't crash.
-// ---------------------------------------------------------------------------
-
-// MCP SDK — Server constructor + transport
-mock.module("@modelcontextprotocol/sdk/server/index.js", () => ({
-  Server: class {
-    setRequestHandler() {}
-    connect() { return Promise.resolve(); }
-    notification() { return Promise.resolve(); }
-  },
-}));
-mock.module("@modelcontextprotocol/sdk/server/stdio.js", () => ({
-  StdioServerTransport: class {},
-}));
-mock.module("@modelcontextprotocol/sdk/types.js", () => ({
-  ListToolsRequestSchema: Symbol("ListToolsRequestSchema"),
-  CallToolRequestSchema: Symbol("CallToolRequestSchema"),
-}));
-mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
-  Client: class {
-    connect() { return Promise.resolve(); }
-    callTool() { return Promise.resolve({ content: [] }); }
-  },
-}));
-mock.module("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
-  StreamableHTTPClientTransport: class {},
-}));
-
-// db module — prevent SQLite file access
-mock.module("./db", () => ({
-  openDb: () => ({ query: () => ({ get: () => ({}) }) }),
-  insertEmail: () => {},
-  emailExists: () => false,
-  getLastChecked: () => null,
-  setLastChecked: () => {},
-  updateEmail: () => {},
-  getRecentEmails: () => [],
-  getEmailStats: () => ({ byStatus: [], last24h: [] }),
-}));
+// MCP SDK mocks are in test-preload.ts (loaded before all tests via bunfig.toml).
+// No ./db mock needed here �� import.meta.main guard prevents main() from running,
+// so openDb() is never called. The integration test provides the real ./db mock.
 
 // Dynamic import — the mocks above MUST be registered before this runs.
 let buildGmailQuery: any;
