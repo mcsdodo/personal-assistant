@@ -4,8 +4,10 @@ import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { readFileAsDownload, tryDecrypt } from "./download-helper";
 
-/** Resolve full path to bun executable (needed for Bun.spawnSync on Windows). */
-const BUN_EXE = join(homedir(), ".bun", "bin", "bun.exe");
+/** Resolve bun executable path cross-platform. */
+const BUN_EXE = process.platform === "win32"
+  ? join(homedir(), ".bun", "bin", "bun.exe")
+  : "bun";
 
 /** Absolute import path for download-helper (used in subprocess helper scripts). */
 const DOWNLOAD_HELPER_PATH = join(import.meta.dir, "download-helper").replace(/\\/g, "/");
