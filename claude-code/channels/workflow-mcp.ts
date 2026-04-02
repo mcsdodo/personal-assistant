@@ -229,7 +229,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "retry_job",
-      description: "Re-queue a permanently failed or cancelled job for retry. Resets retry_count to 0.",
+      description: "Re-queue a permanently failed or cancelled job for retry. Resets retry_count to 0. WARNING: reuses the original input_json — if the job failed before document-classifier ran, the classification data will be stale. Prefer cancelling and creating a fresh job instead.",
       inputSchema: {
         type: "object" as const,
         properties: {

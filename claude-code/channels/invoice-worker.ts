@@ -257,7 +257,15 @@ export async function executeInvoiceIntake(
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
       const allTagNames: string[] = [];
       const docType = classification.doc_type;
-      const owner = classification.owner ?? "techlab"; // backward compat default
+      const owner = classification.owner;
+      if (!owner) {
+        const msg = "Missing owner field — document-classifier may not have run. Cancel this job and re-create with full classification.";
+        failJob(db, job.id, { code: "missing_owner", message: msg });
+        logger.log(`Job ${job.id} failed: missing owner`);
+        span.setAttribute("invoice.outcome", "failed");
+        span.setStatus({ code: SpanStatusCode.ERROR, message: msg });
+        return;
+      }
 
       if (owner === "techlab") {
         allTagNames.push("techlab");

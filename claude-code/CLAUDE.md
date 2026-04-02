@@ -56,6 +56,7 @@ The workflow MCP adds durable background-job primitives:
 - `get_job_events(job_id)` — full event history for a job
 - `approve_job(job_id, approved_by?, note?)` — approve a paused job
 - `cancel_job(job_id, reason?)` — cancel a job
+- `retry_job(job_id)` — re-queue a failed/cancelled job. **Warning:** reuses the original input_json — if the job failed before document-classifier ran, the classification data will be stale. Prefer cancelling and creating a fresh job instead.
 
 The workflow worker handles invoice processing deterministically:
 - Downloads attachments or links from email
@@ -107,7 +108,7 @@ Each event has these meta fields:
    - `state: completed` with `outcome: duplicate` → silently skip (worker does not notify)
    - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response
    - `state: retryable` → transient failure, worker will retry automatically (up to 3 attempts with exponential backoff). No action needed.
-   - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Use `retry_job` tool to manually re-queue if root cause is fixed.
+   - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Do NOT use `retry_job` — it reuses stale classification data. Instead: cancel the failed job with `cancel_job`, re-download the file, re-run document-classifier, and create a fresh job with `create_scan_intake_job`.
 5. **Record** — call `update_gdrive_scan_status` with the outcome
 
 The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure (permanent), it moves to `errors/`. Retryable failures do NOT move the file.
@@ -118,9 +119,9 @@ Process emails using the Haiku subagents and durable workflow jobs:
 
 1. **Classify** — dispatch to `email-classifier` agent with the email metadata (sender, subject, body excerpt). It returns a JSON classification including `download_strategy`.
 
-1b. **Download PDF** (if action = download_and_upload) — get the PDF to disk:
-   - `attachment` strategy: the workflow worker handles this for both Gmail and Outlook (picks the first PDF attachment automatically). Just create the job — no pre-download needed.
-   - `claude_download` strategy: **you must download the file yourself** — used for multi-attachment emails where you need to pick the right one. List attachments, identify which is the invoice (look for PDF, largest file, or invoice-related filename), download it to `/workspace/downloads/`, and pass `file_path` when creating the job. The worker reads from disk only. For Gmail use `get_gmail_message_content` (attachments listed in `--- ATTACHMENTS ---` section with IDs) then `get_gmail_attachment_content(message_id, attachment_id, user_google_email)`. For Outlook use `get_attachments` + `download_attachment`.
+1b. **Download PDF** (if action = download_and_upload) — **always download to disk before creating a job.** The document-classifier (step 1c) needs the local file to determine `owner`, `doc_type`, and refined vendor. Without it, the job will fail with `missing_owner`.
+   - `attachment` strategy: download the first PDF attachment to `/workspace/downloads/`. For Gmail use `get_gmail_message_content` then `get_gmail_attachment_content(message_id, attachment_id, user_google_email)`. For Outlook use `get_attachments` + `download_attachment`. Pass `file_path` when creating the job. (The worker can also download attachments as a fallback, but you must pre-download so document-classifier can run.)
+   - `claude_download` strategy: used for multi-attachment emails where you need to pick the right one. List attachments, identify which is the invoice (look for PDF, largest file, or invoice-related filename), download it to `/workspace/downloads/`, and pass `file_path` when creating the job. The worker reads from disk only. For Gmail use `get_gmail_message_content` (attachments listed in `--- ATTACHMENTS ---` section with IDs) then `get_gmail_attachment_content(message_id, attachment_id, user_google_email)`. For Outlook use `get_attachments` + `download_attachment`.
    - `known_link` / `direct_url` strategy: use the `invoice_links` from the channel event meta (if present), or `curl -o /workspace/downloads/<filename> "<url>"` to save to disk. The workflow worker also handles link extraction automatically from email HTML. If the file is encrypted, run: `qpdf --is-encrypted <path> && qpdf --password="$BANK_PDF_PASSWORD" --decrypt <path> --replace-input`
 
 1c. **Classify PDF** — invoke the `document-classifier` subagent with the local file path. Before invoking, replace the `${...}` placeholders in the prompt with business identifier env vars (`BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`). Merge results: document-classifier non-null values override email-classifier values (vendor, total_amount, order_id, is_fuel, currency, confidence, owner). The document-classifier is the sole source for `doc_type`, `subtitle`, and `owner` — the email-classifier does not return these fields. `subtitle` is a short label (e.g. "Dochádzka marec 2026") used for title building when order_id is null. If the classifier fails, fall back to email-classifier metadata only (doc_type defaults to "invoice").
@@ -134,7 +135,7 @@ Process emails using the Haiku subagents and durable workflow jobs:
        - `state: completed` with `outcome: duplicate` → silently skip, no notification
        - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for user response, then call `approve_job` or `cancel_job`
        - `state: retryable` → transient failure, worker retries automatically (up to 3 attempts). No action needed.
-       - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Use `retry_job` to manually re-queue if root cause is fixed.
+       - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Do NOT use `retry_job` — it reuses stale classification data. Instead: cancel the failed job with `cancel_job`, re-download the file, re-run document-classifier, and create a fresh job with `create_invoice_intake_job`.
      - You don't need to poll immediately — the worker processes jobs within seconds. Check once after a short delay.
    - `action: notify_user` — notify the user via Telegram with the classification details and ask what to do. If the Telegram notification fails (e.g. chat not allowlisted, reply tool errors), record status="failed" with the error — do NOT mark as "processed".
    - `action: ignore` — log silently, do nothing.

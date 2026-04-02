@@ -116,7 +116,7 @@ export function jaroWinkler(s1: string, s2: string): number {
 export function findBestCorrespondentMatch(
   vendor: string,
   correspondents: Array<{ id: number; name: string }>,
-  threshold: number = 0.92,
+  threshold: number = 0.85,
 ): CorrespondentMatch | null {
   if (!vendor || !vendor.trim() || correspondents.length === 0) return null;
 

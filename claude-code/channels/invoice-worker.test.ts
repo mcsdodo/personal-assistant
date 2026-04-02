@@ -920,6 +920,33 @@ describe("invoice-worker unified tag derivation", () => {
     expect(output.tags).not.toContain("techlab");
     expect(output.tags).not.toContain("invoicing");
   });
+
+  test("missing owner fails job with missing_owner error", async () => {
+    const input = makeInput({
+      file_path: join(tmpDir, "no-owner.pdf"),
+      classification: {
+        ...makeInput().classification,
+        owner: undefined as any,
+      },
+    });
+    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
+    const job = createRunningJob(input);
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 2. dedup check → no duplicate
+      () => jsonResponse({ results: [] }),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("failed");
+    const error = JSON.parse(updated.error_json!);
+    expect(error.code).toBe("missing_owner");
+    expect(error.message).toContain("Missing owner field");
+  });
 });
 
 // ── Scan intake helpers ─────────────────────────────────────────────────
