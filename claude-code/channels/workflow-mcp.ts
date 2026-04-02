@@ -274,7 +274,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (traceId) {
             const tracer = getTracer("workflow");
             const parentCtx = remoteParentContext(traceId);
-            tracer.startActiveSpan("workflow.job_created", {
+            tracer.startActiveSpan(`workflow.job_created ${(classification.vendor as string) ?? "unknown"}`, {
               attributes: {
                 "job.type": "invoice_intake",
                 "email.source": emailSource,

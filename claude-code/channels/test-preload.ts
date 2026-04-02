@@ -15,6 +15,7 @@ const noopSpan = {
   setStatus: () => {},
   recordException: () => {},
   addEvent: () => {},
+  updateName: () => {},
   end: () => {},
   spanContext: () => ({ traceId: "0".repeat(32), spanId: "0".repeat(16), traceFlags: 0 }),
   isRecording: () => false,

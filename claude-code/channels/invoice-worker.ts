@@ -173,7 +173,7 @@ export async function executeInvoiceIntake(
   const { classification } = input;
   const strategy = classification.download_strategy;
 
-  await tracer.startActiveSpan("invoice-worker.execute", {
+  await tracer.startActiveSpan(`invoice-worker.execute ${classification.vendor}`, {
     attributes: {
       "job.id": job.id,
       "job.type": "invoice_intake",
@@ -181,6 +181,7 @@ export async function executeInvoiceIntake(
       "invoice.download_strategy": classification.download_strategy ?? "unknown",
     },
   }, async (span: Span) => {
+    let outcome = "unknown";
     try {
       // Step 1: Get file — prefer disk, fallback to MCP download
       let file: DownloadedFile;
@@ -230,6 +231,7 @@ export async function executeInvoiceIntake(
           };
           completeJob(db, job.id, result);
           logger.log(`Job ${job.id} completed: duplicate of doc #${dedupeResult.existing_id}`);
+          outcome = "duplicate";
           span.setAttribute("invoice.outcome", "duplicate");
           span.setStatus({ code: SpanStatusCode.OK });
           return;
@@ -242,6 +244,7 @@ export async function executeInvoiceIntake(
             existing_document_id: dedupeResult.existing_id,
           });
           logger.log(`Job ${job.id} paused: likely duplicate`);
+          outcome = "paused";
           span.setAttribute("invoice.outcome", "paused");
           span.setStatus({ code: SpanStatusCode.OK });
           return;
@@ -262,6 +265,7 @@ export async function executeInvoiceIntake(
         const msg = "Missing owner field — document-classifier may not have run. Cancel this job and re-create with full classification.";
         failJob(db, job.id, { code: "missing_owner", message: msg });
         logger.log(`Job ${job.id} failed: missing owner`);
+        outcome = "failed";
         span.setAttribute("invoice.outcome", "failed");
         span.setStatus({ code: SpanStatusCode.ERROR, message: msg });
         return;
@@ -342,6 +346,7 @@ export async function executeInvoiceIntake(
         });
         if (msg) await notify(msg).catch(() => {});
       }
+      outcome = "uploaded";
       span.setAttribute("invoice.outcome", "uploaded");
       span.setAttribute("paperless.document_id", uploadResult.document_id ?? 0);
       span.setStatus({ code: SpanStatusCode.OK });
@@ -351,6 +356,7 @@ export async function executeInvoiceIntake(
       if (shouldRetry(db, job.id)) {
         scheduleRetry(db, job.id, errPayload);
         logger.log(`Job ${job.id} scheduled for retry: ${message}`);
+        outcome = "retryable";
         span.setAttribute("invoice.outcome", "retryable");
       } else {
         failJob(db, job.id, errPayload);
@@ -367,11 +373,13 @@ export async function executeInvoiceIntake(
           });
           if (msg) await notify(msg).catch(() => {});
         }
+        outcome = "failed";
         span.setAttribute("invoice.outcome", "failed");
       }
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       span.recordException(error instanceof Error ? error : new Error(message));
     } finally {
+      span.updateName(`invoice-worker.execute ${classification.vendor} → ${outcome}`);
       span.end();
     }
   });
@@ -973,7 +981,7 @@ export async function executeScanIntake(
   const { classification, file_id } = input;
   const watchFolder = input.watch_folder ?? "techlab/invoicing";
 
-  await tracer.startActiveSpan("invoice-worker.execute", {
+  await tracer.startActiveSpan(`invoice-worker.execute ${classification.vendor}`, {
     attributes: {
       "job.id": job.id,
       "job.type": "scan_intake",
@@ -982,6 +990,7 @@ export async function executeScanIntake(
       "gdrive.watch_folder": watchFolder,
     },
   }, async (span: Span) => {
+    let outcome = "unknown";
     try {
       // Step 1: Get file — prefer disk, fallback to GDrive download
       let file: DownloadedFile;
@@ -1035,6 +1044,7 @@ export async function executeScanIntake(
           completeJob(db, job.id, result);
           await moveGdriveFile(file_id, "processed", watchFolder, logger);
           logger.log(`Job ${job.id} completed: duplicate of doc #${dedupeResult.existing_id}`);
+          outcome = "duplicate";
           span.setAttribute("invoice.outcome", "duplicate");
           span.setStatus({ code: SpanStatusCode.OK });
           return;
@@ -1046,6 +1056,7 @@ export async function executeScanIntake(
             existing_document_id: dedupeResult.existing_id,
           });
           logger.log(`Job ${job.id} paused: likely duplicate`);
+          outcome = "paused";
           span.setAttribute("invoice.outcome", "paused");
           span.setStatus({ code: SpanStatusCode.OK });
           return;
@@ -1135,6 +1146,7 @@ export async function executeScanIntake(
         });
         if (msg) await notify(msg).catch(() => {});
       }
+      outcome = "uploaded";
       span.setAttribute("invoice.outcome", "uploaded");
       span.setAttribute("paperless.document_id", uploadResult.document_id ?? 0);
       span.setStatus({ code: SpanStatusCode.OK });
@@ -1144,6 +1156,7 @@ export async function executeScanIntake(
       if (shouldRetry(db, job.id)) {
         scheduleRetry(db, job.id, errPayload);
         logger.log(`Job ${job.id} scheduled for retry: ${message}`);
+        outcome = "retryable";
         span.setAttribute("invoice.outcome", "retryable");
       } else {
         failJob(db, job.id, errPayload);
@@ -1163,11 +1176,13 @@ export async function executeScanIntake(
           });
           if (msg) await notify(msg).catch(() => {});
         }
+        outcome = "failed";
         span.setAttribute("invoice.outcome", "failed");
       }
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       span.recordException(error instanceof Error ? error : new Error(message));
     } finally {
+      span.updateName(`invoice-worker.execute ${classification.vendor} → ${outcome}`);
       span.end();
     }
   });
