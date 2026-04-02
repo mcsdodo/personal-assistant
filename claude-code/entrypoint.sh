@@ -26,7 +26,7 @@ done
 
 # Run Claude Code in interactive mode inside tmux
 tmux new-session -d -s claude \
-  "claude --model sonnet --remote-control \
+  "claude --model sonnet --remote-control --name personal-assistant \
     --dangerously-load-development-channels server:email-watcher \
     --dangerously-load-development-channels server:gdrive-watcher \
     --dangerously-load-development-channels server:telegram \
