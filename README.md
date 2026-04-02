@@ -114,6 +114,7 @@ Start with the doc that matches what you need:
 
 | If you want to... | Read |
 |---|---|
+| **set up from scratch (full walkthrough)** | **[`docs/SETUP.md`](docs/SETUP.md)** |
 | get the stack running locally | `docs/getting-started.md` |
 | understand environment variables and auth | `docs/configuration.md` |
 | understand the pipeline and containers | `docs/architecture.md` |
