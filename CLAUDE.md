@@ -112,6 +112,58 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | `outlook-mcp/server.py` | Outlook MCP (MSAL device code auth) |
 | `observability/` | Local dev Alloy, Prometheus, Loki, Grafana configs |
 
+## Source Code Guide
+
+Navigational guide to the largest source files. Line numbers are approximate.
+
+### checker-mcp/match_invoices.py (~1380 lines)
+
+| Section | Lines | Key functions |
+|---------|-------|---------------|
+| Configuration & skip rules | 40-110 | `PLCategory`, `SkipReason`, `SkipRule` enums |
+| Paperless API client | 113-200 | `PaperlessClient` class — pagination, field/tag ID lookup, caching |
+| Statement parsing | 201-292 | `parse_movements()` — Tatra Banka format regex, page breaks, foreign currency |
+| Skip rule matching | 293-336 | `skip_reason()` — bank fees, loans, taxes, dividends, insurance, payroll |
+| Amount extraction | 337-399 | `normalize_amount()`, `extract_invoice_amounts()` — multi-format regex, OCR artifacts |
+| Month arithmetic | 400-422 | `month_offset()`, `get_month_window()` — +/-1 month sliding window |
+| Invoice pairing | 423-596 | `build_pair_index()`, `find_matching_invoice()` — filename prefix + Jaro-Winkler fuzzy match |
+| Main collection logic | 597-1206 | `collect_month()`, `collect_pl()` — movement-to-invoice matching, P&L categorization |
+| Output & CLI | 1207-1381 | `print_results()`, `main()` |
+
+### checker-mcp/webapp.py (~520 lines)
+
+Flask app on `:5000`. Matching view (terminal-style, status codes: ok/missing/manual/info) and P&L view (annual summary, income/expense). Query params: `?month=2026-03`, `?all`, `?year=2026`. Paperless links for drill-down.
+
+### checker-mcp/server.py (~235 lines)
+
+FastMCP wrapping `match_invoices.py`. 4 tools via HTTP. Lazy-init `PaperlessClient` singleton + field ID resolution. Host header rewrite for DNS rebinding protection (Docker networking).
+
+### outlook-mcp/server.py (~310 lines)
+
+MSAL device code auth with singleton caching (`_msal_lock`). `get_access_token()` does silent acquisition then falls back to device code flow. Background auth thread (daemon) doesn't block server startup. 4 tools: `list_emails`, `get_email`, `get_attachments`, `download_attachment`.
+
+### claude-code/channels/email-watcher.ts (~1100 lines)
+
+Polls Gmail + Outlook every 30s. SQLite audit trail (`emails.db`). Metrics endpoint `:9465` (Prometheus format). Health endpoint `/health` with staleness detection. Tools: `update_email_status()`, `get_recent_emails()`, `get_email_stats()`. Startup events: `first_start`, `catchup_required`.
+
+### claude-code/channels/invoice-worker.ts (~1370 lines)
+
+Deterministic job worker. Process: download file → dedup via Paperless search (title, correspondent, amount) → fuzzy correspondent matching (Jaro-Winkler 0.92 threshold) → upload to Paperless API (direct, bypasses MCP size limit) → set tags and custom fields → move GDrive file to `processed/`. Approval gates for unknown vendors and low confidence.
+
+### claude-code/channels/gdrive-watcher.ts (~750 lines)
+
+Polls Google Drive folders (`LEVEL1`/`LEVEL2`) every 30s. SQLite audit trail (`gdrive.db`). Creates `processed/` and `errors/` subfolders for post-upload file management.
+
+### claude-code/channels/workflow-mcp.ts (~410 lines)
+
+Durable job queue backed by SQLite (`workflow.db`). Job states: created → processing → awaiting_approval → completed/failed. Tools: `create_job()`, `create_invoice_intake_job()`, `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`.
+
+### claude-code/agents/
+
+Two Haiku subagents:
+- **email-classifier.md** — classifies email metadata → vendor, amount, download_strategy, action, confidence
+- **document-classifier.md** — visually inspects PDF → vendor, amount, doc_type, owner (personal/business tag routing)
+
 ## Claude Code in Docker — Reference
 
 ### Authentication
@@ -266,6 +318,17 @@ docker exec -it personal-assistant-claude tmux attach -t claude
 docker exec personal-assistant-claude sh -c "env | grep -E 'OTEL|TELEMETRY'"
 ```
 
+### Production vs Local
+
+| Aspect | Production | Local |
+|--------|-----------|-------|
+| Volumes | NAS at `/mnt/shared_configs/personal-assistant/` | Local `./data/` bind mounts |
+| Polling | 30s intervals | 10s intervals (faster testing) |
+| OTEL | Shared host Alloy at `:4317` | Local Alloy sidecar |
+| Paperless | Managed separately (external instance) | Local container (postgres + redis) |
+| Images | Komodo builds (git commit tagged) | Local Docker build |
+| Secrets | Komodo-managed `core.config.toml` | Local `.env` file |
+
 ## Testing
 
 ### E2E Pipeline Tests
@@ -329,7 +392,19 @@ bun test
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on push to main when relevant paths change:
 - **channels (Bun)** — runs `bun test` for all 15 test files
-- **checker-mcp (Python)** — runs `pytest test_matching.py` (113 tests)
+- **checker-mcp (Python)** — runs `pytest test_matching.py` (116 tests)
+
+### What's Mocked vs Real
+
+| Component | E2E Tests | Unit/Integration Tests |
+|-----------|-----------|------------------------|
+| Email send | Real (Gmail API) | Mocked |
+| Email-watcher polling | Real (Docker container) | Mocked |
+| Claude classification | Real (Claude API, Haiku) | Mocked |
+| PDF download | Real (from Google Drive / email) | Mocked |
+| Paperless upload | Real (Paperless API) | Mocked (mock client) |
+| Invoice matching | Real (checker-mcp service) | Real (parse + match logic) |
+| Database (SQLite) | Real (container volume) | Real (in-memory / temp files) |
 
 ## Observability
 
