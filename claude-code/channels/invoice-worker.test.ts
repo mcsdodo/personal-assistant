@@ -13,6 +13,7 @@ import { join } from "path";
 
 import { executeInvoiceIntake, executeScanIntake, type InvoiceIntakeInput, type ScanIntakeInput } from "./invoice-worker";
 import { PaperlessFieldRegistry } from "./paperless-fields";
+import type { NotifyFn } from "./telegram-notify";
 import {
   createJob,
   getJob,
@@ -28,6 +29,8 @@ let db: Database;
 let registry: PaperlessFieldRegistry;
 
 const logger = { log(_msg: string) {} };
+let notifyCalls: string[];
+const notify: NotifyFn = async (msg) => { notifyCalls.push(msg); };
 
 /** Build a minimal valid InvoiceIntakeInput */
 function makeInput(overrides: Partial<InvoiceIntakeInput> = {}): InvoiceIntakeInput {
@@ -130,6 +133,7 @@ beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "invoice-worker-test-"));
   db = openWorkflowDb(join(tmpDir, "workflow.db"));
   fetchHandlers = [];
+  notifyCalls = [];
 
   // Make setTimeout resolve instantly so setDocumentCustomFields polling doesn't timeout
   globalThis.setTimeout = ((fn: Function, _ms?: number, ...args: unknown[]) => {
@@ -191,7 +195,7 @@ describe("invoice-worker approval gates (removed)", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -219,7 +223,7 @@ describe("invoice-worker approval gates (removed)", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -240,7 +244,7 @@ describe("invoice-worker approval gates (removed)", () => {
       }] }),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     expect(getJob(db, job.id)!.state).toBe("awaiting_approval");
   });
@@ -286,7 +290,7 @@ describe("invoice-worker attachment download + upload", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -332,7 +336,7 @@ describe("invoice-worker attachment download + upload", () => {
       }] }),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -366,7 +370,7 @@ describe("invoice-worker attachment download + upload", () => {
       }] }),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("awaiting_approval");
@@ -410,7 +414,7 @@ describe("invoice-worker attachment download + upload", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -454,7 +458,7 @@ describe("invoice-worker attachment download + upload", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -508,7 +512,7 @@ describe("invoice-worker link download", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -540,7 +544,7 @@ describe("invoice-worker link download", () => {
       () => new Response("Forbidden", { status: 403 }),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -558,7 +562,7 @@ describe("invoice-worker error handling", () => {
       () => jsonResponse(rpcResponse([])),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -574,7 +578,7 @@ describe("invoice-worker error handling", () => {
     const runningJob = getJob(db, job.id)!;
 
     // parseJobJson will throw on invalid JSON, which gets caught
-    await executeInvoiceIntake(db, runningJob, logger, registry);
+    await executeInvoiceIntake(db, runningJob, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -589,7 +593,7 @@ describe("invoice-worker error handling", () => {
       () => jsonResponse({ error: "Internal server error" }, 500),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -605,7 +609,7 @@ describe("invoice-worker error handling", () => {
     });
     const job = createRunningJob(input);
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -634,7 +638,7 @@ describe("invoice-worker title building", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.title).toBe("Alza - FA2026030001");
@@ -662,7 +666,7 @@ describe("invoice-worker title building", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     // Subject has "Fwd:" stripped
@@ -690,7 +694,7 @@ describe("invoice-worker file_path from disk", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -715,7 +719,7 @@ describe("invoice-worker file_path from disk", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -738,7 +742,7 @@ describe("invoice-worker file_path from disk", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -770,7 +774,7 @@ describe("invoice-worker unified tag derivation", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("invoicing");
@@ -802,7 +806,7 @@ describe("invoice-worker unified tag derivation", () => {
       () => new Response('"task-uuid"', { status: 200 }),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("documents");
@@ -836,7 +840,7 @@ describe("invoice-worker unified tag derivation", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("techlab");
@@ -871,7 +875,7 @@ describe("invoice-worker unified tag derivation", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("personal");
@@ -907,7 +911,7 @@ describe("invoice-worker unified tag derivation", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry);
+    await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("personal");
@@ -1001,7 +1005,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry);
+    await executeScanIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1045,7 +1049,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry);
+    await executeScanIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1073,7 +1077,7 @@ describe("executeScanIntake", () => {
       // No moveGdriveFile — job pauses for approval
     );
 
-    await executeScanIntake(db, job, logger, registry);
+    await executeScanIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("awaiting_approval");
@@ -1116,7 +1120,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry);
+    await executeScanIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1158,7 +1162,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry);
+    await executeScanIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -1198,7 +1202,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry);
+    await executeScanIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1243,7 +1247,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry);
+    await executeScanIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1284,7 +1288,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry);
+    await executeScanIntake(db, job, logger, registry, notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.title).toBe("Alza - Dochádzka marec 2026");
@@ -1324,7 +1328,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry);
+    await executeScanIntake(db, job, logger, registry, notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.title).toBe("Alza - 20260325_blok_tankovanie");
@@ -1338,7 +1342,7 @@ describe("executeScanIntake", () => {
     db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
     const runningJob = getJob(db, job.id)!;
 
-    await executeScanIntake(db, runningJob, logger, registry);
+    await executeScanIntake(db, runningJob, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");

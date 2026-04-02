@@ -28,6 +28,7 @@ import type { PaperlessFieldRegistry } from "./paperless-fields";
 import { readFileAsDownload } from "./download-helper";
 import { extractInvoiceLinks, type InvoiceLink } from "./invoice-links";
 import { findBestCorrespondentMatch } from "./fuzzy-match";
+import { formatNotification, type NotifyFn } from "./telegram-notify";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -158,6 +159,7 @@ export async function executeInvoiceIntake(
   job: JobRow,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
+  notify?: NotifyFn,
 ): Promise<void> {
   seedCounterFromDb(db);
   const input = parseJobJson<InvoiceIntakeInput>(job.input_json);
@@ -319,6 +321,17 @@ export async function executeInvoiceIntake(
       completeJob(db, job.id, result);
       logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
       correspondentsCounter.add(1, { correspondent: correspondent.name });
+      if (notify) {
+        const msg = formatNotification({
+          outcome: "uploaded",
+          vendor: correspondent.name,
+          total_amount: classification.total_amount,
+          currency: classification.currency,
+          doc_type: classification.doc_type,
+          owner: classification.owner ?? null,
+        });
+        if (msg) await notify(msg).catch(() => {});
+      }
       span.setAttribute("invoice.outcome", "uploaded");
       span.setAttribute("paperless.document_id", uploadResult.document_id ?? 0);
       span.setStatus({ code: SpanStatusCode.OK });
@@ -326,6 +339,18 @@ export async function executeInvoiceIntake(
       const message = error instanceof Error ? error.message : String(error);
       failJob(db, job.id, { code: "invoice_intake_error", message, step: "unknown" });
       logger.log(`Job ${job.id} failed: ${message}`);
+      if (notify) {
+        const msg = formatNotification({
+          outcome: "failed",
+          vendor: classification.vendor,
+          total_amount: classification.total_amount,
+          currency: classification.currency,
+          doc_type: classification.doc_type,
+          owner: classification.owner ?? null,
+          error: message,
+        });
+        if (msg) await notify(msg).catch(() => {});
+      }
       span.setAttribute("invoice.outcome", "failed");
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       span.recordException(error instanceof Error ? error : new Error(message));
@@ -919,6 +944,7 @@ export async function executeScanIntake(
   job: JobRow,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
+  notify?: NotifyFn,
 ): Promise<void> {
   seedCounterFromDb(db);
   const input = parseJobJson<ScanIntakeInput>(job.input_json);
@@ -1081,6 +1107,17 @@ export async function executeScanIntake(
       completeJob(db, job.id, result);
       logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
       correspondentsCounter.add(1, { correspondent: correspondent.name });
+      if (notify) {
+        const msg = formatNotification({
+          outcome: "uploaded",
+          vendor: correspondent.name,
+          total_amount: classification.total_amount,
+          currency: classification.currency,
+          doc_type: classification.doc_type,
+          owner: classification.owner ?? null,
+        });
+        if (msg) await notify(msg).catch(() => {});
+      }
       span.setAttribute("invoice.outcome", "uploaded");
       span.setAttribute("paperless.document_id", uploadResult.document_id ?? 0);
       span.setStatus({ code: SpanStatusCode.OK });
@@ -1091,6 +1128,18 @@ export async function executeScanIntake(
         logger.log(`Failed to move file to errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
       });
       logger.log(`Job ${job.id} failed: ${message}`);
+      if (notify) {
+        const msg = formatNotification({
+          outcome: "failed",
+          vendor: classification.vendor,
+          total_amount: classification.total_amount,
+          currency: classification.currency,
+          doc_type: classification.doc_type,
+          owner: classification.owner ?? null,
+          error: message,
+        });
+        if (msg) await notify(msg).catch(() => {});
+      }
       span.setAttribute("invoice.outcome", "failed");
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       span.recordException(error instanceof Error ? error : new Error(message));

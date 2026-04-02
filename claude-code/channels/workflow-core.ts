@@ -11,6 +11,7 @@ import {
 } from "./workflow-db";
 import { executeInvoiceIntake, executeScanIntake } from "./invoice-worker";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
+import type { NotifyFn } from "./telegram-notify";
 
 import { getTracer, SpanStatusCode, remoteParentContext } from "./tracing";
 import type { Span } from "./tracing";
@@ -87,7 +88,8 @@ function resolveEmailTraceParent(sourceRef: string | null) {
 export async function executeNextJob(
   db: Database,
   logger: WorkflowLogger,
-  registry: PaperlessFieldRegistry,
+  registry?: PaperlessFieldRegistry,
+  notify?: NotifyFn,
 ): Promise<JobRow | null> {
   const job = claimNextQueuedJob(db);
   if (!job) return null;
@@ -107,10 +109,10 @@ export async function executeNextJob(
           executeSyntheticJob(db, job, logger);
           break;
         case "invoice_intake":
-          await executeInvoiceIntake(db, job, logger, registry);
+          await executeInvoiceIntake(db, job, logger, registry!, notify);
           break;
         case "scan_intake":
-          await executeScanIntake(db, job, logger, registry);
+          await executeScanIntake(db, job, logger, registry!, notify);
           break;
         default:
           failJob(db, job.id, {

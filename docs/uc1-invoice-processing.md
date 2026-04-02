@@ -114,7 +114,7 @@ sequenceDiagram
 
         alt exact duplicate (same amount)
             IW-->>WF: completed (outcome: duplicate)
-            note over C: Skip silently
+            note over IW: Skip silently (no notification)
         else duplicate_likely (amount mismatch)
             IW-->>WF: awaiting_approval
             C->>TG: reply("Possible duplicate, approve?")
@@ -122,7 +122,7 @@ sequenceDiagram
             IW->>P: post_document + custom fields
             IW->>IW: delete local file
             IW-->>WF: completed (outcome: uploaded)
-            C->>TG: reply("Uploaded {vendor} — {amount} EUR")
+            IW->>TG: notifyTelegram("✔️ {vendor} | {amount} EUR | ...")
         end
 
     else action = "notify_user"
@@ -248,13 +248,31 @@ flowchart TD
 
 ## UC-1.5: Telegram Notification
 
-Claude notifies the user via the Telegram channel's `reply` tool after processing.
+Notifications are split between the invoice-worker (automatic) and Claude (interactive).
 
-**Notification types:**
-- Success: `"✓ Uploaded {vendor} invoice to Paperless ({amount} EUR)"`
-- Failure: `"⚠ {vendor} invoice download failed: {reason}"`
-- Unknown vendor: `"New invoice from {sender}: {subject}. Process? Reply yes/no"`
-- Auth expired: `"⚠ {service} auth expired — re-authenticate"`
+**Worker notifications (automatic, fire-and-forget):**
+
+The invoice-worker sends structured one-liner notifications via Telegram Bot API after each job completion:
+
+| Outcome | Format | Example |
+|---------|--------|---------|
+| `uploaded` | `✔️  {vendor} \| {amount} {currency} \| {doc_type} \| {owner}` | `✔️  Slovak Telekom \| 42.99 EUR \| invoice \| techlab` |
+| `failed` | `❌  {vendor} \| {amount} {currency} \| {doc_type} \| {owner} \| {error}` | `❌  Orange \| ? EUR \| invoice \| techlab \| download failed: 404` |
+| `duplicate` | *(silent — no notification)* | |
+
+Missing fields show `?` placeholder. Currency defaults to `EUR` when null.
+
+**Code:**
+- [`telegram-notify.ts`](../claude-code/channels/telegram-notify.ts) — `formatNotification()` pure function + `NotifyFn` type
+- [`workflow-mcp.ts:31-44`](../claude-code/channels/workflow-mcp.ts#L31) — `notifyTelegram` callback (Telegram Bot API via fetch)
+- Callback threaded: `workflow-mcp.ts` → `workflow-core.ts` → `invoice-worker.ts`
+
+**Claude notifications (interactive):**
+
+Claude still handles notifications that require user interaction:
+- `awaiting_approval` jobs → ask user via Telegram, wait for response
+- `notify_user` classification → ask user what to do
+- Auth expired → alert user to re-authenticate
 
 **Channel notifications (email-watcher → Claude):**
 - [`email-watcher.ts:595-606`](../claude-code/channels/email-watcher.ts#L595) — channel notification format: meta fields include `email_source`, `message_id`, `sender`, `subject`, `has_attachments`, `received_at`

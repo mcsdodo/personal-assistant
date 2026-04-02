@@ -103,10 +103,10 @@ Each event has these meta fields:
 2. **Classify** — invoke the `document-classifier` subagent with the local file path (e.g., `/workspace/downloads/20260325_blok_tankovanie.pdf`). Before invoking, replace the `${...}` placeholders in the prompt with business identifier env vars (`BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`). The subagent uses the Read tool to visually inspect the PDF/image and returns vendor, total_amount, doc_type, owner, etc.
 3. **Create job** — call `create_scan_intake_job` on workflow MCP with the classification result, file_id, `month_tag`, `watch_folder`, and `file_path` (the local download path). The worker reads from disk, handles dedup, upload, and file move. Tags are derived from `watch_folder` path segments (e.g. `techlab/invoicing` → tags `[techlab, invoicing]`).
 4. **Monitor job** — poll with `get_job(job_id)`:
-   - `state: completed` with `outcome: uploaded` → notify via Telegram: "✓ Uploaded {vendor} scan to Paperless ({amount} EUR)"
-   - `state: completed` with `outcome: duplicate` → silently skip
-   - `state: awaiting_approval` → notify user via Telegram, wait for response
-   - `state: failed` → notify user via Telegram with error
+   - `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
+   - `state: completed` with `outcome: duplicate` → silently skip (worker does not notify)
+   - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response
+   - `state: failed` → worker sends Telegram notification automatically, no action needed
 5. **Record** — call `update_gdrive_scan_status` with the outcome
 
 The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure, it moves to `errors/`.
@@ -129,10 +129,10 @@ Process emails using the Haiku subagents and durable workflow jobs:
 2. **Act on classification:**
    - `action: download_and_upload` — create a durable workflow job using `create_invoice_intake_job` with the email source, message ID, merged classification JSON, `file_path`, and `month_tag`.
      - After creating the job, poll with `get_job(job_id)` to check status:
-       - `state: completed` with `outcome: uploaded` → success, notify via Telegram
+       - `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
        - `state: completed` with `outcome: duplicate` → silently skip, no notification
        - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for user response, then call `approve_job` or `cancel_job`
-       - `state: failed` → notify user via Telegram with error
+       - `state: failed` → worker sends Telegram notification automatically, no action needed
      - You don't need to poll immediately — the worker processes jobs within seconds. Check once after a short delay.
    - `action: notify_user` — notify the user via Telegram with the classification details and ask what to do. If the Telegram notification fails (e.g. chat not allowlisted, reply tool errors), record status="failed" with the error — do NOT mark as "processed".
    - `action: ignore` — log silently, do nothing.
@@ -155,16 +155,21 @@ Use checker tools for matching and P&L queries. Use paperless tools for document
 
 Use the telegram `reply` tool to notify the user. The chat_id is available via the `TELEGRAM_CHAT_ID` environment variable (read it once at start).
 
-**When to notify via Telegram:**
-- Invoice processed successfully → brief confirmation: "✓ Uploaded {vendor} invoice to Paperless ({amount} EUR)"
-- Invoice download failed → alert: "⚠ {vendor} invoice download failed: {reason}"
-- Unknown vendor / `notify_user` classification → ask: "New invoice from {sender}: {subject}. Process? Reply yes/no"
+**Automatic worker notifications:** The invoice-worker sends structured Telegram notifications automatically after each job completion:
+- `✔️  {vendor} | {amount} {currency} | {doc_type} | {owner}` — uploaded
+- `❌  {vendor} | {amount} {currency} | {doc_type} | {owner} | {error}` — failed
+- Silent duplicates (`outcome: "duplicate"`) — no notification
+You do NOT need to send upload confirmations or failure alerts for completed/failed jobs.
+
+**When to notify via Telegram (Claude's responsibility):**
+- `awaiting_approval` jobs → ask: "Possible duplicate, approve?" (worker cannot handle interactive approval)
+- `notify_user` classification → ask: "New invoice from {sender}: {subject}. Process? Reply yes/no"
 - Auth expired (Outlook/Gmail MCP returns auth error) → alert: "⚠ {service} auth expired — re-authenticate"
-- Any unexpected error during processing → alert with details
 
 **When NOT to notify:**
 - `action: ignore` emails — silent, no notification
 - Mock email-watcher events — never notify about mock data
+- Job completed with `outcome: uploaded` or `failed` — worker handles these automatically
 
 **Message format:** Keep Telegram messages short (1-2 lines). No markdown formatting — Telegram uses its own markup. Use emoji sparingly for status: ✓ success, ⚠ warning, ❌ error.
 

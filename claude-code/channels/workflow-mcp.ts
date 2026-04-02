@@ -9,6 +9,7 @@ import type { Database } from "bun:sqlite";
 
 import { executeNextJob } from "./workflow-core";
 import { PaperlessFieldRegistry } from "./paperless-fields";
+import type { NotifyFn } from "./telegram-notify";
 import {
   approveJob,
   cancelJob,
@@ -28,6 +29,22 @@ const WORKFLOW_PORT = parseInt(process.env.WORKFLOW_MCP_PORT ?? "8003", 10);
 initTracing("workflow");
 const log = createLogger("workflow");
 
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+const notifyTelegram: NotifyFn = async (message) => {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message }),
+    });
+  } catch (err) {
+    log(`Telegram notification failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+};
+
 function text(value: unknown): { type: "text"; text: string } {
   return {
     type: "text",
@@ -44,7 +61,7 @@ async function workerTick(): Promise<void> {
   workerBusy = true;
   try {
     // Only create a span when there's actual work (avoids ~43k idle spans/day)
-    await executeNextJob(db, { log }, fieldRegistry);
+    await executeNextJob(db, { log }, fieldRegistry, notifyTelegram);
   } finally {
     workerBusy = false;
   }
