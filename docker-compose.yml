@@ -151,6 +151,8 @@ services:
       - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI:-}
       - GOOGLE_MCP_CREDENTIALS_DIR=/app/store_creds
       - GOOGLE_CLIENT_SECRET_JSON=${GOOGLE_CLIENT_SECRET_JSON}
+      # Attachment download URLs must use Docker service name, not localhost
+      - WORKSPACE_EXTERNAL_URL=http://gmail-mcp:8000
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
