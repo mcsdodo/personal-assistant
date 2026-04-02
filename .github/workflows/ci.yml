@@ -6,7 +6,9 @@ on:
     branches: [main]
     paths:
       - 'checker-mcp/**'
-      - 'claude-code/channels/**'
+      - 'claude-code/**'
+      - 'outlook-mcp/**'
+      - 'docker-compose.yml'
   pull_request:
     branches: [main]
 
@@ -17,6 +19,8 @@ jobs:
     outputs:
       checker-mcp: ${{ steps.filter.outputs.checker-mcp }}
       channels: ${{ steps.filter.outputs.channels }}
+      claude-code: ${{ steps.filter.outputs.claude-code }}
+      outlook-mcp: ${{ steps.filter.outputs.outlook-mcp }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -27,6 +31,10 @@ jobs:
               - 'checker-mcp/**'
             channels:
               - 'claude-code/channels/**'
+            claude-code:
+              - 'claude-code/**'
+            outlook-mcp:
+              - 'outlook-mcp/**'
 
   checker-mcp:
     name: checker-mcp (Python)
@@ -61,3 +69,30 @@ jobs:
       - run: bun test
         env:
           PAPERLESS_URL: http://paperless-mock
+
+  build-claude-code:
+    name: build claude-code
+    needs: changes
+    if: needs.changes.outputs.claude-code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t personal-assistant-claude-code:ci claude-code/
+
+  build-checker-mcp:
+    name: build checker-mcp
+    needs: changes
+    if: needs.changes.outputs.checker-mcp == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t personal-assistant-checker-mcp:ci checker-mcp/
+
+  build-outlook-mcp:
+    name: build outlook-mcp
+    needs: changes
+    if: needs.changes.outputs.outlook-mcp == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t personal-assistant-outlook-mcp:ci outlook-mcp/
