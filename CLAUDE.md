@@ -53,8 +53,8 @@ All 5 services have Docker health checks. `claude-code` depends on all MCPs via 
 | Service | Health check | Interval | Start period |
 |---------|-------------|----------|--------------|
 | `claude-code` | tmux session alive + email-watcher `/health` (port 9465) | 30s | 90s |
-| `checker-mcp` | `/health` endpoint (port 8001) | 30s | 15s |
-| `outlook-mcp` | `/health` endpoint (port 8002) | 30s | 30s |
+| `checker-mcp` | TCP socket check (ports 8001 + 5000) | 30s | 15s |
+| `outlook-mcp` | TCP socket check (port 8002) | 30s | 30s |
 | `paperless-mcp` | TCP port 3000 check via Node | 30s | 15s |
 | `gmail-mcp` | TCP port 8000 check via Python | 30s | 15s |
 

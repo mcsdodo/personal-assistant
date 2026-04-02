@@ -10,14 +10,14 @@
 ```
 personal-assistant/
 ├── CLAUDE.md                    # Main stack documentation
-├── CHANGELOG.md                 # 166 commits, 7 days dev history
+├── CHANGELOG.md                 # ~200 commits dev history
 ├── docker-compose.yml           # Production stack (5 services)
 ├── checker-mcp/                 # Invoice matching engine
 │   ├── match_invoices.py       # 1300+ lines: statement parsing, invoice extraction, matching algo
 │   ├── server.py               # FastMCP wrapping match_invoices
 │   ├── webapp.py               # Flask web UI (invoices.lacny.me)
-│   ├── test_matching.py        # 300+ tests with mocked Paperless
-│   ├── test_golden.py          # Golden file regression test
+│   ├── test_matching.py        # 113+ tests with mocked Paperless
+│   ├── test_golden.py          # Golden file regression test (gitignored, local only)
 │   └── Dockerfile              # python:3.12-slim
 ├── outlook-mcp/                 # Outlook read-only MCP server
 │   ├── server.py               # MSAL device code auth, 4 tools
@@ -220,7 +220,7 @@ bun test
 - Global matched ID tracking across months
 
 **Golden File Test:**
-- `test_golden.py`: Regression test comparing current matching results against `test_golden.json`
+- `test_golden.py`: Regression test comparing current matching results against `test_golden.json` (both gitignored — local-only, requires live Paperless connection)
 - Run against real Paperless instance (production data validation)
 
 **Mocking:**

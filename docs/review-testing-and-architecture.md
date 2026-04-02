@@ -31,7 +31,7 @@
 
 | Source file | Lines | Tests | Gap |
 |-------------|-------|-------|-----|
-| `email-watcher.ts` | 1266 | `email-watcher.test.ts` tests **only** `filterEmailsByRecipient` (a helper function). Zero coverage of: `pollGmail`, `pollOutlook`, `pollCycle`, `processNewEmails`, `retryStuckEmails`, `renderMetrics`, `startMetricsServer`, all 6 MCP tool handlers, `parseToolResult`, `extractGmailIds`, `parseGmailEmails`, `buildGmailQuery`, `parseDuration`, catchup flow, client reconnection | ~0% of actual watcher logic |
+| `email-watcher.ts` | 1266 | `email-watcher.test.ts` tests **only** `filterEmailsByRecipient` (a helper function). `email-watcher-utils.test.ts` covers `extractGmailIds`, `parseGmailEmails`, `parseDuration`, `renderMetrics`. Zero coverage of: `pollGmail`, `pollOutlook`, `pollCycle`, `processNewEmails`, `retryStuckEmails`, all 6 MCP tool handlers, catchup flow, client reconnection. `email-watcher.integration.test.ts` covers full poll-detect-notify cycle with mocked MCPs. | ~30% of actual watcher logic |
 | `invoice-worker.ts` (`executeScanIntake`) | ~180 lines (915-1099) | Zero tests | GDrive intake path completely untested |
 | `invoice-worker.ts` (Gmail download) | ~60 lines | Zero tests | Only Outlook attachment path tested; Gmail branch in `downloadAttachment` skipped |
 
@@ -43,8 +43,8 @@
 | `workflow-core.ts` (146 lines) | Only `synthetic` workflow type (3 tests) | `invoice_intake` dispatch, `scan_intake` dispatch, unknown workflow type, crash handling, trace parent resolution |
 | `db.ts` (266 lines) | Good CRUD coverage | `getLastChecked`/`setLastChecked` (checkpoint tracking), `getEmailTraceId`, trace_id migration |
 | `workflow-db.ts` (317 lines) | Core lifecycle covered | `cancelJob` from different states, `claimNextQueuedJob` contention, timestamp assertions, `listJobs` limit |
-| `gdrive-watcher.ts` (747 lines) | Zero tests | No test file exists at all |
-| `gdrive-db.ts` (155 lines) | Zero tests | No test file exists at all |
+| `gdrive-watcher.ts` (747 lines) | `gdrive-watcher.test.ts` + `gdrive-watcher.integration.test.ts` | Full poll-resolve-notify cycle tested with mocked MCP |
+| `gdrive-db.ts` (155 lines) | `gdrive-db.test.ts` covers CRUD | — |
 
 ### LOW: Nice to have
 
@@ -79,7 +79,7 @@ This means E2E tests **cannot run in CI** and are **developer-machine-only**.
 
 ### 3.3 Hardcoded infrastructure
 
-- `helpers.py` line 42: Hardcoded Paperless API token fallback (`890b1029...`)
+- ~~`helpers.py` line 42: Hardcoded Paperless API token fallback (`890b1029...`)~~ *(fixed — raises `RuntimeError` if token not set)*
 - `helpers.py` lines 32-33: Windows-specific credential paths (`C:\_dev\invoice-automation\config\`)
 - `helpers.py` line 321: Likely bug — `'rows' in dir()` should be `'rows' in locals()`
 - `test_email_link.py`: SSH to `192.168.0.96` + Docker commands over SSH for PDF server
@@ -112,7 +112,7 @@ Local dev:   docker compose --profile local --env-file .env
 
 4. **Local overlay does triple duty**: build context provider + observability stack (Alloy/Prometheus/Loki/Tempo/Grafana) + local Paperless (Paperless/Postgres/Redis). All 8 extra services start every time, even when you only need the core pipeline.
 
-5. **Missing env vars in `.env.example`**: `BANK_PDF_PASSWORD`, `GDRIVE_LEVEL1`/`GDRIVE_LEVEL2`/`GDRIVE_MCP_URL` are used in production but absent from the local env example.
+5. **~~Missing env vars in `.env.example`~~** *(fixed)*: ~~`BANK_PDF_PASSWORD`, `GDRIVE_LEVEL1`/`GDRIVE_LEVEL2`/`GDRIVE_MCP_URL` are used in production but absent from the local env example.~~ All now present in `.env.example`.
 
 6. **Tempo defined but possibly unused**: No `TEMPO_URL` env var, no visible Alloy config forwarding traces to it.
 
@@ -133,11 +133,11 @@ The 1266-line email-watcher has many testable pure functions buried inside it:
 - `parseDuration(str)` — parses `"2h"`, `"7d"`, `"1w"`, `"3m"` strings
 - `renderMetrics(db)` — generates Prometheus exposition format
 
-**Action**: Extract these into a separate `email-watcher-utils.ts` module and add unit tests. This alone would cover the most critical parsing/formatting logic without needing to mock MCP clients.
+**Action**: ~~Extract these into a separate `email-watcher-utils.ts` module and add unit tests.~~ Done — `email-watcher-utils.ts` exists with `email-watcher-utils.test.ts` covering `extractGmailIds`, `parseGmailEmails`, `parseDuration`, `renderMetrics`.
 
-**Priority 2: Add `gdrive-watcher.test.ts` and `gdrive-db.test.ts`**
+**Priority 2: ~~Add `gdrive-watcher.test.ts` and `gdrive-db.test.ts`~~** *(done)*
 
-These have zero test files. At minimum, `gdrive-db.ts` (155 lines) should have the same CRUD coverage as `db.test.ts`.
+~~These have zero test files.~~ Both `gdrive-watcher.test.ts`, `gdrive-watcher.integration.test.ts`, and `gdrive-db.test.ts` now exist with full coverage.
 
 **Priority 3: Test `executeScanIntake` in `invoice-worker.test.ts`**
 
@@ -180,7 +180,7 @@ docker compose --profile local --env-file .env up --build
 ```
 
 **Remaining items:**
-- Add missing env vars to `.env.example` (`BANK_PDF_PASSWORD`, `GDRIVE_LEVEL1`, `GDRIVE_LEVEL2`, `GDRIVE_MCP_URL`)
+- ~~Add missing env vars to `.env.example` (`BANK_PDF_PASSWORD`, `GDRIVE_LEVEL1`, `GDRIVE_LEVEL2`, `GDRIVE_MCP_URL`)~~ *(done)*
 - Unify `gmail-mcp` entrypoint (init script that checks for file before writing from env)
 - Remove Tempo if unused, or add the Alloy forwarding config
 
@@ -189,20 +189,20 @@ docker compose --profile local --env-file .env up --build
 1. **Rename `email-watcher.test.ts`** to `email-filter.test.ts` (it only tests filtering)
 2. **Fix fixture names**: `reset_pipeline_gmail_only` / `reset_pipeline_outlook_only` do the same thing — either differentiate them or merge into one
 3. **Add per-test email-watcher DB reset** or use unique subjects/IDs per test to avoid cross-test duplicate detection
-4. **Remove hardcoded token fallback** in `helpers.py` — require `PAPERLESS_API_TOKEN` env var
+4. ~~**Remove hardcoded token fallback** in `helpers.py` — require `PAPERLESS_API_TOKEN` env var~~ *(done — raises `RuntimeError` if not set)*
 5. **Fix `'rows' in dir()` bug** in `helpers.py` line 321 — should be `'rows' in locals()`
 
 ---
 
 ## 6. Effort Estimates
 
-| Task | Effort | Impact |
-|------|--------|--------|
-| Extract + test email-watcher pure functions | 2-3h | High — covers biggest gap |
-| Add `gdrive-db.test.ts` | 1h | Medium — mirrors existing db.test.ts |
-| Add `executeScanIntake` tests | 2h | High — uses existing test infra |
-| Add `tryDecrypt` tests | 30min | Medium — critical path |
-| Create integration test tier (mocked MCP) | 4-6h | High — enables CI, reduces E2E reliance |
-| Simplify compose with profiles | 2-3h | Medium — DX improvement |
-| Fix E2E isolation issues | 1-2h | Medium — prevents false passes |
-| Add missing `.env.example` vars | 15min | Low — documentation |
+| Task | Effort | Impact | Status |
+|------|--------|--------|--------|
+| Extract + test email-watcher pure functions | 2-3h | High — covers biggest gap | Done |
+| Add `gdrive-db.test.ts` | 1h | Medium — mirrors existing db.test.ts | Done |
+| Add `executeScanIntake` tests | 2h | High — uses existing test infra | Open |
+| Add `tryDecrypt` tests | 30min | Medium — critical path | Open |
+| Create integration test tier (mocked MCP) | 4-6h | High — enables CI, reduces E2E reliance | Done |
+| Simplify compose with profiles | 2-3h | Medium — DX improvement | Done |
+| Fix E2E isolation issues | 1-2h | Medium — prevents false passes | Open |
+| Add missing `.env.example` vars | 15min | Low — documentation | Done |

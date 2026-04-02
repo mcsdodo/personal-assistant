@@ -17,7 +17,7 @@ End-to-end tests for the email processing pipeline. Sends real emails, waits for
 
 2. **Gmail OAuth token** — run once to authorize:
    ```bash
-   python _tmp/send-test-email.py --all
+   python tests/helpers.py  # or trigger start_google_auth from Claude session
    ```
 
 3. **Outlook auth active** — device code flow at startup:
@@ -30,11 +30,12 @@ End-to-end tests for the email processing pipeline. Sends real emails, waits for
    pip install pytest requests google-auth google-api-python-client
    ```
 
-5. **Test data** in `_tmp/test-data/`:
-   - `invoice.pdf` — Alza invoice (13.43 EUR, order 5418090558)
-   - `fuel_invoice.pdf` — Slovnaft fuel receipt (57.49 EUR, order 1475807)
-   - `refund.pdf` — Alza credit note (-13.43 EUR, order 6401551319)
+5. **Test data** in `tests/test_data/`:
+   - `invoice.pdf` — Alza invoice
+   - `fuel_invoice.pdf` — Slovnaft fuel receipt
+   - `refund.pdf` — Alza credit note
    - `account_statement_locked.pdf` — encrypted Tatra banka statement
+   - `personal.pdf` — personal document
 
 ## Running
 
@@ -81,7 +82,7 @@ The `reset_pipeline` fixture adds ~60s for container restart + seed.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PAPERLESS_URL` | `http://localhost:8010/api` | Paperless API URL |
-| `PAPERLESS_TOKEN` | (hardcoded for local dev) | Paperless API token |
+| `PAPERLESS_TOKEN` | (required, set in `.env`) | Paperless API token |
 
 ## Troubleshooting
 

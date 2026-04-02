@@ -100,7 +100,7 @@ All 5 services have Docker health checks. `claude-code` depends on all MCPs via 
 | Service | Check | Interval | Start period |
 |---------|-------|----------|--------------|
 | `claude-code` | tmux alive + `curl :9465/health` | 30s | 90s |
-| `checker-mcp` | TCP :8001 | 30s | 15s |
+| `checker-mcp` | TCP :8001 + :5000 | 30s | 15s |
 | `outlook-mcp` | TCP :8002 | 30s | 30s |
 | `paperless-mcp` | TCP :3000 (Node) | 30s | 15s |
 | `gmail-mcp` | TCP :8000 (Python) | 30s | 15s |
@@ -163,7 +163,7 @@ NAS storage (e.g. NFS share) → PVE host → bind mount into LXC → Docker vol
 | Image | Strategy |
 |-------|----------|
 | `claude-code`, `checker-mcp`, `outlook-mcp` | Local Komodo builds, tagged by git commit |
-| `gmail-mcp` | Pinned to `1.14.3` (semver tags on GHCR) |
+| `gmail-mcp` | Pinned to `1.16.2` (semver tags on GHCR) |
 | `paperless-mcp` | `:latest` (no semver tags available) |
 
 **Watchtower:** All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-session auto-updates.
