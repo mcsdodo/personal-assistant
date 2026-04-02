@@ -5,8 +5,12 @@ import {
   claimNextQueuedJob,
   completeJob,
   failJob,
+  getJob,
+  MAX_RETRIES,
   parseJobJson,
   requestJobApproval,
+  scheduleRetry,
+  shouldRetry,
   type JobRow,
 } from "./workflow-db";
 import { executeInvoiceIntake, executeScanIntake } from "./invoice-worker";
@@ -94,7 +98,7 @@ export async function executeNextJob(
   const job = claimNextQueuedJob(db);
   if (!job) return null;
 
-  const spanOpts = { attributes: { "job.id": job.id, "job.type": job.workflow_type } };
+  const spanOpts = { attributes: { "job.id": job.id, "job.type": job.workflow_type, "job.retry_attempt": job.retry_count } };
 
   // Try to link to the email-watcher trace via the email DB
   const parentCtx = resolveEmailTraceParent(job.source_ref);
@@ -124,11 +128,18 @@ export async function executeNextJob(
       }
       span.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
-      failJob(db, job.id, {
+      const errPayload = {
         code: "worker_exception",
         message: error instanceof Error ? error.message : String(error),
-      });
-      logger.log(`Job ${job.id} crashed during execution`);
+      };
+      if (shouldRetry(db, job.id)) {
+        scheduleRetry(db, job.id, errPayload);
+        const updated = getJob(db, job.id);
+        logger.log(`Job ${job.id} scheduled for retry (attempt ${updated?.retry_count})`);
+      } else {
+        failJob(db, job.id, errPayload);
+        logger.log(`Job ${job.id} failed permanently after ${MAX_RETRIES} attempts`);
+      }
       span.setStatus({
         code: SpanStatusCode.ERROR,
         message: error instanceof Error ? error.message : String(error),

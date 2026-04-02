@@ -21,6 +21,8 @@ import {
   failJob,
   parseJobJson,
   requestJobApproval,
+  scheduleRetry,
+  shouldRetry,
   type JobRow,
 } from "./workflow-db";
 import { callMcpTool, extractJson, extractText } from "./mcp-client";
@@ -337,21 +339,28 @@ export async function executeInvoiceIntake(
       span.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      failJob(db, job.id, { code: "invoice_intake_error", message, step: "unknown" });
-      logger.log(`Job ${job.id} failed: ${message}`);
-      if (notify) {
-        const msg = formatNotification({
-          outcome: "failed",
-          vendor: classification.vendor,
-          total_amount: classification.total_amount,
-          currency: classification.currency,
-          doc_type: classification.doc_type,
-          owner: classification.owner ?? null,
-          error: message,
-        });
-        if (msg) await notify(msg).catch(() => {});
+      const errPayload = { code: "invoice_intake_error", message, step: "unknown" };
+      if (shouldRetry(db, job.id)) {
+        scheduleRetry(db, job.id, errPayload);
+        logger.log(`Job ${job.id} scheduled for retry: ${message}`);
+        span.setAttribute("invoice.outcome", "retryable");
+      } else {
+        failJob(db, job.id, errPayload);
+        logger.log(`Job ${job.id} failed permanently: ${message}`);
+        if (notify) {
+          const msg = formatNotification({
+            outcome: "failed",
+            vendor: classification.vendor,
+            total_amount: classification.total_amount,
+            currency: classification.currency,
+            doc_type: classification.doc_type,
+            owner: classification.owner ?? null,
+            error: message,
+          });
+          if (msg) await notify(msg).catch(() => {});
+        }
+        span.setAttribute("invoice.outcome", "failed");
       }
-      span.setAttribute("invoice.outcome", "failed");
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       span.recordException(error instanceof Error ? error : new Error(message));
     } finally {
@@ -1123,24 +1132,31 @@ export async function executeScanIntake(
       span.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      failJob(db, job.id, { code: "scan_intake_error", message, step: "unknown" });
-      await moveGdriveFile(file_id, "errors", watchFolder, logger).catch((moveErr) => {
-        logger.log(`Failed to move file to errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
-      });
-      logger.log(`Job ${job.id} failed: ${message}`);
-      if (notify) {
-        const msg = formatNotification({
-          outcome: "failed",
-          vendor: classification.vendor,
-          total_amount: classification.total_amount,
-          currency: classification.currency,
-          doc_type: classification.doc_type,
-          owner: classification.owner ?? null,
-          error: message,
+      const errPayload = { code: "scan_intake_error", message, step: "unknown" };
+      if (shouldRetry(db, job.id)) {
+        scheduleRetry(db, job.id, errPayload);
+        logger.log(`Job ${job.id} scheduled for retry: ${message}`);
+        span.setAttribute("invoice.outcome", "retryable");
+      } else {
+        failJob(db, job.id, errPayload);
+        await moveGdriveFile(file_id, "errors", watchFolder, logger).catch((moveErr) => {
+          logger.log(`Failed to move file to errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
         });
-        if (msg) await notify(msg).catch(() => {});
+        logger.log(`Job ${job.id} failed permanently: ${message}`);
+        if (notify) {
+          const msg = formatNotification({
+            outcome: "failed",
+            vendor: classification.vendor,
+            total_amount: classification.total_amount,
+            currency: classification.currency,
+            doc_type: classification.doc_type,
+            owner: classification.owner ?? null,
+            error: message,
+          });
+          if (msg) await notify(msg).catch(() => {});
+        }
+        span.setAttribute("invoice.outcome", "failed");
       }
-      span.setAttribute("invoice.outcome", "failed");
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       span.recordException(error instanceof Error ? error : new Error(message));
     } finally {

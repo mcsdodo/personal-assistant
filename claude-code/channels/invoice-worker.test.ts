@@ -547,7 +547,7 @@ describe("invoice-worker link download", () => {
     await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
-    expect(updated.state).toBe("failed");
+    expect(updated.state).toBe("retryable");
     expect(updated.error_json).toContain("Link may have expired");
   });
 });
@@ -565,7 +565,7 @@ describe("invoice-worker error handling", () => {
     await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
-    expect(updated.state).toBe("failed");
+    expect(updated.state).toBe("retryable");
     expect(updated.error_json).toContain("No attachments found");
   });
 
@@ -596,7 +596,7 @@ describe("invoice-worker error handling", () => {
     await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
-    expect(updated.state).toBe("failed");
+    expect(updated.state).toBe("retryable");
     expect(updated.error_json).toContain("500");
   });
 
@@ -612,7 +612,7 @@ describe("invoice-worker error handling", () => {
     await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
-    expect(updated.state).toBe("failed");
+    expect(updated.state).toBe("retryable");
     expect(updated.error_json).toContain("Unsupported download strategy");
   });
 });
@@ -1129,7 +1129,7 @@ describe("executeScanIntake", () => {
     expect(output.correspondent).toBe("NewCorp");
   });
 
-  test("upload failure marks job failed and moves file to errors/", async () => {
+  test("upload failure marks job retryable on first failure", async () => {
     const filePath = join(tmpDir, "fail_scan.pdf");
     writeFileSync(filePath, Buffer.from("fake-pdf"));
 
@@ -1165,7 +1165,7 @@ describe("executeScanIntake", () => {
     await executeScanIntake(db, job, logger, registry, notify);
 
     const updated = getJob(db, job.id)!;
-    expect(updated.state).toBe("failed");
+    expect(updated.state).toBe("retryable");
     expect(updated.error_json).toContain("500");
   });
 

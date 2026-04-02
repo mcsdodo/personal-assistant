@@ -11,6 +11,7 @@ import { executeNextJob } from "./workflow-core";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 import {
+  addJobEvent,
   approveJob,
   cancelJob,
   createJob,
@@ -226,6 +227,17 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["job_id"],
       },
     },
+    {
+      name: "retry_job",
+      description: "Re-queue a permanently failed or cancelled job for retry. Resets retry_count to 0.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          job_id: { type: "string", description: "Job ID to retry" },
+        },
+        required: ["job_id"],
+      },
+    },
   ],
 }));
 
@@ -357,6 +369,25 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!ok) {
           return { content: [text(`Job ${jobId} cannot be cancelled`)], isError: true };
         }
+        return { content: [text(getJob(db, jobId))] };
+      }
+
+      case "retry_job": {
+        const jobId = args?.job_id as string;
+        const job = getJob(db, jobId);
+        if (!job) {
+          return { content: [text(`Job ${jobId} not found`)], isError: true };
+        }
+        if (job.state !== "failed" && job.state !== "cancelled") {
+          return { content: [text(`Job is ${job.state}, can only retry failed/cancelled jobs`)], isError: true };
+        }
+        const now = new Date().toISOString();
+        db.prepare(
+          `UPDATE jobs SET state = 'retryable', retry_count = 0,
+           scheduled_at = ?, error_json = NULL, completed_at = NULL, updated_at = ?
+           WHERE id = ?`
+        ).run(now, now, jobId);
+        addJobEvent(db, jobId, "manual_retry", { triggered_by: "mcp_tool" });
         return { content: [text(getJob(db, jobId))] };
       }
 

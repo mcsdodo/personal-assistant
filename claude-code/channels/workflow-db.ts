@@ -5,6 +5,7 @@ import { dirname } from "path";
 export type JobState =
   | "queued"
   | "running"
+  | "retryable"
   | "awaiting_approval"
   | "completed"
   | "failed"
@@ -33,6 +34,8 @@ export interface JobRow {
   updated_at: string;
   started_at: string | null;
   completed_at: string | null;
+  retry_count: number;
+  scheduled_at: string | null;
 }
 
 export interface JobEventRow {
@@ -90,6 +93,12 @@ export function openWorkflowDb(path: string): Database {
   const db = new Database(path, { create: true });
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
+
+  // Migrations — safe ADD COLUMN (ignore "duplicate column" error)
+  try { db.exec("ALTER TABLE jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"); } catch {}
+  try { db.exec("ALTER TABLE jobs ADD COLUMN scheduled_at TEXT"); } catch {}
+  db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_retryable ON jobs(state, scheduled_at)");
+
   return db;
 }
 
@@ -195,15 +204,17 @@ export function getJobEvents(db: Database, jobId: string): JobEventRow[] {
 }
 
 export function claimNextQueuedJob(db: Database): JobRow | null {
+  const now = nowIso();
   const candidate = db
     .prepare(
       `SELECT id
        FROM jobs
-       WHERE state = 'queued'
+       WHERE state IN ('queued', 'retryable')
+         AND (scheduled_at IS NULL OR scheduled_at <= ?)
        ORDER BY created_at ASC
        LIMIT 1`
     )
-    .get() as { id: string } | null;
+    .get(now) as { id: string } | null;
 
   if (!candidate) return null;
 
@@ -212,7 +223,7 @@ export function claimNextQueuedJob(db: Database): JobRow | null {
     .prepare(
       `UPDATE jobs
        SET state = 'running', started_at = COALESCE(started_at, ?), updated_at = ?
-       WHERE id = ? AND state = 'queued'`
+       WHERE id = ? AND state IN ('queued', 'retryable')`
     )
     .run(timestamp, timestamp, candidate.id);
 
@@ -304,6 +315,37 @@ export function cancelJob(db: Database, jobId: string, reason?: string | null): 
 
   if (result.changes === 0) return false;
   addJobEvent(db, jobId, "cancelled", { reason: reason ?? null });
+  return true;
+}
+
+export const MAX_RETRIES = parseInt(process.env.MAX_JOB_RETRIES ?? "3", 10);
+
+export function shouldRetry(db: Database, jobId: string): boolean {
+  const job = getJob(db, jobId);
+  return !!job && job.retry_count < MAX_RETRIES;
+}
+
+export function scheduleRetry(db: Database, jobId: string, error: unknown): boolean {
+  const job = getJob(db, jobId);
+  if (!job) return false;
+  const attempt = job.retry_count + 1;
+  const delaySec = Math.pow(attempt, 4) * (0.9 + Math.random() * 0.2);
+  const scheduledAt = new Date(Date.now() + delaySec * 1000).toISOString();
+  const timestamp = nowIso();
+
+  db.prepare(
+    `UPDATE jobs
+     SET state = 'retryable', retry_count = ?, scheduled_at = ?,
+         error_json = ?, completed_at = NULL, updated_at = ?
+     WHERE id = ?`
+  ).run(attempt, scheduledAt, JSON.stringify(error), timestamp, jobId);
+
+  addJobEvent(db, jobId, "retry_scheduled", {
+    attempt,
+    scheduled_at: scheduledAt,
+    delay_seconds: Math.round(delaySec),
+    last_error: error,
+  });
   return true;
 }
 

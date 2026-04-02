@@ -106,10 +106,11 @@ Each event has these meta fields:
    - `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
    - `state: completed` with `outcome: duplicate` → silently skip (worker does not notify)
    - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response
-   - `state: failed` → worker sends Telegram notification automatically, no action needed
+   - `state: retryable` → transient failure, worker will retry automatically (up to 3 attempts with exponential backoff). No action needed.
+   - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Use `retry_job` tool to manually re-queue if root cause is fixed.
 5. **Record** — call `update_gdrive_scan_status` with the outcome
 
-The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure, it moves to `errors/`.
+The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure (permanent), it moves to `errors/`. Retryable failures do NOT move the file.
 
 ## Email Processing Pipeline
 
@@ -132,7 +133,8 @@ Process emails using the Haiku subagents and durable workflow jobs:
        - `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
        - `state: completed` with `outcome: duplicate` → silently skip, no notification
        - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for user response, then call `approve_job` or `cancel_job`
-       - `state: failed` → worker sends Telegram notification automatically, no action needed
+       - `state: retryable` → transient failure, worker retries automatically (up to 3 attempts). No action needed.
+       - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Use `retry_job` to manually re-queue if root cause is fixed.
      - You don't need to poll immediately — the worker processes jobs within seconds. Check once after a short delay.
    - `action: notify_user` — notify the user via Telegram with the classification details and ask what to do. If the Telegram notification fails (e.g. chat not allowlisted, reply tool errors), record status="failed" with the error — do NOT mark as "processed".
    - `action: ignore` — log silently, do nothing.

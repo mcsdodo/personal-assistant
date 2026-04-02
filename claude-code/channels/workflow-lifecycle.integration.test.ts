@@ -359,12 +359,7 @@ describe("workflow lifecycle: error handling", () => {
     expect(error.message).toContain("nonexistent_workflow");
   });
 
-  test("job crash (fetch throws) → failed with error details", async () => {
-    // Use attachment download strategy so the worker will make a fetch call.
-    // executeInvoiceIntake has its own try/catch that calls failJob with
-    // code "invoice_intake_error" — errors don't propagate to workflow-core's
-    // catch block. This test verifies that the full lifecycle still ends in
-    // a failed state with the original error message preserved.
+  test("job crash (fetch throws) → retryable on first failure", async () => {
     const input = makeInput();
     const job = createJob(db, {
       workflowType: "invoice_intake",
@@ -372,9 +367,6 @@ describe("workflow lifecycle: error handling", () => {
       sourceRef: `outlook:${input.message_id}`,
     });
 
-    // Every fetch call throws (simulating persistent network failure).
-    // callMcpTool does 1 initial + MAX_RETRIES (3) retries = 4 total attempts,
-    // so we need a handler for each.
     const networkError = () => { throw new Error("Network connection refused"); };
     mockFetch(networkError, networkError, networkError, networkError);
 
@@ -384,10 +376,39 @@ describe("workflow lifecycle: error handling", () => {
     expect(claimed!.id).toBe(job.id);
 
     const updated = getJob(db, job.id)!;
-    expect(updated.state).toBe("failed");
+    expect(updated.state).toBe("retryable");
+    expect(updated.retry_count).toBe(1);
+    expect(updated.scheduled_at).not.toBeNull();
     const error = JSON.parse(updated.error_json!);
     expect(error.code).toBe("invoice_intake_error");
     expect(error.message).toContain("Network connection refused");
+  });
+
+  test("job crash at max retries → failed permanently", async () => {
+    const input = makeInput();
+    const job = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify(input),
+      sourceRef: `outlook:${input.message_id}`,
+      idempotencyKey: `outlook:max-retry-test`,
+    });
+
+    // Exhaust all retries: MAX_RETRIES=3 means 3 retryable + 1 final fail = 4 executions
+    const networkError = () => { throw new Error("Network connection refused"); };
+    for (let i = 0; i < 4; i++) {
+      mockFetch(networkError, networkError, networkError, networkError);
+      await executeNextJob(db, logger, registry);
+      // Set scheduled_at to the past so retryable jobs are immediately claimable
+      const j = getJob(db, job.id)!;
+      if (j.state === "retryable") {
+        db.prepare("UPDATE jobs SET scheduled_at = ? WHERE id = ?")
+          .run(new Date(0).toISOString(), job.id);
+      }
+    }
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("failed");
+    expect(updated.retry_count).toBe(3);
   });
 
   test("no queued jobs → returns null", async () => {
