@@ -25,7 +25,7 @@ flowchart TB
 
 **Local dev:** Alloy + Prometheus + Loki + Grafana run as sidecar services via the `local` profile in [`docker-compose.yml`](../docker-compose.yml).
 
-**Production:** Host Alloy (shared across all stacks) scrapes email-watcher on port 9465 and receives OTLP on port 4317. Config at `compose.stacks/_shared-infra/alloy/config.alloy`.
+**Production:** Use your shared monitoring stack to scrape email-watcher on port 9465 and receive OTLP on port 4317, or point `OTEL_ENDPOINT` at your own receiver.
 
 ## UC-1A.1: Inbox Backlog
 
@@ -131,4 +131,4 @@ Datasource provisioning: [`observability/provisioning/`](../observability/provis
 | [`observability/alloy-config.alloy`](../observability/alloy-config.alloy) | Local dev: OTLP receiver + Prometheus remote_write + Loki push |
 | [`observability/prometheus-config.yml`](../observability/prometheus-config.yml) | Local dev: scrape config for Prometheus |
 | [`observability/loki-config.yml`](../observability/loki-config.yml) | Local dev: Loki storage config |
-| `_shared-infra/alloy/config.alloy` | Production: shared host Alloy with OTLP + email-watcher scrape |
+| your shared Alloy or OTLP config | Production: telemetry receiver and scrape configuration |

@@ -125,7 +125,7 @@ This project was developed as part of a private monorepo. This changelog was gen
 
 ### Added
 - **GDrive watcher channel** — polls Google Drive folders, classifies scanned documents, uploads to Paperless with tag routing `9142f1c` `30ebb01`
-- **Checker-mcp web UI** (`webapp.py`) — Flask app for invoice matching view + P&L view, served at invoices.lacny.me `c103e26` `989973` `42d144d`
+- **Checker-mcp web UI** (`webapp.py`) — Flask app for invoice matching view + P&L view, served behind a reverse proxy such as `invoices.lan` `c103e26` `989973` `42d144d`
 - Invoice intake worker with MCP client and unit tests `82b8ba3`
 - Phase 0 boundaries and reintroduce workflow MCP `c854325`
 - Caddy labels and Flask port for checker-mcp `77487a1`
@@ -146,7 +146,7 @@ This project was developed as part of a private monorepo. This changelog was gen
 - **Telegram two-way channel** (Phase 1.3) `ed68392`
 - **Gmail-mcp + Outlook-mcp** integration (Phase 1.2) `e96d5a0`
 - **Paperless-mcp + Checker-mcp** integration (Phase 1.1) `bdcf537`
-- Permanent Gmail OAuth via gmail-mcp.lacny.me `b3736cd` `bce67c5`
+- Permanent Gmail OAuth via a callback domain such as `gmail-mcp.lan` `b3736cd` `bce67c5`
 - Email recipient filtering (whitelist/blacklist) `506b20a`
 - Alza invoice patterns + defensive download + downloads volume `b2ef45f`
 - Model optimization — Sonnet main + Haiku subagents `d77dde5`
@@ -162,7 +162,7 @@ This project was developed as part of a private monorepo. This changelog was gen
 - Replace generic category with `is_fuel` flag in classifier `50064b3`
 
 ### Deployment
-- Komodo deployment preparation `147b0c4`
+- deployment workflow preparation `147b0c4`
 - Reorganize into `local/` folder structure `a927412`
 - Health checks for all services, version pinning, stateless MCP `d2705ce`
 - Revert paperless-mcp to `:latest` (pinned SHA was broken) `52e959d`

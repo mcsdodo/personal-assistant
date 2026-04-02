@@ -13,7 +13,7 @@ flowchart TB
     checker -->|API calls| paperless["Paperless-ngx API<br/>PAPERLESS_URL<br/>bank statements + invoices + custom fields"]
 ```
 
-The checker-mcp wraps the same matching engine used by the [Invoice Checker webapp](../../../media-gpu/paperless/local/checker/CLAUDE.md) (`match_invoices.py`). It's copied into the container at build time.
+The checker-mcp wraps the same matching engine used by the bundled checker web UI in this repository (`match_invoices.py`).
 
 ## UC-2.1: Match Invoices
 

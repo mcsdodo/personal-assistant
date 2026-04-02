@@ -53,32 +53,32 @@ Single Dockerfile builds the `claude-code` container.
 **Code:** [`Dockerfile`](../claude-code/Dockerfile) — 50 lines, non-root user (`node`), multi-stage USER switches.
 
 **Other images:**
-- `checker-mcp` and `outlook-mcp` — local Python builds via Komodo
+- `checker-mcp` and `outlook-mcp` — local Python builds
 - `paperless-mcp` — community image `ghcr.io/baruchiro/paperless-mcp:latest`
 - `gmail-mcp` — community image `ghcr.io/taylorwilsdon/google_workspace_mcp:1.16.2`
 
 ## Authentication
 
-Four independent auth flows, each persisting tokens on NAS.
+Four independent auth flows, each persisting tokens on mounted storage.
 
 ### Claude Login
 ```bash
 docker exec -it personal-assistant-claude claude login
 ```
-One-time browser login. Credentials persist in `/mnt/shared_configs/personal-assistant/claude-config/`.
+One-time browser login. Credentials persist in `/mnt/shared_configs/<stack>/claude-config/` or your configured persistent volume.
 
 ### Gmail OAuth
-Trigger `start_google_auth` tool from inside the Claude session. OAuth callback via `https://gmail-mcp.lacny.me/oauth2callback` (Caddy-routed, caddy label on gmail-mcp container). Tokens in `/mnt/shared_configs/personal-assistant/gmail/`.
+Trigger `start_google_auth` tool from inside the Claude session. Public docs use an OAuth callback such as `https://gmail-mcp.lan/oauth2callback`. Tokens persist in `/mnt/shared_configs/<stack>/gmail/`.
 
 **Config:** [`docker-compose.yml:116-119`](../docker-compose.yml#L116) — OAuth env vars (client ID, secret, redirect URI).
 
 ### Outlook MSAL Device Code
-Restart outlook-mcp container → check logs for device code URL. Enter code at Microsoft login page. Tokens in `/mnt/shared_configs/personal-assistant/outlook/token_cache.json`.
+Restart outlook-mcp container -> check logs for the device-code URL. Enter the code at the Microsoft login page. Tokens persist in `/mnt/shared_configs/<stack>/outlook/token_cache.json`.
 
 **Code:** [`outlook-mcp/server.py:31-94`](../outlook-mcp/server.py#L31) — MSAL cache load/save, device code flow, silent token acquisition.
 
 ### Telegram Pairing
-DM the bot. `access.json` in the NAS volume handles chat allowlisting. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` env vars configure the bot.
+DM the bot. `access.json` in the mounted data volume handles chat allowlisting. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` env vars configure the bot.
 
 ## Health Checks
 
@@ -130,7 +130,7 @@ Community servers (`paperless-mcp`, `gmail-mcp`) may use stateful sessions — i
 
 ## Persistence
 
-All state persists on NAS at `/mnt/shared_configs/personal-assistant/`:
+All state persists on mounted storage at `/mnt/shared_configs/<stack>/`:
 
 | Path | Content |
 |------|---------|
@@ -143,13 +143,13 @@ All state persists on NAS at `/mnt/shared_configs/personal-assistant/`:
 
 **Config:** [`docker-compose.yml:27-30`](../docker-compose.yml#L27) — volume mounts.
 
-NAS storage (e.g. NFS share) → PVE host → bind mount into LXC → Docker volume.
+One common deployment pattern is network storage -> host mount -> container bind mount.
 
 ## Version Management
 
 | Image | Strategy |
 |-------|----------|
-| `claude-code`, `checker-mcp`, `outlook-mcp` | Local Komodo builds, tagged by git commit |
+| `claude-code`, `checker-mcp`, `outlook-mcp` | Local builds, tagged by git commit |
 | `gmail-mcp` | Pinned to `1.16.2` (semver tags on GHCR) |
 | `paperless-mcp` | `:latest` (no semver tags available) |
 

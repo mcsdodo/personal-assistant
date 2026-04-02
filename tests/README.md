@@ -1,16 +1,13 @@
 # Personal Assistant E2E Pipeline Tests
 
+For the contributor overview, start with [`../docs/development.md`](../docs/development.md).
+
 End-to-end tests for the email processing pipeline. Sends real emails, waits for the pipeline to process them, and verifies results in Paperless.
 
 ## Prerequisites
 
-1. **Local compose stack running** (both stacks):
+1. **Local compose stack running**:
    ```bash
-   # Paperless
-   cd compose.stacks/media-gpu/paperless/local
-   docker compose up -d
-
-   # Personal assistant
    cd compose.stacks/infra/personal-assistant
    docker compose --profile local --env-file .env up -d
    ```
@@ -87,6 +84,6 @@ The `reset_pipeline` fixture adds ~60s for container restart + seed.
 ## Troubleshooting
 
 - **TimeoutError**: Check `docker logs personal-assistant-claude` and the Claude tmux session
-- **Gmail auth error**: Delete `C:\_dev\invoice-automation\config\token.json` and re-run `send-test-email.py`
+- **Gmail auth error**: Remove the local Gmail token cache from your configured data directory and re-run the auth flow
 - **Outlook not polling**: Check `curl http://localhost:9465/metrics | grep outlook`
 - **Duplicate detection**: Tests use `clean_paperless` fixture to wipe between tests, but duplicate emails from previous runs may be detected by Claude's email dedup logic

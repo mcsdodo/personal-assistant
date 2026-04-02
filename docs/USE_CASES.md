@@ -1,12 +1,33 @@
 # Personal Assistant — Use Cases
 
-Documentation index for all implemented functionality. Each implemented use case links to its detailed doc.
+This page is the source of truth for what the stack currently does. It doubles as both the public feature index and the maintainer status table.
 
-This file is the source of truth for all implemented functionality.
+If you want implementation details, follow the linked deep-dive documents for each area.
+
+## At a glance
+
+### Implemented
+
+- Gmail invoice polling
+- Outlook invoice polling
+- email classification and routing
+- attachment and invoice-link download flows
+- upload to Paperless with metadata
+- Telegram notifications and approval prompts
+- Google Drive scan ingestion
+- workflow observability and telemetry
+- bank statement matching and annual P&L summaries
+
+### Not yet implemented
+
+- monthly ZIP export for accountants
+- draft accountant email generation
+- send-after-approval accountant workflow
+- scheduled month-end auto-check
 
 ## UC-1: Invoice Processing (email → Paperless)
 
-[Detailed documentation](./uc1-invoice-processing.md)
+Detailed documentation: [`uc1-invoice-processing.md`](./uc1-invoice-processing.md)
 
 | # | Use Case | Status |
 |---|----------|--------|
@@ -17,11 +38,11 @@ This file is the source of truth for all implemented functionality.
 | 1.5 | [Notify on new invoice](./uc1-invoice-processing.md#uc-15-telegram-notification) | DONE |
 | 1.6 | [Alert on duplicate detection](./uc1-invoice-processing.md#uc-16-approval-gates) | DONE |
 | 1.7 | [Query invoice status](./uc1-invoice-processing.md#uc-17-query-invoice-status) | DONE |
-| 1.8 | GDrive scan + email PDF auto-upload | DONE |
+| 1.8 | Google Drive scan + email PDF auto-upload | DONE |
 
 ## UC-1A: Email Workflow Observability
 
-[Detailed documentation](./uc1a-observability.md)
+Detailed documentation: [`uc1a-observability.md`](./uc1a-observability.md)
 
 | # | Use Case | Status |
 |---|----------|--------|
@@ -34,7 +55,7 @@ This file is the source of truth for all implemented functionality.
 
 ## UC-2: Invoice Matching & Accountant
 
-[Detailed documentation](./uc2-invoice-matching.md)
+Detailed documentation: [`uc2-invoice-matching.md`](./uc2-invoice-matching.md)
 
 | # | Use Case | Status |
 |---|----------|--------|
@@ -46,21 +67,23 @@ This file is the source of truth for all implemented functionality.
 | 2.6 | Month-end auto-check (cron) | -- |
 | 2.7 | [P&L annual summary](./uc2-invoice-matching.md#uc-27-pl-summary) | DONE |
 
-## UC-3: Vehicle Logbook
+## Planned but not implemented
+
+### UC-3: Vehicle Logbook
 
 Not implemented.
 
-## UC-4: Attendance & Business Trips
+### UC-4: Attendance & Business Trips
 
 Not implemented.
 
-## UC-5: Cross-App Workflows
+### UC-5: Cross-App Workflows
 
 Not implemented.
 
 ## Infrastructure & Non-Functional
 
-[Detailed documentation](./infrastructure.md)
+Detailed documentation: [`infrastructure.md`](./infrastructure.md)
 
 | Component | Status |
 |-----------|--------|
@@ -69,7 +92,7 @@ Not implemented.
 | [Health checks](./infrastructure.md#health-checks) | DONE |
 | [Restart resilience](./infrastructure.md#restart-resilience) | DONE |
 | [Stateless MCP sessions](./infrastructure.md#stateless-mcp) | DONE |
-| [NAS-backed persistence](./infrastructure.md#persistence) | DONE |
+| [Persistent storage](./infrastructure.md#persistence) | DONE |
 | [Watchtower exclusion & version pinning](./infrastructure.md#version-management) | DONE |
 | [MCP client retry logic](./infrastructure.md#mcp-client-retry-logic) | DONE |
 | [Testing & CI](./infrastructure.md#testing--ci) | DONE |

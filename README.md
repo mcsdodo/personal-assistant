@@ -1,147 +1,200 @@
 # Personal Assistant
 
-An event-driven automation system that watches your email inboxes and Google Drive for invoices and documents, classifies them with AI, and uploads them to [Paperless-ngx](https://github.com/paperless-ngx/paperless-ngx) with correct tags, correspondents, and custom fields.
+AI document assistant for self-hosters that watches Gmail, Outlook, and Google Drive, classifies invoices and documents, and files them into [Paperless-ngx](https://github.com/paperless-ngx/paperless-ngx) with the right metadata.
 
-Built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code) running inside Docker with [MCP](https://modelcontextprotocol.io/) tool servers, Channels for real-time event streaming, and Haiku subagents for fast classification.
+Use it to stop manually downloading invoices, renaming PDFs, tagging scans, and checking whether a payment already has a matching document.
 
-## What It Does
+- Automatically picks up invoices from Gmail, Outlook, and Google Drive
+- Extracts vendor, amount, document type, and ownership with Claude-powered classification
+- Uploads to Paperless-ngx with correspondents, tags, and custom fields
+- Detects likely duplicates before upload
+- Matches bank statement movements against stored invoices
+- Exposes metrics, dashboards, and workflow health checks
 
-- **Email monitoring** — polls Gmail and Outlook every 30 seconds for new emails with invoices
-- **Google Drive scanning** — watches configured Drive folders for scanned documents
-- **AI classification** — Haiku subagents extract vendor, amount, document type, and ownership from email metadata and PDF content
-- **Automated upload** — downloads attachments, deduplicates against existing documents, uploads to Paperless-ngx with tags and custom fields
-- **Invoice matching** — matches bank statement movements against uploaded invoices with fuzzy correspondent matching ([web UI](docs/uc2-invoice-matching.md))
-- **Notifications** — Telegram alerts for processed invoices, errors, and approval requests
-- **Observability** — Prometheus metrics, Grafana dashboards, OpenTelemetry traces ([details](docs/uc1a-observability.md))
-
-See [docs/USE_CASES.md](docs/USE_CASES.md) for the full feature index with implementation status.
-
-## Architecture
-
-5 Docker containers in one Compose stack:
-
-```
-claude-code (node:20-slim)
-├── Claude Code CLI session in tmux (Sonnet, --remote-control)
-├── email-watcher channel (stdio, polls Gmail+Outlook, SQLite audit trail)
-├── gdrive-watcher channel (stdio, polls Google Drive folders, SQLite audit trail)
-├── telegram channel (official plugin, two-way notifications)
-├── workflow-mcp (HTTP :8003, durable job queue + invoice worker)
-└── subagents: email-classifier (Haiku), document-classifier (Haiku)
-
-paperless-mcp (ghcr.io/baruchiro/paperless-mcp)
-└── 20 Paperless-ngx CRUD tools on :3000/mcp
-
-checker-mcp (python:3.12-slim)
-├── 4 invoice matching tools on :8001/mcp
-└── Flask web UI on :5000 (matching view + P&L view)
-
-gmail-mcp (ghcr.io/taylorwilsdon/google_workspace_mcp)
-├── Gmail tools on :8000/mcp (OAuth)
-└── Google Drive tools (list, download, move)
-
-outlook-mcp (python:3.12-slim)
-└── 4 read-only Outlook tools on :8002/mcp (MSAL device code auth)
+```mermaid
+flowchart LR
+    A[Gmail / Outlook / Google Drive] --> B[Claude Code orchestration]
+    B --> C[AI classification]
+    C --> D[Dedup + workflow queue]
+    D --> E[Paperless-ngx]
+    E --> F[Searchable archive + bank matching]
 ```
 
-For detailed pipeline flows, see [docs/uc1-invoice-processing.md](docs/uc1-invoice-processing.md). For health checks, resilience, and deployment details, see [docs/infrastructure.md](docs/infrastructure.md).
+## Why this exists
 
-### Permission Model
+Most invoice automation stops at "download the attachment." This project goes further:
 
-Claude Code runs with `--permission-mode dontAsk` — every tool call not in an explicit allowlist is silently denied. This is a deliberate least-privilege design:
+- it understands both email and scanned-document intake
+- it routes business vs personal documents differently
+- it keeps an audit trail and durable workflow state
+- it supports human approval where ambiguity matters
+- it adds an invoice-matching layer for month-end checks
 
-- **Custom MCP servers** — allowed via wildcard (we control them)
-- **Gmail MCP** — individually enumerated read-only tools; write/browse tools (send email, list Drive folders) are blocked
-- **Bash** — scoped to specific commands (`curl -o`, `qpdf`, `rm /workspace/downloads/*`); POST requests, arbitrary `node`, `cat`, and `env` are denied
-- **File writes** — limited to Claude's memory directory only
+## Who this is for
 
-The allowlist lives in [`claude-code/.claude/settings.json`](claude-code/.claude/settings.json). See [CLAUDE.md#settings](CLAUDE.md#settings) for the full rationale.
+- People already running or planning to run Paperless-ngx
+- Self-hosters who want practical document automation instead of a generic AI demo
+- Users comfortable with Docker Compose, API tokens, and OAuth/device-code auth flows
+
+This project is probably not the right fit if you want a single-binary desktop app or a no-config SaaS workflow.
+
+## Quick start
+
+1. Copy the example environment file.
+2. Start the local profile.
+3. Create a Paperless API token.
+4. Authenticate Claude and any inbox providers you want to use.
+5. Drop in a test invoice or send a test email.
+
+```bash
+cp .env.example .env
+docker compose --profile local --env-file .env up --build
+docker exec -it personal-assistant-claude claude login
+```
+
+Then continue with `docs/getting-started.md` for the full local setup.
+
+## What it does
+
+### Intake and ingestion
+
+- Polls Gmail and Outlook for new invoice emails
+- Watches Google Drive folders for scanned documents
+- Downloads attachments or invoice links when appropriate
+- Decrypts password-protected PDFs when configured
+
+### AI-assisted classification
+
+- Uses a fast email classifier to decide whether to ignore, notify, or process
+- Uses a document classifier to extract vendor, total amount, document type, and owner
+- Merges metadata before upload so Paperless receives cleaner structured data
+
+### Paperless workflow
+
+- Resolves correspondents and tags
+- Uploads through the Paperless API
+- Stores workflow state in SQLite so jobs survive restarts
+- Detects likely duplicates and pauses for approval when needed
+
+### Matching and accountant workflow
+
+- Matches statement movements against Paperless invoices
+- Shows missing or unresolved movements
+- Produces annual P&L summaries
+
+### Observability
+
+- Exposes Prometheus metrics and health endpoints
+- Forwards OpenTelemetry data to an OTLP endpoint
+- Includes local Grafana, Prometheus, Loki, and Alloy in the `local` profile
+
+## Architecture at a glance
+
+```mermaid
+flowchart TB
+    subgraph stack[Docker Compose stack]
+        claude[claude-code\nchannels + workflow + classifiers]
+        gmail[gmail-mcp\nGmail + Google Drive]
+        outlook[outlook-mcp\nOutlook read-only tools]
+        paperless[paperless-mcp\nPaperless tools]
+        checker[checker-mcp\ninvoice matching + web UI]
+    end
+
+    claude --> gmail
+    claude --> outlook
+    claude --> paperless
+    claude --> checker
+```
+
+For the full pipeline and service layout, see `docs/architecture.md`.
+
+## Documentation map
+
+Start with the doc that matches what you need:
+
+| If you want to... | Read |
+|---|---|
+| get the stack running locally | `docs/getting-started.md` |
+| understand environment variables and auth | `docs/configuration.md` |
+| understand the pipeline and containers | `docs/architecture.md` |
+| see supported workflows | `docs/USE_CASES.md` |
+| run tests and contribute | `docs/development.md` |
+| set up dashboards and telemetry | `docs/observability.md` |
+| troubleshoot auth, health, or pipeline issues | `docs/troubleshooting.md` |
+| inspect the full maintainer reference | `CLAUDE.md` |
+
+Detailed deep dives are also available:
+
+- `docs/uc1-invoice-processing.md`
+- `docs/uc1a-observability.md`
+- `docs/uc2-invoice-matching.md`
+- `docs/infrastructure.md`
 
 ## Prerequisites
 
 - Docker and Docker Compose
-- A running [Paperless-ngx](https://github.com/paperless-ngx/paperless-ngx) instance with an API token
-- An [Anthropic API key](https://console.anthropic.com/) (for Claude Code)
-- At least one email source:
-  - **Gmail**: Google Cloud OAuth 2.0 credentials (Desktop App type)
-  - **Outlook**: Azure AD app registration with `Mail.Read` (set `OUTLOOK_ENABLED=false` to skip)
-- Optional: Telegram bot token (for notifications), Google Drive access (for scan pipeline)
+- A Paperless-ngx instance and API token
+- Claude Code access for the `claude-code` container
+- At least one inbox source:
+  - Gmail via Google OAuth desktop credentials
+  - Outlook via Azure app registration with `Mail.Read`
+- Optional: Telegram bot token, Google Drive access, OTLP endpoint
 
-## Quick Start
+## Configuration overview
 
-```bash
-# 1. Configure
-cp .env.example .env
-# Edit .env — see comments in .env.example for each variable
+Configuration lives in `.env`. See `.env.example` for the full commented list.
 
-# 2. Start (local dev — includes Paperless, observability)
-docker compose --profile local --env-file .env up --build
+Important groups:
 
-# 3. First-time Paperless setup (local profile only)
-docker compose exec paperless python3 manage.py createsuperuser
-# Log into http://localhost:8010 → Settings → API Tokens → copy to .env
-
-# 4. Authenticate Claude
-docker exec -it personal-assistant-claude claude login
-
-# 5. Restart to connect with authenticated MCPs
-docker restart personal-assistant-claude
-```
-
-For Gmail, Outlook, and Telegram auth flows, see [docs/infrastructure.md#authentication](docs/infrastructure.md#authentication).
-
-## Configuration
-
-All configuration is via environment variables in `.env`. See [`.env.example`](.env.example) for the full list with comments.
-
-Key groups:
-
-| Group | Variables | Notes |
-|-------|-----------|-------|
-| Paperless-ngx | `PAPERLESS_URL`, `PAPERLESS_API_TOKEN` | Required |
-| Gmail | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GMAIL_EMAIL` | Required for email pipeline |
-| Outlook | `AZURE_CLIENT_ID`, `OUTLOOK_ENABLED` | Set `OUTLOOK_ENABLED=false` to skip |
-| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Optional notifications |
-| Business identity | `BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN` | For document classifier ownership detection |
-| Google Drive | `GDRIVE_LEVEL1`, `GDRIVE_LEVEL2` | Folder paths to watch |
-| Polling | `POLL_INTERVAL_MS`, `GDRIVE_POLL_INTERVAL_MS` | Defaults: 30s each |
-| Email filtering | `GMAIL_SEARCH_BASE`, `EMAIL_FILTER_INCLUDE`, `EMAIL_FILTER_EXCLUDE` | Optional inbox scoping |
+| Group | Variables |
+|---|---|
+| Paperless | `PAPERLESS_URL`, `PAPERLESS_API_TOKEN` |
+| Gmail | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GMAIL_EMAIL` |
+| Outlook | `AZURE_CLIENT_ID`, `OUTLOOK_ENABLED` |
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
+| Business identity | `BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN` |
+| Google Drive | `GDRIVE_LEVEL1`, `GDRIVE_LEVEL2`, `GDRIVE_MCP_URL` |
+| Polling | `POLL_INTERVAL_MS`, `GDRIVE_POLL_INTERVAL_MS`, `WORKFLOW_POLL_MS` |
+| Telemetry | `OTEL_ENDPOINT`, `OTEL_METRIC_INTERVAL` |
 
 ## Testing
 
 ```bash
-# TypeScript channels (~300 tests, 15 files)
-cd claude-code/channels && bun test
+# TypeScript channels and workflow
+cd claude-code/channels
+bun install
+bun test
 
-# Python invoice matching (116 tests)
-cd checker-mcp && python -m pytest test_matching.py -v
+# Python invoice matching
+cd ../../checker-mcp
+python -m pytest test_matching.py -v
 
-# E2E pipeline (requires running local stack + Gmail/Outlook auth)
+# End-to-end pipeline tests
+cd ..
 python -m pytest tests/ -v --timeout=300
 ```
 
-See [CLAUDE.md](CLAUDE.md#testing) for the full test file index and CI details.
+See `docs/development.md` for prerequisites, test setup, and troubleshooting.
 
-## Documentation
+## Security and contribution docs
 
-| Document | Contents |
-|----------|----------|
-| [CLAUDE.md](CLAUDE.md) | Developer reference — architecture, key files, source code guide, testing, observability, metrics |
-| [docs/USE_CASES.md](docs/USE_CASES.md) | Feature index with implementation status |
-| [docs/uc1-invoice-processing.md](docs/uc1-invoice-processing.md) | Email and scan pipeline flow |
-| [docs/uc2-invoice-matching.md](docs/uc2-invoice-matching.md) | Bank statement matching and P&L |
-| [docs/uc1a-observability.md](docs/uc1a-observability.md) | Metrics, events, dashboards |
-| [docs/infrastructure.md](docs/infrastructure.md) | Build, deploy, auth, health checks, resilience |
+- `CONTRIBUTING.md`
+- `SECURITY.md`
+- `CODE_OF_CONDUCT.md`
 
-## Tech Stack
+## Project status
 
-**Runtime:** Node.js 20, Bun, Python 3.12 |
-**AI:** Claude Code CLI (Sonnet), Haiku subagents, MCP protocol |
-**MCP Servers:** [paperless-mcp](https://github.com/baruchiro/paperless-mcp), [google-workspace-mcp](https://github.com/taylorwilsdon/google_workspace_mcp), checker-mcp (custom), outlook-mcp (custom) |
-**Data:** SQLite (audit trails, job queue), Paperless-ngx (document store) |
-**Observability:** OpenTelemetry, Prometheus, Grafana, Loki, Alloy |
-**Testing:** Bun test, pytest, GitHub Actions CI
+This project is functional and actively used, but it is still opinionated toward self-hosted Paperless workflows and Claude Code orchestration.
+
+Expect to adapt:
+
+- OAuth app setup
+- Paperless document types and custom fields
+- tag naming conventions
+- storage paths and reverse proxy details
+
+Public docs use realistic placeholders such as `documents.lan`, `gmail-mcp.lan`, `/mnt/shared_configs/<stack>/`, and `YOUR_OTEL_ENDPOINT`.
 
 ## License
 
-[MIT](LICENSE)
+MIT. See `LICENSE`.

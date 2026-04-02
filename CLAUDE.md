@@ -6,6 +6,18 @@ Event-driven personal assistant using Claude Code Channels + MCP tool servers.
 **Detailed pipeline docs**: `docs/uc1-invoice-processing.md`, `docs/infrastructure.md`
 **Original design docs** (historical): `_tasks/_done/10-personal-assistant/`
 
+## Public Placeholder Conventions
+
+Public docs use realistic placeholders instead of site-specific values.
+
+Examples:
+
+- `documents.lan`, `gmail-mcp.lan`, `invoices.lan`
+- `/mnt/shared_configs/<stack>/...`
+- `YOUR_DOCKER_HOST`, `YOUR_OTEL_ENDPOINT`
+
+Keep examples concrete enough that contributors and coding agents can still map them back to a real deployment.
+
 ## Use-Case Index
 
 `docs/USE_CASES.md` is the single source of truth for what this project delivers.
@@ -32,7 +44,7 @@ paperless-mcp container (ghcr.io/baruchiro/paperless-mcp:latest)
 
 checker-mcp container (python:3.12-slim, two-process)
 ├── 4 invoice matching/P&L tools on :8001/mcp (wraps match_invoices.py)
-└── Flask web UI on :5000 (invoices.lacny.me — matching view + P&L view)
+└── Flask web UI on :5000 (`invoices.lan` in public docs)
 
 gmail-mcp container (ghcr.io/taylorwilsdon/google_workspace_mcp)
 ├── Gmail tools on :8000/mcp (community, OAuth via start_google_auth)
@@ -73,13 +85,13 @@ Community servers (`paperless-mcp`, `gmail-mcp`) may still use stateful sessions
 
 ### Watchtower
 
-All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-session auto-updates. Update community images intentionally via Komodo procedure.
+All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-session auto-updates. Update community images intentionally through your deployment workflow.
 
 ### Version Pinning
 
 | Image | Pin strategy |
 |-------|-------------|
-| `checker-mcp`, `outlook-mcp`, `claude-code` | Local builds via Komodo, tagged by git commit |
+| `checker-mcp`, `outlook-mcp`, `claude-code` | Local builds, tagged by git commit |
 | `gmail-mcp` | Pinned to `1.16.2` (semver available on GHCR) |
 | `paperless-mcp` | `:latest` (no semver tags; Watchtower excluded, `auto_pull=false`) |
 
@@ -87,8 +99,8 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 
 | File | Purpose |
 |------|---------|
-| `docker-compose.yml` | Full stack with `local` profile for dev (Komodo deploys without profile) |
-| `.env` / `.env.example` | Local dev secrets (Komodo manages prod secrets) |
+| `docker-compose.yml` | Full stack with `local` profile for dev |
+| `.env` / `.env.example` | Local dev configuration and secrets |
 | `claude-code/Dockerfile` | node:20 + bun + claude-code CLI, non-root user |
 | `claude-code/.mcp.json` | MCP server config (channels + HTTP tools) |
 | `claude-code/.claude/settings.json` | Permission allowlist (dontAsk mode) |
@@ -168,10 +180,10 @@ Two Haiku subagents:
 
 ### Authentication
 - **Claude**: `docker exec -it personal-assistant-claude claude login` (one-time)
-- **Gmail**: trigger `start_google_auth` from Claude session → callback via `https://gmail-mcp.lacny.me/oauth2callback`
+- **Gmail**: trigger `start_google_auth` from Claude session -> callback via `https://gmail-mcp.lan/oauth2callback`
 - **Outlook**: restart container, get device code from `docker logs personal-assistant-outlook-mcp 2>&1 | grep -A3 "OUTLOOK AUTH"`
 - **Telegram**: DM the bot, access.json in volume handles pairing
-- Tokens persist in `/mnt/shared_configs/personal-assistant/` (NAS-backed)
+- Tokens persist in `/mnt/shared_configs/<stack>/` or your configured persistent volume
 - After auth, restart Claude to reconnect MCPs: `docker restart personal-assistant-claude`
 
 ### Settings
@@ -322,12 +334,12 @@ docker exec personal-assistant-claude sh -c "env | grep -E 'OTEL|TELEMETRY'"
 
 | Aspect | Production | Local |
 |--------|-----------|-------|
-| Volumes | NAS at `/mnt/shared_configs/personal-assistant/` | Local `./data/` bind mounts |
+| Volumes | Mounted persistent storage at `/mnt/shared_configs/<stack>/` | Local `./data/` bind mounts |
 | Polling | 30s intervals | 10s intervals (faster testing) |
 | OTEL | Shared host Alloy at `:4317` | Local Alloy sidecar |
 | Paperless | Managed separately (external instance) | Local container (postgres + redis) |
-| Images | Komodo builds (git commit tagged) | Local Docker build |
-| Secrets | Komodo-managed `core.config.toml` | Local `.env` file |
+| Images | Deployment-managed builds (git commit tagged) | Local Docker build |
+| Secrets | External secret management or env injection | Local `.env` file |
 
 ## Testing
 
@@ -429,23 +441,23 @@ This starts a local Alloy + Prometheus + Loki + Grafana alongside the main stack
 
 ### Production
 
-Production OTLP support now belongs in the shared host Alloy config at `compose.stacks/_shared-infra/alloy/config.alloy`.
+Production OTLP support belongs in your shared monitoring stack or OTLP receiver configuration.
 
 Set `OTEL_ENDPOINT` in `.env` if the host Alloy isn't reachable at `http://alloy:4317` from the `claude-code` container.
 
 Notes:
 - local dev still uses `observability/alloy-config.alloy` via the `local` profile in `docker-compose.yml`
 - production host config reuses the existing shared `prometheus.remote_write.prometheus_endpoint` and `loki.write.loki_endpoint` outputs
-- after syncing the shared config to `/mnt/shared_configs/grafana/config.alloy`, restart the host Alloy container
+- after syncing your shared config, restart the Alloy container if needed
 
 ### Updating Grafana Dashboards
 
-Dashboard JSON files live in `observability/dashboards/`. Production Grafana mounts dashboards read-only from `/mnt/shared_configs/grafana/dashboards/` on the infra host.
+Dashboard JSON files live in `observability/dashboards/`. In a production-style deployment, mount them from your persistent Grafana dashboards path.
 
 **After editing a dashboard JSON:**
 ```bash
 # Copy to production Grafana (provisioner picks up changes automatically)
-scp observability/dashboards/claude-code.json root@YOUR_HOST_IP:/mnt/shared_configs/grafana/dashboards/claude-code.json
+scp observability/dashboards/claude-code.json root@YOUR_DOCKER_HOST:/mnt/shared_configs/grafana/dashboards/claude-code.json
 ```
 
 No Grafana restart needed — the file provisioner detects changes and reloads.
@@ -499,7 +511,7 @@ No Grafana restart needed — the file provisioner detects changes and reloads.
 |------|---------|
 | `docker-compose.yml` (services with `local` profile) | Local dev services (build contexts + Alloy + Prometheus + Loki + Grafana) |
 | `observability/alloy-config.alloy` | Alloy OTLP receiver config (local dev) |
-| `compose.stacks/_shared-infra/alloy/config.alloy` | Shared host Alloy config with production OTLP + email-watcher scrape |
+| your shared Alloy or OTLP config | Production telemetry receiver and scrape configuration |
 | `observability/dashboards/claude-code.json` | Grafana dashboard |
 | `observability/prometheus-config.yml` | Minimal Prometheus config for local dev |
 | `observability/loki-config.yml` | Minimal Loki config for local dev |
