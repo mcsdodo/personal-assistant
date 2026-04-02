@@ -226,6 +226,83 @@
       "targets": [{ "expr": "sum by (model) (increase(claude_code_cost_usage_USD_total[$__rate_interval]))", "legendFormat": "{{ model }}", "refId": "A" }],
       "title": "Claude Cost",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 56 },
+      "id": 104,
+      "title": "Traces",
+      "type": "row"
+    },
+    {
+      "title": "Processing Traces",
+      "description": "All traces containing actual processing work (polling-only traces excluded). Click a Trace ID to view the full span timeline.",
+      "type": "table",
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 57 },
+      "id": 40,
+      "datasource": { "type": "tempo", "uid": "pa-tempo" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "pa-tempo" },
+          "queryType": "traceqlSearch",
+          "limit": 50,
+          "filters": [
+            {
+              "id": "span-name",
+              "tag": "name",
+              "operator": "=~",
+              "value": ["workflow.execute_job", "invoice-worker.execute", "workflow.job_created"],
+              "valueType": "string",
+              "scope": "span"
+            },
+            {
+              "id": "service-name",
+              "tag": "service.name",
+              "operator": "=",
+              "value": ["personal-assistant"],
+              "valueType": "string",
+              "scope": "resource"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Trace ID" },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View full trace",
+                    "url": "/explore?orgId=1&left=%7B%22datasource%22:%22pa-tempo%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22tempo%22,%22uid%22:%22pa-tempo%22%7D,%22queryType%22:%22traceql%22,%22query%22:%22${__value.raw}%22%7D%5D%7D",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Duration" },
+            "properties": [
+              { "id": "unit", "value": "ms" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "Start time", "desc": true }]
+      }
     }
   ],
   "refresh": "10s",
