@@ -52,7 +52,7 @@ docker compose --profile local --env-file .env up --build
 docker exec -it personal-assistant-claude claude login
 ```
 
-Then continue with `docs/getting-started.md` for the full local setup.
+Then follow the **[Complete Setup Guide](docs/SETUP.md)** — it walks through Google/Microsoft OAuth app creation, Paperless configuration, all authentication flows, and first-run verification.
 
 ## What it does
 
@@ -114,7 +114,6 @@ Start with the doc that matches what you need:
 
 | If you want to... | Read |
 |---|---|
-| **set up from scratch (full walkthrough)** | **[`docs/SETUP.md`](docs/SETUP.md)** |
 | get the stack running locally | `docs/getting-started.md` |
 | understand environment variables and auth | `docs/configuration.md` |
 | understand the pipeline and containers | `docs/architecture.md` |
