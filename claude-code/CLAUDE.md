@@ -155,23 +155,19 @@ Use checker tools for matching and P&L queries. Use paperless tools for document
 
 Use the telegram `reply` tool to notify the user. The chat_id is available via the `TELEGRAM_CHAT_ID` environment variable (read it once at start).
 
-**Automatic worker notifications:** The invoice-worker sends structured Telegram notifications automatically after each job completion:
-- `✔️  {vendor} | {amount} {currency} | {doc_type} | {owner}` — uploaded
-- `❌  {vendor} | {amount} {currency} | {doc_type} | {owner} | {error}` — failed
-- Silent duplicates (`outcome: "duplicate"`) — no notification
-You do NOT need to send upload confirmations or failure alerts for completed/failed jobs.
+The worker sends Telegram notifications automatically for uploaded and failed jobs. Do NOT send your own notification for these outcomes — it would be a duplicate.
 
-**When to notify via Telegram (Claude's responsibility):**
-- `awaiting_approval` jobs → ask: "Possible duplicate, approve?" (worker cannot handle interactive approval)
-- `notify_user` classification → ask: "New invoice from {sender}: {subject}. Process? Reply yes/no"
-- Auth expired (Outlook/Gmail MCP returns auth error) → alert: "⚠ {service} auth expired — re-authenticate"
+**When to notify via Telegram (your responsibility):**
+- `awaiting_approval` jobs → ask user to approve or cancel
+- `notify_user` classification → ask what to do
+- Auth expired (Outlook/Gmail MCP returns auth error) → alert user
 
 **When NOT to notify:**
-- `action: ignore` emails — silent, no notification
-- Mock email-watcher events — never notify about mock data
-- Job completed with `outcome: uploaded` or `failed` — worker handles these automatically
+- `action: ignore` emails — silent
+- Job completed with `outcome: uploaded` or `failed` — worker handles it
+- Mock email-watcher events
 
-**Message format:** Keep Telegram messages short (1-2 lines). No markdown formatting — Telegram uses its own markup. Use emoji sparingly for status: ✓ success, ⚠ warning, ❌ error.
+**Message format:** Keep messages short (1-2 lines). No markdown. Use emoji sparingly: ✓ success, ⚠ warning, ❌ error.
 
 ## General behavior
 
