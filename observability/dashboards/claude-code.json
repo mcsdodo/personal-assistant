@@ -240,11 +240,11 @@
       "type": "table",
       "gridPos": { "h": 14, "w": 24, "x": 0, "y": 57 },
       "id": 40,
-      "datasource": { "type": "tempo", "uid": "pa-tempo" },
+      "datasource": { "type": "tempo", "uid": "P214B5B846CF3925F" },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "tempo", "uid": "pa-tempo" },
+          "datasource": { "type": "tempo", "uid": "P214B5B846CF3925F" },
           "queryType": "traceqlSearch",
           "limit": 50,
           "filters": [
