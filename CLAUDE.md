@@ -22,10 +22,13 @@ Keep examples concrete enough that contributors and coding agents can still map 
 
 `docs/USE_CASES.md` is the single source of truth for what this project delivers.
 
-**After any implementation work in this stack:**
+**MANDATORY: After ANY implementation work in this stack, update all affected documentation before considering the task done.** This is not optional. Documentation drift is a recurring problem — treat doc updates as part of the implementation, not a follow-up.
+
 1. Update the status column in `docs/USE_CASES.md`
-2. Update detailed docs in `docs/` (pipeline flow, code links, etc.)
-3. Add new use cases if scope expands
+2. Update detailed docs in `docs/` (pipeline flow, code links, line numbers, architecture diagrams, span names, config references, etc.)
+3. Update this `CLAUDE.md` if key files, architecture, metrics, spans, or observability setup changed
+4. Add new use cases if scope expands
+5. Remove references to deleted files, renamed functions, or changed behavior
 
 ## Architecture
 
