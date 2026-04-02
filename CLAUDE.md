@@ -168,7 +168,7 @@ Polls Google Drive folders (`LEVEL1`/`LEVEL2`) every 30s. SQLite audit trail (`g
 
 ### claude-code/channels/workflow-mcp.ts (~410 lines)
 
-Durable job queue backed by SQLite (`workflow.db`). Job states: created → processing → awaiting_approval → completed/failed. Tools: `create_job()`, `create_invoice_intake_job()`, `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`.
+Durable job queue backed by SQLite (`workflow.db`). Job states: created → processing → awaiting_approval → completed/failed. Tools: `create_invoice_intake_job()`, `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`. Both create tools accept `force: true` for reprocessing.
 
 ### claude-code/agents/
 

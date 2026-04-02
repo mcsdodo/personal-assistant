@@ -83,29 +83,12 @@ const mcp = new Server(
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: "create_job",
-      description: "Create a generic durable workflow job. Supports workflow_type='synthetic' and 'invoice_intake'.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          workflow_type: { type: "string" },
-          input_json: {
-            type: "string",
-            description: "JSON string payload. For synthetic jobs use {\"mode\":\"success|fail|needs_approval\"}.",
-          },
-          source_ref: { type: "string" },
-          idempotency_key: { type: "string" },
-          requires_approval: { type: "boolean" },
-        },
-        required: ["workflow_type"],
-      },
-    },
-    {
       name: "create_invoice_intake_job",
       description:
         "Create a durable invoice processing job. Use this after classifying an email as an invoice. " +
         "Pass file_path if the PDF is already downloaded to disk. " +
-        "The worker will check for duplicates and upload to Paperless.",
+        "The worker will check for duplicates and upload to Paperless. " +
+        "Set force=true to reprocess an email that already has a completed job.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -144,13 +127,17 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "YYYY-MM tag (Claude infers from email context)",
           },
+          force: {
+            type: "boolean",
+            description: "Bypass idempotency check to reprocess an email that already has a completed job",
+          },
         },
         required: ["email_source", "message_id", "classification"],
       },
     },
     {
       name: "create_scan_intake_job",
-      description: "Create a durable workflow job for a scanned document from Google Drive.",
+      description: "Create a durable workflow job for a scanned document from Google Drive. Set force=true to reprocess a file that already has a completed job.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -168,6 +155,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           watch_folder: {
             type: "string",
             description: "Watch folder path (e.g. techlab/invoicing) — segments become Paperless tags",
+          },
+          force: {
+            type: "boolean",
+            description: "Bypass idempotency check to reprocess a file that already has a completed job",
           },
         },
         required: ["file_id", "classification"],
@@ -228,17 +219,6 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["job_id"],
       },
     },
-    {
-      name: "retry_job",
-      description: "Re-queue a permanently failed or cancelled job for retry. Resets retry_count to 0. WARNING: reuses the original input_json — if the job failed before document-classifier ran, the classification data will be stale. Prefer cancelling and creating a fresh job instead.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          job_id: { type: "string", description: "Job ID to retry" },
-        },
-        required: ["job_id"],
-      },
-    },
   ],
 }));
 
@@ -247,21 +227,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
-      case "create_job": {
-        const workflowType = args?.workflow_type as string;
-        if (!workflowType) {
-          return { content: [text("Error: workflow_type is required")], isError: true };
-        }
-        const job = createJob(db, {
-          workflowType,
-          inputJson: (args?.input_json as string | undefined) ?? null,
-          sourceRef: (args?.source_ref as string | undefined) ?? null,
-          idempotencyKey: (args?.idempotency_key as string | undefined) ?? null,
-          requiresApproval: Boolean(args?.requires_approval),
-        });
-        return { content: [text(job)] };
-      }
-
       case "create_invoice_intake_job": {
         const emailSource = args?.email_source as string;
         const messageId = args?.message_id as string;
@@ -285,8 +250,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           month_tag: (args?.month_tag as string | undefined) ?? undefined,
         };
 
-        // Use source:message_id as idempotency key
-        const idempotencyKey = `${emailSource}:${messageId}`;
+        // Use source:message_id as idempotency key; force bypasses with unique suffix
+        const force = Boolean(args?.force);
+        const idempotencyKey = force
+          ? `${emailSource}:${messageId}:force-${Date.now()}`
+          : `${emailSource}:${messageId}`;
 
         const job = createJob(db, {
           workflowType: "invoice_intake",
@@ -346,7 +314,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           file_path: (args?.file_path as string | undefined) ?? undefined,
         };
 
-        const idempotencyKey = `gdrive:${fileId}`;
+        const forceS = Boolean(args?.force);
+        const idempotencyKey = forceS
+          ? `gdrive:${fileId}:force-${Date.now()}`
+          : `gdrive:${fileId}`;
 
         const job = createJob(db, {
           workflowType: "scan_intake",
@@ -401,25 +372,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!ok) {
           return { content: [text(`Job ${jobId} cannot be cancelled`)], isError: true };
         }
-        return { content: [text(getJob(db, jobId))] };
-      }
-
-      case "retry_job": {
-        const jobId = args?.job_id as string;
-        const job = getJob(db, jobId);
-        if (!job) {
-          return { content: [text(`Job ${jobId} not found`)], isError: true };
-        }
-        if (job.state !== "failed" && job.state !== "cancelled") {
-          return { content: [text(`Job is ${job.state}, can only retry failed/cancelled jobs`)], isError: true };
-        }
-        const now = new Date().toISOString();
-        db.prepare(
-          `UPDATE jobs SET state = 'retryable', retry_count = 0,
-           scheduled_at = ?, error_json = NULL, completed_at = NULL, updated_at = ?
-           WHERE id = ?`
-        ).run(now, now, jobId);
-        addJobEvent(db, jobId, "manual_retry", { triggered_by: "mcp_tool" });
         return { content: [text(getJob(db, jobId))] };
       }
 

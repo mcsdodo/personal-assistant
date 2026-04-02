@@ -49,14 +49,13 @@ Tools:
 ### workflow (durable job tools)
 
 The workflow MCP adds durable background-job primitives:
-- `create_job(workflow_type, input_json?, source_ref?, idempotency_key?, requires_approval?)` — generic job creation
-- `create_invoice_intake_job(email_source, message_id, classification, subject?, sender?, received_at?)` — create an invoice processing job (preferred for invoices)
+- `create_invoice_intake_job(email_source, message_id, classification, subject?, sender?, received_at?, file_path?, month_tag?, force?)` — create an invoice processing job. Set `force=true` to reprocess an email that already has a completed job.
+- `create_scan_intake_job(file_id, classification, filename?, month_tag?, watch_folder?, file_path?, force?)` — create a scan processing job. Set `force=true` to reprocess.
 - `get_job(job_id)` — fetch job by ID
 - `list_jobs(state?, workflow_type?, limit?)` — list recent jobs
 - `get_job_events(job_id)` — full event history for a job
 - `approve_job(job_id, approved_by?, note?)` — approve a paused job
-- `cancel_job(job_id, reason?)` — cancel a job
-- `retry_job(job_id)` — re-queue a failed/cancelled job. **Warning:** reuses the original input_json — if the job failed before document-classifier ran, the classification data will be stale. Prefer cancelling and creating a fresh job instead.
+- `cancel_job(job_id, reason?)` — cancel a queued, running, or awaiting_approval job (cannot cancel failed/completed)
 
 The workflow worker handles invoice processing deterministically:
 - Downloads attachments or links from email
@@ -108,7 +107,7 @@ Each event has these meta fields:
    - `state: completed` with `outcome: duplicate` → silently skip (worker does not notify)
    - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response
    - `state: retryable` → transient failure, worker will retry automatically (up to 3 attempts with exponential backoff). No action needed.
-   - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Do NOT use `retry_job` — it reuses stale classification data. Instead: cancel the failed job with `cancel_job`, re-download the file, re-run document-classifier, and create a fresh job with `create_scan_intake_job`.
+   - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Re-download the file, re-run document-classifier, and create a fresh job with `create_scan_intake_job(..., force: true)`.
 5. **Record** — call `update_gdrive_scan_status` with the outcome
 
 The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure (permanent), it moves to `errors/`. Retryable failures do NOT move the file.
@@ -135,7 +134,7 @@ Process emails using the Haiku subagents and durable workflow jobs:
        - `state: completed` with `outcome: duplicate` → silently skip, no notification
        - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for user response, then call `approve_job` or `cancel_job`
        - `state: retryable` → transient failure, worker retries automatically (up to 3 attempts). No action needed.
-       - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Do NOT use `retry_job` — it reuses stale classification data. Instead: cancel the failed job with `cancel_job`, re-download the file, re-run document-classifier, and create a fresh job with `create_invoice_intake_job`.
+       - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Re-download the file, re-run document-classifier, and create a fresh job with `create_invoice_intake_job(..., force: true)`.
      - You don't need to poll immediately — the worker processes jobs within seconds. Check once after a short delay.
    - `action: notify_user` — notify the user via Telegram with the classification details and ask what to do. If the Telegram notification fails (e.g. chat not allowlisted, reply tool errors), record status="failed" with the error — do NOT mark as "processed".
    - `action: ignore` — log silently, do nothing.
