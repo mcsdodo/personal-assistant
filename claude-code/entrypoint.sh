@@ -75,9 +75,17 @@ done
 echo "Claude Code session started in tmux."
 echo "Use 'docker exec -it <container> tmux attach -t claude' to view."
 
-# Monitor tmux session — exit if it dies so Docker's restart policy kicks in
-# (Docker only restarts on container exit, not on unhealthy status alone)
+# Monitor tmux session + rate-limit watchdog (single loop)
+# - Exits if tmux session dies (Docker restart policy kicks in)
+# - Auto-dismisses rate limit TUI prompt so Claude can wait internally
 while tmux has-session -t claude 2>/dev/null; do
+  pane_text=$(tmux capture-pane -t claude -p -S -15 2>/dev/null || true)
+
+  if echo "$pane_text" | grep -q "Stop and wait for limit to reset"; then
+    echo "[watchdog] Rate limit prompt detected — selecting 'wait for reset'"
+    tmux send-keys -t claude Enter
+  fi
+
   sleep 10
 done
 echo "Claude session exited, stopping container for restart..."
