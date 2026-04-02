@@ -57,19 +57,6 @@ Single Dockerfile builds the `claude-code` container.
 - `paperless-mcp` — community image `ghcr.io/baruchiro/paperless-mcp:latest`
 - `gmail-mcp` — community image `ghcr.io/taylorwilsdon/google_workspace_mcp:1.16.2`
 
-## Komodo Deployment
-
-The stack deploys to your **Docker host** via Komodo.
-
-**3 builds:**
-1. `claude-code` — Dockerfile in `claude-code/`
-2. `checker-mcp` — Dockerfile in `checker-mcp/`
-3. `outlook-mcp` — Dockerfile in `outlook-mcp/`
-
-Builds are tagged by git commit. Komodo syncs compose files and triggers builds + stack deploy.
-
-**Procedure:** Run builds, then deploy the stack. Community images are pulled at deploy time (subject to version pinning).
-
 ## Authentication
 
 Four independent auth flows, each persisting tokens on NAS.

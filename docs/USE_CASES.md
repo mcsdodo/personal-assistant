@@ -65,7 +65,6 @@ Not implemented.
 | Component | Status |
 |-----------|--------|
 | [Docker build & image](./infrastructure.md#docker-build) | DONE |
-| [Komodo deployment](./infrastructure.md#komodo-deployment) | DONE |
 | [Authentication flows](./infrastructure.md#authentication) | DONE |
 | [Health checks](./infrastructure.md#health-checks) | DONE |
 | [Restart resilience](./infrastructure.md#restart-resilience) | DONE |
