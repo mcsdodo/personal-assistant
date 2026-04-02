@@ -183,7 +183,7 @@ Permission model: `--permission-mode dontAsk` auto-denies any tool not in the al
 - **Allowed via settings**: MCP tools (wildcards for our servers, individual for gmail), scoped Bash commands, `Edit`/`Write` for memory dir only
 - **Denied**: gmail write/browse tools, arbitrary curl POST, `cat`, `env`, `node`
 
-See `_tasks/26-permission-lockdown/03-design.md` for full rationale.
+See [README.md#permission-model](README.md#permission-model) for the design rationale.
 
 ### Flags
 ```bash

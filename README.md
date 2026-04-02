@@ -46,6 +46,17 @@ outlook-mcp (python:3.12-slim)
 
 For detailed pipeline flows, see [docs/uc1-invoice-processing.md](docs/uc1-invoice-processing.md). For health checks, resilience, and deployment details, see [docs/infrastructure.md](docs/infrastructure.md).
 
+### Permission Model
+
+Claude Code runs with `--permission-mode dontAsk` — every tool call not in an explicit allowlist is silently denied. This is a deliberate least-privilege design:
+
+- **Custom MCP servers** — allowed via wildcard (we control them)
+- **Gmail MCP** — individually enumerated read-only tools; write/browse tools (send email, list Drive folders) are blocked
+- **Bash** — scoped to specific commands (`curl -o`, `qpdf`, `rm /workspace/downloads/*`); POST requests, arbitrary `node`, `cat`, and `env` are denied
+- **File writes** — limited to Claude's memory directory only
+
+The allowlist lives in [`claude-code/.claude/settings.json`](claude-code/.claude/settings.json). See [CLAUDE.md#settings](CLAUDE.md#settings) for the full rationale.
+
 ## Prerequisites
 
 - Docker and Docker Compose
