@@ -21,7 +21,8 @@ import {
   openWorkflowDb,
 } from "./workflow-db";
 
-import { initTracing, createLogger } from "./tracing";
+import { initTracing, createLogger, getTracer, remoteParentContext, SpanStatusCode } from "./tracing";
+import { getEmailTraceId } from "./db";
 
 const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
 const WORKFLOW_POLL_MS = parseInt(process.env.WORKFLOW_POLL_MS ?? "2000", 10);
@@ -294,6 +295,37 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           idempotencyKey,
           requiresApproval: false,
         });
+
+        // Emit classification snapshot span (links to email's trace)
+        try {
+          const emailDbPath = process.env.EMAIL_DB_PATH ?? "/mnt/shared_configs/personal-assistant/email-watcher/emails.db";
+          const { Database: BunDb } = require("bun:sqlite");
+          const emailDb = new BunDb(emailDbPath, { readonly: true });
+          const traceId = getEmailTraceId(emailDb, messageId);
+          emailDb.close();
+          if (traceId) {
+            const tracer = getTracer("workflow");
+            const parentCtx = remoteParentContext(traceId);
+            tracer.startActiveSpan("workflow.job_created", {
+              attributes: {
+                "job.type": "invoice_intake",
+                "email.source": emailSource,
+                "email.message_id": messageId,
+                "classification.vendor": (classification.vendor as string) ?? "unknown",
+                "classification.has_owner": classification.owner != null,
+                "classification.owner": (classification.owner as string) ?? "missing",
+                "classification.has_file_path": inputPayload.file_path != null,
+                "classification.has_total_amount": classification.total_amount != null,
+                "classification.doc_type": (classification.doc_type as string) ?? "missing",
+                "classification.download_strategy": (classification.download_strategy as string) ?? "unknown",
+              },
+            }, parentCtx, (span) => {
+              span.setStatus({ code: SpanStatusCode.OK });
+              span.end();
+            });
+          }
+        } catch { /* email DB not available — skip tracing */ }
+
         return { content: [text(job)] };
       }
 

@@ -28,9 +28,10 @@ import {
   getRecentEmails,
   getEmailStats,
   type InsertEmail,
+  getEmailTraceId,
 } from "./db";
 
-import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId } from "./tracing";
+import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId, remoteParentContext, SpanStatusCode } from "./tracing";
 import { extractInvoiceLinks } from "./invoice-links";
 
 // Pure functions live in email-watcher-utils.ts (no side effects, safe to import from tests).
@@ -886,6 +887,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [{ type: "text", text: `Email ${id} not found in database. Provide 'source' (gmail/outlook) to auto-create the record.` }],
             isError: true,
           };
+        }
+
+        // Emit OTel span for classification steps (links to email's trace)
+        if (status === "classified" || status === "processed" || status === "failed") {
+          const traceId = getEmailTraceId(db, id);
+          if (traceId) {
+            const tracer = getTracer("email-watcher");
+            const parentCtx = remoteParentContext(traceId);
+            tracer.startActiveSpan(`email-watcher.${status}`, {
+              attributes: {
+                "email.id": id,
+                "email.source": source ?? "unknown",
+                "email.status": status,
+                ...(args?.vendor ? { "classification.vendor": args.vendor as string } : {}),
+                ...(args?.action ? { "classification.action": args.action as string } : {}),
+                ...(args?.confidence ? { "classification.confidence": args.confidence as string } : {}),
+                ...(args?.process_result ? { "process.result": (args.process_result as string).slice(0, 200) } : {}),
+              },
+            }, parentCtx, (span) => {
+              span.setStatus({ code: SpanStatusCode.OK });
+              span.end();
+            });
+          }
         }
 
         const verb = result === "inserted" ? "Created and updated" : "Updated";

@@ -1,4 +1,17 @@
 {
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'IMPORTANT: If you just ran a classifier subagent (email-classifier or document-classifier), you MUST call update_email_status with the classification result before proceeding. Include source, classification JSON, vendor, action, and confidence.'"
+          }
+        ]
+      }
+    ]
+  },
   "permissions": {
     "deny": [
       "Bash(curl -X *)",
