@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'checker-mcp/**'
+      - 'claude-code/channels/**'
+  pull_request:
+    branches: [main]
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      checker-mcp: ${{ steps.filter.outputs.checker-mcp }}
+      channels: ${{ steps.filter.outputs.channels }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            checker-mcp:
+              - 'checker-mcp/**'
+            channels:
+              - 'claude-code/channels/**'
+
+  checker-mcp:
+    name: checker-mcp (Python)
+    needs: changes
+    if: needs.changes.outputs.checker-mcp == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: checker-mcp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: checker-mcp/requirements.txt
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest test_matching.py -v
+
+  channels:
+    name: channels (Bun)
+    needs: changes
+    if: needs.changes.outputs.channels == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: claude-code/channels
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun test
+        env:
+          PAPERLESS_URL: http://paperless-mock
