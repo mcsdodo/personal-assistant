@@ -63,7 +63,7 @@ This project was developed as part of a private monorepo. This changelog was gen
 ## 2026-03-29
 
 ### Added
-- **Fuzzy correspondent matching** to prevent Paperless duplicates (Jaro-Winkler + normalization, threshold 0.92) `ced4159`
+- **Fuzzy correspondent matching** to prevent Paperless duplicates (Jaro-Winkler + normalization, threshold 0.85, lowered from 0.92 to catch EN/SK vendor name variants) `ced4159` `aa2e087`
 - **Gmail invoice link extraction** — shared `invoice-links.ts` module for extracting download links from HTML emails (Alza, generic patterns) `ac7a506` `9a9e1ff`
 - **Owner-aware tag derivation** — `document-classifier` returns `owner` field (techlab|personal), invoice-worker routes tags accordingly `7aa5761` `53f5a05` `5321500`
 - **Owner field** in document-classifier prompt for business vs personal document routing `532150`

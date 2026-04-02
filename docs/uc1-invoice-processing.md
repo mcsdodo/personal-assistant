@@ -209,7 +209,7 @@ The invoice-worker uploads documents via the Paperless MCP's `post_document` too
 Tags are derived deterministically from the document source and classification. The logic differs by source:
 
 - **GDrive** — tags derived from the `watch_folder` path carried per-file (e.g. `techlab/invoicing` → `[techlab, invoicing]`, `techlab/documents` → `[techlab, documents]`). Each path segment becomes a tag. Classifier `owner` and `doc_type` are ignored for tagging.
-- **Email** — tags derived from the document-classifier's `owner` field and `doc_type`. The classifier inspects the PDF for business identifiers (company name, VAT/ICO/DIC, license plates, "Podnikatelsky ucet"). Falls back to `techlab` if `owner` is missing (backward compat).
+- **Email** — tags derived from the document-classifier's `owner` field and `doc_type`. The classifier inspects the PDF for business identifiers (company name, VAT/ICO/DIC, license plates, "Podnikatelsky ucet"). If `owner` is missing, the job fails with `missing_owner` error — this prevents silent mis-tagging when document-classifier didn't run.
 
 ```mermaid
 flowchart TD
@@ -218,7 +218,8 @@ flowchart TD
     B -->|GDrive| C["tags from watch_folder path segments:<br/>e.g. [techlab, invoicing] or [techlab, documents]"]
 
     B -->|Email| D{"classifier.owner?"}
-    D -->|techlab / missing| F{doc_type?}
+    D -->|missing| X["❌ job fails: missing_owner"]
+    D -->|techlab| F{doc_type?}
     D -->|personal| E["tags = [personal]"]
 
     F -->|invoice / receipt /<br/>credit_note / account_statement| G["tags = [techlab, invoicing]"]

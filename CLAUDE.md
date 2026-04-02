@@ -160,7 +160,7 @@ Polls Gmail + Outlook every 30s. SQLite audit trail (`emails.db`). Metrics endpo
 
 ### claude-code/channels/invoice-worker.ts (~1370 lines)
 
-Deterministic job worker. Process: download file → dedup via Paperless search (title, correspondent, amount) → fuzzy correspondent matching (Jaro-Winkler 0.92 threshold) → upload to Paperless API (direct, bypasses MCP size limit) → set tags and custom fields → move GDrive file to `processed/`. Approval gates for unknown vendors and low confidence.
+Deterministic job worker. Process: download file → dedup via Paperless search (title, correspondent, amount) → fuzzy correspondent matching (Jaro-Winkler 0.85 threshold) → upload to Paperless API (direct, bypasses MCP size limit) → set tags and custom fields → move GDrive file to `processed/`. Fails with `missing_owner` if `owner` field absent from classification. Approval gates for unknown vendors and low confidence.
 
 ### claude-code/channels/gdrive-watcher.ts (~750 lines)
 
