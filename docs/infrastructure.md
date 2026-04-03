@@ -153,7 +153,7 @@ One common deployment pattern is network storage -> host mount -> container bind
 | `gmail-mcp` | Pinned to `1.16.2` (semver tags on GHCR) |
 | `paperless-mcp` | `:latest` (no semver tags available) |
 
-**Watchtower:** All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-session auto-updates.
+**Watchtower:** All services have `com.centurylinklabs.watchtower.enable: "false"` — no mid-session auto-updates.
 
 **Code:** [`docker-compose.yml:7`](../docker-compose.yml#L7), [`docker-compose.yml:67`](../docker-compose.yml#L67), etc. — watchtower labels on every service.
 

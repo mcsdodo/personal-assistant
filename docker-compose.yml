@@ -8,7 +8,7 @@ services:
     container_name: personal-assistant-claude
     restart: unless-stopped
     labels:
-      com.centurylinklabs.watchtower.monitor: "false"
+      com.centurylinklabs.watchtower.enable: "false"
     depends_on:
       paperless-mcp:
         condition: service_healthy
@@ -90,7 +90,7 @@ services:
     container_name: personal-assistant-paperless-mcp
     restart: unless-stopped
     labels:
-      com.centurylinklabs.watchtower.monitor: "false"
+      com.centurylinklabs.watchtower.enable: "false"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('net').createConnection(3000,'localhost').on('connect',function(){process.exit(0)}).on('error',function(){process.exit(1)})\""]
       interval: 30s
@@ -108,7 +108,7 @@ services:
     container_name: personal-assistant-checker-mcp
     restart: unless-stopped
     labels:
-      com.centurylinklabs.watchtower.monitor: "false"
+      com.centurylinklabs.watchtower.enable: "false"
       caddy: ${CHECKER_DOMAIN:-invoices.lan}
       caddy.reverse_proxy: "{{upstreams 5000}}"
     healthcheck:
@@ -130,7 +130,7 @@ services:
     container_name: personal-assistant-gmail-mcp
     restart: unless-stopped
     labels:
-      com.centurylinklabs.watchtower.monitor: "false"
+      com.centurylinklabs.watchtower.enable: "false"
       caddy: ${GMAIL_MCP_DOMAIN:-gmail-mcp.lan}
       caddy.reverse_proxy: "{{upstreams 8000}}"
     healthcheck:
@@ -170,7 +170,7 @@ services:
     container_name: personal-assistant-outlook-mcp
     restart: unless-stopped
     labels:
-      com.centurylinklabs.watchtower.monitor: "false"
+      com.centurylinklabs.watchtower.enable: "false"
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',8002),2); s.close()"]
       interval: 30s

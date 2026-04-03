@@ -89,7 +89,7 @@ Community servers (`paperless-mcp`, `gmail-mcp`) may still use stateful sessions
 
 ### Watchtower
 
-All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-session auto-updates. Update community images intentionally through your deployment workflow.
+All services have `com.centurylinklabs.watchtower.enable: "false"` — no mid-session auto-updates. Update community images intentionally through your deployment workflow.
 
 ### Version Pinning
 
