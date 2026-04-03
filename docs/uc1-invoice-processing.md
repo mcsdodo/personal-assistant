@@ -154,10 +154,11 @@ Polls Gmail via the community `google_workspace_mcp` image (pinned `1.16.2`, sup
 - [`email-watcher.ts:381-480`](../claude-code/channels/email-watcher.ts#L381) — `pollGmail()`: search + batch-fetch + parse
 - [`email-watcher.ts:56`](../claude-code/channels/email-watcher.ts#L56) — search query from `GMAIL_SEARCH_BASE` env (default: `newer_than:1d`)
 
-**Auth:** Trigger `start_google_auth` from inside the Claude session. The OAuth callback redirects to `http://localhost:8000/oauth2callback`. In production, SSH-tunnel to the Docker host first (see `docs/SETUP.md`). Tokens persist in `/mnt/shared_configs/<stack>/gmail/` or your configured persistent volume.
+**Auth:** Trigger `start_google_auth` from inside the Claude session. The `gmail-mcp-auth` Caddy sidecar passes the OAuth callback through while protecting the MCP endpoint with a bearer token. Tokens persist in `/mnt/shared_configs/<stack>/gmail/` or your configured persistent volume.
 
 **Config:**
-- [`docker-compose.yml:96-128`](../docker-compose.yml#L96) — gmail-mcp service (community image, Docker-internal only, env vars)
+- [`docker-compose.yml:128-160`](../docker-compose.yml#L128) — gmail-mcp service (community image, Docker-internal only)
+- [`docker-compose.yml:162-184`](../docker-compose.yml#L162) — gmail-mcp-auth sidecar (bearer token on /mcp, pass-through on /oauth2callback)
 
 ## UC-1.2: Outlook Polling
 

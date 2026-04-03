@@ -325,77 +325,34 @@ Wait about 90 seconds for it to become healthy again.
 
 ## Step 9: Authenticate Gmail
 
-The gmail-mcp container has **no published ports** — it is only accessible from other containers in the same Docker network. Google's OAuth callback redirects your browser to `http://localhost:8000/oauth2callback`, so you need a way to reach the container from your browser.
+The gmail-mcp container has no published ports — it is only accessible from other containers in the Docker network. A `gmail-mcp-auth` Caddy sidecar sits in front of it, exposing port 8000 with bearer token protection on the MCP endpoint. The OAuth callback (`/oauth2callback`) passes through without auth.
 
 ### Google Cloud Console: callback URL
 
-If you created a **Desktop app** OAuth client in [Step 2.4](#24-create-oauth-credentials), `http://localhost` (any port) is automatically allowed as a redirect URI. No additional configuration needed.
+If you created a **Desktop app** OAuth client in [Step 2.4](#24-create-oauth-credentials), `http://localhost` (any port) is automatically allowed as a redirect URI. No additional configuration needed for local dev.
 
-If you created a **Web application** client instead, add `http://localhost:8000/oauth2callback` as an authorized redirect URI in [Google Cloud Console > Credentials](https://console.cloud.google.com/apis/credentials) > your OAuth client > Authorized redirect URIs.
+For production behind a reverse proxy, set `GOOGLE_OAUTH_REDIRECT_URI` to your callback URL (e.g., `https://gmail-mcp.yourdomain.com/oauth2callback`) and register it in Google Cloud Console if using a **Web application** client.
 
-### Option A: SSH tunnel (recommended)
+### Auth procedure
 
-The gmail-mcp container has no published port, so use an SSH tunnel from your dev machine to reach it. This keeps the MCP endpoint inaccessible from the LAN.
+1. Attach to the Claude session:
+   ```bash
+   docker exec -it personal-assistant-claude tmux attach -t claude
+   ```
 
-```bash
-# 1. Find the gmail-mcp container's Docker-internal IP
-ssh root@YOUR_DOCKER_HOST \
-  "docker inspect personal-assistant-gmail-mcp \
-     --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'"
-# Example output: 172.18.0.5
+2. In the Claude session, trigger Gmail auth by typing or pasting:
+   ```
+   start_google_auth
+   ```
 
-# 2. Open the SSH tunnel (replace 172.18.0.5 with actual IP from step 1)
-ssh -L 8000:172.18.0.5:8000 root@YOUR_DOCKER_HOST
-# This forwards localhost:8000 on your dev machine → gmail-mcp:8000 on the Docker host
+3. Claude will invoke the `start_google_auth` MCP tool. The gmail-mcp server will print an authorization URL. Open it in your browser, sign in with the Google account you configured in [Step 2](#step-2-google-cloud-console-gmail--drive), and authorize the requested scopes.
 
-# 3. In a SECOND terminal, attach to the Claude session
-ssh root@YOUR_DOCKER_HOST
-docker exec -it personal-assistant-claude tmux attach -t claude
+4. After authorization completes, detach from tmux with `Ctrl+B` then `D`.
 
-# 4. In the Claude session, type:
-#    start_google_auth
-#
-#    Claude calls the start_google_auth MCP tool.
-#    It returns a Google authorization URL — copy it.
-
-# 5. Open the URL in your LOCAL browser (on your dev machine).
-#    Sign in and consent to the requested scopes.
-#    Google redirects to http://localhost:8000/oauth2callback
-#    → the SSH tunnel forwards it to gmail-mcp → tokens are saved.
-
-# 6. Detach from tmux: Ctrl+B, then D
-
-# 7. Restart Claude so email-watcher picks up the new tokens
-docker restart personal-assistant-claude
-
-# 8. Close the SSH tunnel (Ctrl+C in terminal 1)
-```
-
-> **Tip:** If port 8000 is already in use on your dev machine, use a different local port: `ssh -L 9999:172.18.0.5:8000 root@YOUR_DOCKER_HOST` and set `GOOGLE_OAUTH_REDIRECT_URI=http://localhost:9999/oauth2callback` in your `.env` before starting the stack.
-
-### Option B: Temporarily expose the port
-
-If SSH tunneling isn't practical, you can temporarily publish the port by adding it to `docker-compose.yml`:
-
-```yaml
-  gmail-mcp:
-    # ...existing config...
-    ports:
-      - "8000:8000"
-```
-
-Then recreate the container, perform auth, and **remove the port mapping afterwards**:
-
-```bash
-# Expose port, do auth
-docker compose --env-file .env up -d gmail-mcp
-# ... trigger start_google_auth, complete auth in browser ...
-# Remove the ports line from docker-compose.yml, then:
-docker compose --env-file .env up -d gmail-mcp
-docker restart personal-assistant-claude
-```
-
-> **Security warning:** While the port is published, the gmail-mcp MCP endpoint is accessible to any device on your LAN without authentication. This endpoint provides Gmail read access and full Google Drive access. Only keep the port exposed for the duration of the auth flow.
+5. Restart the Claude container to ensure the email-watcher picks up the new tokens:
+   ```bash
+   docker restart personal-assistant-claude
+   ```
 
 ### How often is re-auth needed?
 
@@ -569,7 +526,8 @@ Every variable from `.env.example` with its purpose and default.
 | `GMAIL_SEARCH_BASE` | (empty) | Additional Gmail search filter. Use `to:you+dev@gmail.com` during development to avoid processing real mail |
 | `GMAIL_CLIENT_SECRET_FILE` | `./data/gmail/client_secret.json` | Path to downloaded Google OAuth JSON (alternative to individual env vars) |
 | `GOOGLE_CLIENT_SECRET_JSON` | — | Full JSON credentials as a string (alternative for production secret injection) |
-| `GOOGLE_OAUTH_REDIRECT_URI` | — | OAuth callback URI. Default `http://localhost:8000/oauth2callback` works for Desktop app clients |
+| `GOOGLE_OAUTH_REDIRECT_URI` | — | OAuth callback URI. Desktop app clients auto-allow `http://localhost`. Set to your public URL for production (e.g., `https://gmail-mcp.yourdomain.com/oauth2callback`) |
+| `GMAIL_MCP_TOKEN` | — | Bearer token for the gmail-mcp-auth sidecar. Generate with `openssl rand -hex 32`. Only needed if the MCP port is exposed to the network |
 
 ### Outlook
 
@@ -663,7 +621,8 @@ This path should be a mounted NAS share or persistent volume containing:
 If running behind a reverse proxy (Caddy, Traefik, nginx), configure:
 
 - **Checker web UI**: expose port 5000 via your proxy (e.g., `https://invoices.yourdomain.com`)
-- **Gmail MCP**: no external port needed. The gmail-mcp endpoint is Docker-internal only (not exposed to the host or LAN). For the one-time OAuth setup, use an SSH tunnel to reach the container (see [Step 9](#step-9-authenticate-gmail))
+- **Gmail OAuth callback**: set `GOOGLE_OAUTH_REDIRECT_URI` to your callback URL (e.g., `https://gmail-mcp.yourdomain.com/oauth2callback`). The `gmail-mcp-auth` sidecar passes `/oauth2callback` through to gmail-mcp without auth.
+- **Gmail MCP endpoint**: protected by the `gmail-mcp-auth` Caddy sidecar — requests to `/mcp*` require a `GMAIL_MCP_TOKEN` bearer token. Internal clients (claude-code, email-watcher) bypass the sidecar via Docker DNS.
 
 ### Secrets
 
@@ -688,7 +647,7 @@ This starts only the 5 core services. Point `PAPERLESS_URL` to your external ins
 
 ### "Gmail auth fails with redirect_uri_mismatch"
 
-Make sure the OAuth client type is **Desktop app** (not Web application). Desktop apps automatically allow `http://localhost` on any port as a redirect URI. If you're using a Web application client, add `http://localhost:8000/oauth2callback` as an authorized redirect URI in Google Cloud Console.
+Make sure the OAuth client type is **Desktop app** (not Web application). Desktop apps automatically allow `http://localhost` on any port as a redirect URI. For production with a custom callback domain, use a **Web application** client and register the redirect URI in Google Cloud Console.
 
 ### "Outlook shows AADSTS... error"
 

@@ -186,7 +186,7 @@ Two Haiku subagents:
 
 ### Authentication
 - **Claude**: `docker exec -it personal-assistant-claude claude login` (one-time)
-- **Gmail**: trigger `start_google_auth` from Claude session -> callback to `http://localhost:8000/oauth2callback` (SSH tunnel in production, see `docs/SETUP.md`)
+- **Gmail**: trigger `start_google_auth` from Claude session -> `gmail-mcp-auth` sidecar passes callback through, protects `/mcp*` with bearer token
 - **Outlook**: restart container, get device code from `docker logs personal-assistant-outlook-mcp 2>&1 | grep -A3 "OUTLOOK AUTH"`
 - **Telegram**: DM the bot, access.json in volume handles pairing
 - Tokens persist in `/mnt/shared_configs/<stack>/` or your configured persistent volume

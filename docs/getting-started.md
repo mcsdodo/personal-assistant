@@ -73,7 +73,7 @@ docker restart personal-assistant-claude
 
 ### Gmail
 
-Trigger `start_google_auth` from inside the Claude session. The OAuth callback redirects to `http://localhost:8000`. In local dev this works automatically. In production, SSH-tunnel port 8000 to the Docker host first (see `docs/SETUP.md` for the full procedure).
+Trigger `start_google_auth` from inside the Claude session. The `gmail-mcp-auth` sidecar passes the OAuth callback through to gmail-mcp.
 
 ### Outlook
 

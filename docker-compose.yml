@@ -159,6 +159,35 @@ services:
         fi
         exec uv run main.py --transport streamable-http --permissions gmail:readonly drive:full
 
+  gmail-mcp-auth:
+    image: caddy:2-alpine
+    container_name: personal-assistant-gmail-mcp-auth
+    restart: unless-stopped
+    depends_on:
+      gmail-mcp:
+        condition: service_healthy
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+      caddy: ${GMAIL_MCP_DOMAIN:-gmail-mcp.lan}
+      caddy.reverse_proxy: "{{upstreams 8080}}"
+    ports:
+      - "8000:8080"
+    environment:
+      - GMAIL_MCP_TOKEN=${GMAIL_MCP_TOKEN}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /tmp/Caddyfile <<'EOF'
+        :8080
+        @mcp_no_auth {
+            path /mcp*
+            not header Authorization "Bearer {$$GMAIL_MCP_TOKEN}"
+        }
+        respond @mcp_no_auth "Unauthorized" 401
+        reverse_proxy gmail-mcp:8000
+        EOF
+        exec caddy run --config /tmp/Caddyfile --adapter caddyfile
+
   outlook-mcp:
     image: personal-assistant-outlook-mcp:latest
     build:

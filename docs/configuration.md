@@ -39,7 +39,7 @@ docker exec -it personal-assistant-claude claude login
 
 - Configure Google OAuth desktop credentials.
 - Trigger `start_google_auth` from the Claude session.
-- The OAuth callback redirects to `http://localhost:8000/oauth2callback`. In production, use an SSH tunnel to the Docker host during the one-time auth setup (see `docs/SETUP.md`).
+- The `gmail-mcp-auth` Caddy sidecar protects the MCP endpoint with a bearer token while passing the OAuth callback (`/oauth2callback`) through without auth.
 
 ### Outlook device code
 

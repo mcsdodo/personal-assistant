@@ -22,7 +22,7 @@ If health is stale, check whether Gmail or Outlook auth has expired.
 
 - verify your OAuth client ID and secret
 - confirm the OAuth client type is **Desktop app** (auto-allows `http://localhost` redirect)
-- in production, ensure the SSH tunnel is open before triggering auth (see `docs/SETUP.md`)
+- confirm the `gmail-mcp-auth` sidecar is running (`docker compose ps`)
 - retry `start_google_auth` from the Claude session
 
 ## Outlook polling problems
