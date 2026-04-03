@@ -21,6 +21,15 @@ Invoice matching and P&L:
 ### gmail (google_workspace_mcp — Gmail + Drive)
 Gmail and Google Drive access via Google Workspace MCP. Search emails, read content, download attachments, get Drive file download URLs. Gmail is read-only; some Drive tools are restricted by the permission allowlist.
 
+### file-ops (stdio tool server)
+Scoped file operations for `/workspace/downloads/`. Use these instead of Bash commands:
+- `download_file(url, filename)` — download URL to `/workspace/downloads/{filename}`, follows redirects
+- `delete_file(filename)` — delete a file from `/workspace/downloads/`
+- `list_files()` — list files in `/workspace/downloads/` with size and modification time
+- `decrypt_pdf(filename)` — decrypt password-protected PDF using configured bank password
+- `read_base64(filename)` — read file and return base64 encoding
+- `get_env(name)` — read an allowlisted env var (GMAIL_EMAIL, TELEGRAM_CHAT_ID, BUSINESS_COMPANY_NAME, BUSINESS_TAX_IDS, BUSINESS_CRN, BUSINESS_LICENSE_PLATES)
+
 ### outlook (outlook-mcp — read-only)
 Outlook email access via Microsoft Graph:
 - `list_emails(top?, sender?, folder?)` — list recent emails
@@ -99,8 +108,8 @@ Each event has these meta fields:
 - `watch_folder`: which folder the file came from (e.g. `techlab/invoicing`) — pass to `create_scan_intake_job`
 
 **Processing pipeline:**
-1. **Download to disk** — use gmail MCP `get_drive_file_download_url` with the `file_id` and `user_google_email` set to the `GMAIL_EMAIL` env var (read it once at start). Then use Bash `curl -o /workspace/downloads/{name} "{url}"` to save the file locally. This preserves the visual content for classification. **Always pass `user_google_email` on every Gmail/Drive MCP call.**
-2. **Classify** — invoke the `document-classifier` subagent with the local file path (e.g., `/workspace/downloads/20260325_blok_tankovanie.pdf`). Before invoking, replace the `${...}` placeholders in the prompt with business identifier env vars (`BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`). The subagent uses the Read tool to visually inspect the PDF/image and returns vendor, total_amount, doc_type, owner, etc.
+1. **Download to disk** — use gmail MCP `get_drive_file_download_url` with the `file_id` and `user_google_email` (read it once at start via `get_env("GMAIL_EMAIL")` on file-ops MCP). Then use `download_file(url, filename)` on file-ops MCP to save the file locally. This preserves the visual content for classification. **Always pass `user_google_email` on every Gmail/Drive MCP call.**
+2. **Classify** — invoke the `document-classifier` subagent with the local file path (e.g., `/workspace/downloads/20260325_blok_tankovanie.pdf`). Before invoking, replace the `${...}` placeholders in the prompt with business identifier env vars (use `get_env` on file-ops MCP for `BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`). The subagent uses the Read tool to visually inspect the PDF/image and returns vendor, total_amount, doc_type, owner, etc.
 3. **Create job** — call `create_scan_intake_job` on workflow MCP with the classification result, file_id, `month_tag`, `watch_folder`, and `file_path` (the local download path). The worker reads from disk, handles dedup, upload, and file move. Tags are derived from `watch_folder` path segments (e.g. `techlab/invoicing` → tags `[techlab, invoicing]`).
 4. **Monitor job** — poll with `get_job(job_id)`:
    - `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
@@ -121,9 +130,9 @@ Process emails using the Haiku subagents and durable workflow jobs:
 1b. **Download PDF** (if action = download_and_upload) — **always download to disk before creating a job.** The document-classifier (step 1c) needs the local file to determine `owner`, `doc_type`, and refined vendor. Without it, the job will fail with `missing_owner`.
    - `attachment` strategy: download the first PDF attachment to `/workspace/downloads/`. For Gmail use `get_gmail_message_content` then `get_gmail_attachment_content(message_id, attachment_id, user_google_email)`. For Outlook use `get_attachments` + `download_attachment`. Pass `file_path` when creating the job. (The worker can also download attachments as a fallback, but you must pre-download so document-classifier can run.)
    - `claude_download` strategy: used for multi-attachment emails where you need to pick the right one. List attachments, identify which is the invoice (look for PDF, largest file, or invoice-related filename), download it to `/workspace/downloads/`, and pass `file_path` when creating the job. The worker reads from disk only. For Gmail use `get_gmail_message_content` (attachments listed in `--- ATTACHMENTS ---` section with IDs) then `get_gmail_attachment_content(message_id, attachment_id, user_google_email)`. For Outlook use `get_attachments` + `download_attachment`.
-   - `known_link` / `direct_url` strategy: use the `invoice_links` from the channel event meta (if present), or `curl -o /workspace/downloads/<filename> "<url>"` to save to disk. The workflow worker also handles link extraction automatically from email HTML. If the file is encrypted, run: `qpdf --is-encrypted <path> && qpdf --password="$BANK_PDF_PASSWORD" --decrypt <path> --replace-input`
+   - `known_link` / `direct_url` strategy: use the `invoice_links` from the channel event meta (if present), or `download_file(url, filename)` on file-ops MCP to save to disk. The workflow worker also handles link extraction automatically from email HTML. If the file is encrypted, call `decrypt_pdf(filename)` on file-ops MCP.
 
-1c. **Classify PDF** — invoke the `document-classifier` subagent with the local file path. Before invoking, replace the `${...}` placeholders in the prompt with business identifier env vars (`BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`). Merge results: document-classifier non-null values override email-classifier values (vendor, total_amount, order_id, is_fuel, currency, confidence, owner). The document-classifier is the sole source for `doc_type`, `subtitle`, and `owner` — the email-classifier does not return these fields. `subtitle` is a short label (e.g. "Dochádzka marec 2026") used for title building when order_id is null. If the classifier fails, fall back to email-classifier metadata only (doc_type defaults to "invoice").
+1c. **Classify PDF** — invoke the `document-classifier` subagent with the local file path. Before invoking, replace the `${...}` placeholders in the prompt with business identifier env vars (use `get_env` on file-ops MCP for `BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`). Merge results: document-classifier non-null values override email-classifier values (vendor, total_amount, order_id, is_fuel, currency, confidence, owner). The document-classifier is the sole source for `doc_type`, `subtitle`, and `owner` — the email-classifier does not return these fields. `subtitle` is a short label (e.g. "Dochádzka marec 2026") used for title building when order_id is null. If the classifier fails, fall back to email-classifier metadata only (doc_type defaults to "invoice").
 
 1d. **Infer month_tag** — determine the YYYY-MM tag from email context (subject line billing period, document date from classifier, or received_at as fallback).
 
@@ -155,7 +164,7 @@ Use checker tools for matching and P&L queries. Use paperless tools for document
 
 ## Telegram notifications
 
-Use the telegram `reply` tool to notify the user. The chat_id is available via the `TELEGRAM_CHAT_ID` environment variable (read it once at start).
+Use the telegram `reply` tool to notify the user. The chat_id is available via `get_env("TELEGRAM_CHAT_ID")` on file-ops MCP (read it once at start).
 
 The worker sends Telegram notifications automatically for uploaded and failed jobs. Do NOT send your own notification for these outcomes — it would be a duplicate.
 

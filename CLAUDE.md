@@ -38,6 +38,7 @@ claude-code container (node:20-slim, user: node, --model sonnet)
 ├── email-watcher channel+tools (stdio, polls gmail+outlook every 30s, SQLite audit trail)
 ├── gdrive-watcher channel+tools (stdio, polls GDrive LEVEL1×LEVEL2 folders every 30s, SQLite audit trail)
 ├── telegram channel (official plugin, cloned at build, two-way)
+├── file-ops tool server (stdio, scoped file downloads/deletes/decrypt/base64/env)
 ├── workflow-mcp (HTTP server on :8003, durable job queue + invoice-worker)
 ├── subagents: email-classifier (haiku), document-classifier (haiku, returns owner field)
 └── connects to MCP tool servers via Streamable HTTP
@@ -114,6 +115,8 @@ All services have `com.centurylinklabs.watchtower.monitor: "false"` — no mid-s
 | `claude-code/channels/db.ts` | Email-watcher SQLite module (emails + source_state tables) |
 | `claude-code/channels/gdrive-watcher.ts` | GDrive-watcher channel (polls Google Drive, SQLite audit) |
 | `claude-code/channels/gdrive-db.ts` | GDrive-watcher SQLite module |
+| `claude-code/channels/file-ops.ts` | File-ops MCP tool server (download, delete, list, decrypt, base64, env) |
+| `claude-code/channels/download-helper.ts` | File utility functions (readFileAsDownload, tryDecrypt) used by file-ops + invoice-worker |
 | `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice-worker) |
 | `claude-code/channels/mcp-client.ts` | HTTP MCP client with retry logic (exponential backoff for transient network errors) |
 | `claude-code/channels/workflow-mcp.ts` | Durable job queue HTTP server (:8003) + invoice/scan workers |
@@ -195,8 +198,8 @@ Two Haiku subagents:
 Permission model: `--permission-mode dontAsk` auto-denies any tool not in the allowlist.
 
 - **No permission needed** (always available): `Read`, `Glob`, `Grep`, `Agent`, `ToolSearch`
-- **Allowed via settings**: MCP tools (wildcards for our servers, individual for gmail), scoped Bash commands, `Edit`/`Write` for memory dir only
-- **Denied**: gmail write/browse tools, arbitrary curl POST, `cat`, `env`, `node`
+- **Allowed via settings**: MCP tools (wildcards for our servers, individual for gmail), `Bash(sleep *)`, `Bash(ls /workspace/*)`, `Edit`/`Write` for memory dir only
+- **Denied**: gmail write/browse tools, all file-manipulating Bash commands (`curl`, `rm`, `mkdir`, `cp`, `find`, `base64`, `qpdf`, `echo`, `cat`, `env`, `node`) — file operations are handled by the `file-ops` MCP instead
 
 See [README.md#permission-model](README.md#permission-model) for the design rationale.
 

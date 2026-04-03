@@ -14,12 +14,17 @@
   },
   "permissions": {
     "deny": [
-      "Bash(curl -X *)",
-      "Bash(curl --data *)",
-      "Bash(curl -d *)",
+      "Bash(curl *)",
       "Bash(node *)",
       "Bash(cat *)",
-      "Bash(env *)"
+      "Bash(env *)",
+      "Bash(echo *)",
+      "Bash(rm *)",
+      "Bash(mkdir *)",
+      "Bash(base64 *)",
+      "Bash(cp *)",
+      "Bash(find *)",
+      "Bash(qpdf *)"
     ],
     "allow": [
       "mcp__email-watcher",
@@ -29,6 +34,7 @@
       "mcp__checker",
       "mcp__outlook",
       "mcp__paperless",
+      "mcp__file-ops",
 
       "mcp__gmail__get_gmail_message_content",
       "mcp__gmail__get_gmail_messages_content_batch",
@@ -37,24 +43,11 @@
       "mcp__gmail__search_gmail_messages",
       "mcp__gmail__start_google_auth",
 
-      "Bash(curl -o /workspace/downloads/*)",
-      "Bash(curl -sL -o /workspace/downloads/*)",
-      "Bash(curl -s -o /workspace/downloads/*)",
-      "Bash(curl -sS -o /workspace/downloads/*)",
-      "Bash(curl --max-time *)",
-      "Bash(qpdf *)",
-      "Bash(rm /workspace/downloads/*)",
-      "Bash(rm -f /workspace/downloads/*)",
-      "Bash(mkdir *)",
-      "Bash(ls *)",
       "Bash(sleep *)",
-      "Bash(echo *)",
-      "Bash(bun run /app/channels/download-helper.ts *)",
-      "Bash(find /workspace/*)",
-      "Bash(base64 *)",
-      "Bash(cp /workspace/*)",
+      "Bash(ls /workspace/*)",
 
-      "Edit(/home/node/.claude/projects/-workspace/memory/*)"
+      "Edit(/home/node/.claude/projects/-workspace/memory/*)",
+      "Write(/home/node/.claude/projects/-workspace/memory/*)"
     ]
   }
 }

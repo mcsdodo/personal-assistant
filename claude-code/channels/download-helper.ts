@@ -1,22 +1,13 @@
 /**
- * CLI helper for downloading email attachments to disk.
+ * File utility functions for reading files and decrypting PDFs.
  *
- * Called by Claude via Bash to keep base64 out of the LLM context.
- * Also handles qpdf decryption for password-protected PDFs.
- *
- * Usage:
- *   bun run download-helper.ts <outlook|gmail> download_attachment <message_id> <attachment_id> <output_path>
- *
- * Reuses mcp-client.ts for MCP HTTP calls.
+ * Used by file-ops MCP (tryDecrypt) and invoice-worker (readFileAsDownload).
  */
 
 import { execSync } from "child_process";
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync } from "fs";
 import { basename } from "path";
-import { callMcpTool, extractText } from "./mcp-client";
 
-const OUTLOOK_MCP_URL = process.env.OUTLOOK_MCP_URL ?? "http://outlook-mcp:8002/mcp";
-const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const BANK_PDF_PASSWORD = process.env.BANK_PDF_PASSWORD ?? "";
 
 /** Read a local file and return download metadata (used by worker too). */
@@ -58,41 +49,3 @@ export function tryDecrypt(filePath: string): void {
   }
 }
 
-// ── CLI entrypoint ──────────────────────────────────────────────────
-
-async function main() {
-  const [, , source, tool, messageId, attachmentId, outputPath] = process.argv;
-
-  if (!source || !tool || !messageId || !outputPath) {
-    console.error(
-      "Usage: bun run download-helper.ts <outlook|gmail> download_attachment <message_id> <attachment_id> <output_path>",
-    );
-    process.exit(1);
-  }
-
-  const mcpUrl = source === "gmail" ? GMAIL_MCP_URL : OUTLOOK_MCP_URL;
-
-  const result = await callMcpTool(mcpUrl, tool, {
-    message_id: messageId,
-    attachment_id: attachmentId,
-  });
-  const text = extractText(result);
-  const parsed = JSON.parse(text);
-  const base64 = parsed.content_base64 ?? parsed.data ?? "";
-
-  if (!base64) {
-    console.error("[download-helper] No content received from MCP");
-    process.exit(1);
-  }
-
-  writeFileSync(outputPath, Buffer.from(base64, "base64"));
-  tryDecrypt(outputPath);
-  console.log(outputPath);
-}
-
-if (import.meta.main) {
-  main().catch((err) => {
-    console.error(`[download-helper] ${err.message}`);
-    process.exit(1);
-  });
-}

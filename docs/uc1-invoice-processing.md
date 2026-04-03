@@ -92,13 +92,13 @@ sequenceDiagram
     alt action = "download_and_upload"
         note over C,G: Download PDF to disk
         alt strategy = "attachment"
-            C->>G: download_attachment / download-helper.ts
+            C->>G: download_attachment via MCP
         else strategy = "known_link" / "direct_url"
-            C->>G: invoice_links from event or extractInvoiceLinks() → curl -o
+            C->>G: invoice_links from event → file-ops download_file
         end
         G-->>C: file on disk (file_path)
         opt encrypted PDF
-            C->>C: qpdf --decrypt (BANK_PDF_PASSWORD)
+            C->>C: file-ops decrypt_pdf
         end
 
         note over C,DC: Classify document
@@ -311,7 +311,7 @@ Claude can query Paperless directly using `search_documents` from the community 
 
 Scanned documents dropped into Google Drive are automatically classified and uploaded to Paperless.
 
-**Pipeline:** gdrive-watcher polls multiple level2 folders under a level1 parent → Claude downloads file via `curl` → document-classifier (Haiku) extracts metadata → `create_scan_intake_job` with `file_path`, `month_tag`, and `watch_folder` → worker reads from disk, uploads to Paperless with tags derived from the folder path, moves file to `processed/`.
+**Pipeline:** gdrive-watcher polls multiple level2 folders under a level1 parent → Claude downloads file via `file-ops` MCP `download_file` → document-classifier (Haiku) extracts metadata → `create_scan_intake_job` with `file_path`, `month_tag`, and `watch_folder` → worker reads from disk, uploads to Paperless with tags derived from the folder path, moves file to `processed/`.
 
 **Multi-folder config:**
 ```env
@@ -323,11 +323,12 @@ At startup, the watcher resolves every level1 × level2 combination (e.g. `techl
 
 **Unified classifier:** Both email PDFs and GDrive scans use the same `document-classifier` agent. The email path adds an email-classifier triage step before download; the GDrive path skips it.
 
-**PDF decryption:** Password-protected PDFs (e.g., bank statements) are decrypted via `qpdf` before classification. Password from `BANK_PDF_PASSWORD` env var.
+**PDF decryption:** Password-protected PDFs (e.g., bank statements) are decrypted via `file-ops` MCP `decrypt_pdf` tool (wraps qpdf). Password from `BANK_PDF_PASSWORD` env var.
 
 **Code:**
 - [`agents/document-classifier.md`](../claude-code/agents/document-classifier.md) — Haiku classifier prompt (7-field output)
-- [`channels/download-helper.ts`](../claude-code/channels/download-helper.ts) — CLI helper for attachment downloads + qpdf decryption
+- [`channels/file-ops.ts`](../claude-code/channels/file-ops.ts) — File-ops MCP tool server (download, delete, list, decrypt, base64, env)
+- [`channels/download-helper.ts`](../claude-code/channels/download-helper.ts) — File utility functions (readFileAsDownload, tryDecrypt) used by file-ops + invoice-worker
 - [`channels/gdrive-watcher.ts`](../claude-code/channels/gdrive-watcher.ts) — GDrive polling channel (multi-folder)
 
 ## Download Strategies
@@ -345,7 +346,7 @@ The classifier assigns a `download_strategy` that determines how the worker gets
 
 **Vendor rules** for link extraction: [`channels/invoice-links.ts`](../claude-code/channels/invoice-links.ts) — `INVOICE_LINK_RULES` is the single source of truth for vendor-specific patterns (sender + link text + subject). Used by both email-watcher (Gmail HTML) and invoice-worker (Outlook `body_html`). The legacy `INVOICE_RULES` in `outlook-mcp/server.py` is superseded.
 
-**Pre-job download (email path):** For `claude_download` and link strategies, Claude downloads the PDF *before* creating the intake job (using `curl` for links, email MCP tools for attachments). The job receives a `file_path` and the worker reads from disk. For `attachment` strategy, the worker downloads directly via MCP.
+**Pre-job download (email path):** For `claude_download` and link strategies, Claude downloads the PDF *before* creating the intake job (using `file-ops` MCP `download_file` for links, email MCP tools for attachments). The job receives a `file_path` and the worker reads from disk. For `attachment` strategy, the worker downloads directly via MCP.
 
 ## Durable Workflow Layer
 

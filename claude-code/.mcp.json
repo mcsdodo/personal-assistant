@@ -12,6 +12,10 @@
       "command": "bun",
       "args": ["run", "/app/channels/telegram/server.ts"]
     },
+    "file-ops": {
+      "command": "bun",
+      "args": ["run", "/app/channels/file-ops.ts"]
+    },
     "workflow": {
       "type": "http",
       "url": "http://localhost:8003/mcp"
