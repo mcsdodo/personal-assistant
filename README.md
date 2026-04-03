@@ -193,7 +193,7 @@ Expect to adapt:
 - tag naming conventions
 - storage paths and reverse proxy details
 
-Public docs use realistic placeholders such as `documents.lan`, `gmail-mcp.lan`, `/mnt/shared_configs/<stack>/`, and `YOUR_OTEL_ENDPOINT`.
+Public docs use realistic placeholders such as `documents.lan`, `/mnt/shared_configs/<stack>/`, and `YOUR_OTEL_ENDPOINT`.
 
 ## License
 

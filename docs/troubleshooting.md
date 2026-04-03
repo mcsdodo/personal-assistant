@@ -21,7 +21,8 @@ If health is stale, check whether Gmail or Outlook auth has expired.
 ## Gmail OAuth problems
 
 - verify your OAuth client ID and secret
-- confirm the configured callback matches your deployment
+- confirm the OAuth client type is **Desktop app** (auto-allows `http://localhost` redirect)
+- in production, ensure the SSH tunnel is open before triggering auth (see `docs/SETUP.md`)
 - retry `start_google_auth` from the Claude session
 
 ## Outlook polling problems

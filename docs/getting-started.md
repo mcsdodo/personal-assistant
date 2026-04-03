@@ -73,7 +73,7 @@ docker restart personal-assistant-claude
 
 ### Gmail
 
-Trigger `start_google_auth` from inside the Claude session. Use a redirect URI such as `https://gmail-mcp.lan/oauth2callback` in public docs and map it to your real deployment.
+Trigger `start_google_auth` from inside the Claude session. The OAuth callback redirects to `http://localhost:8000`. In local dev this works automatically. In production, SSH-tunnel port 8000 to the Docker host first (see `docs/SETUP.md` for the full procedure).
 
 ### Outlook
 

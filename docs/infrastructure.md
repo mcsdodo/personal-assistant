@@ -68,7 +68,7 @@ docker exec -it personal-assistant-claude claude login
 One-time browser login. Credentials persist in `/mnt/shared_configs/<stack>/claude-config/` or your configured persistent volume.
 
 ### Gmail OAuth
-Trigger `start_google_auth` tool from inside the Claude session. Public docs use an OAuth callback such as `https://gmail-mcp.lan/oauth2callback`. Tokens persist in `/mnt/shared_configs/<stack>/gmail/`.
+Trigger `start_google_auth` tool from inside the Claude session. The OAuth callback redirects to `http://localhost:8000/oauth2callback`. In production, use an SSH tunnel to the Docker host during the one-time auth setup (see `docs/SETUP.md`). Tokens persist in `/mnt/shared_configs/<stack>/gmail/`.
 
 **Config:** [`docker-compose.yml:116-119`](../docker-compose.yml#L116) — OAuth env vars (client ID, secret, redirect URI).
 

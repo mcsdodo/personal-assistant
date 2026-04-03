@@ -7,7 +7,6 @@ Configuration is environment-variable driven. Copy `.env.example` to `.env` and 
 Public docs use realistic placeholders such as:
 
 - `documents.lan`
-- `gmail-mcp.lan`
 - `/mnt/shared_configs/<stack>/`
 - `YOUR_DOCKER_HOST`
 - `YOUR_OTEL_ENDPOINT`
@@ -40,7 +39,7 @@ docker exec -it personal-assistant-claude claude login
 
 - Configure Google OAuth desktop credentials.
 - Trigger `start_google_auth` from the Claude session.
-- Public examples use a callback such as `https://gmail-mcp.lan/oauth2callback`.
+- The OAuth callback redirects to `http://localhost:8000/oauth2callback`. In production, use an SSH tunnel to the Docker host during the one-time auth setup (see `docs/SETUP.md`).
 
 ### Outlook device code
 

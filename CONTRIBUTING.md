@@ -41,7 +41,7 @@ For test prerequisites and troubleshooting, see `docs/development.md`.
 
 - The README is for first-time users and evaluators.
 - Put detailed setup, architecture, and troubleshooting content in `docs/`.
-- Public docs intentionally use realistic placeholders such as `documents.lan`, `gmail-mcp.lan`, `/mnt/shared_configs/<stack>/`, and `YOUR_OTEL_ENDPOINT`.
+- Public docs intentionally use realistic placeholders such as `documents.lan`, `/mnt/shared_configs/<stack>/`, and `YOUR_OTEL_ENDPOINT`.
 - Keep placeholder usage consistent across the repo.
 
 ## Pull Request Checklist

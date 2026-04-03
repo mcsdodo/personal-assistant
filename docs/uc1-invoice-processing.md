@@ -154,10 +154,10 @@ Polls Gmail via the community `google_workspace_mcp` image (pinned `1.16.2`, sup
 - [`email-watcher.ts:381-480`](../claude-code/channels/email-watcher.ts#L381) — `pollGmail()`: search + batch-fetch + parse
 - [`email-watcher.ts:56`](../claude-code/channels/email-watcher.ts#L56) — search query from `GMAIL_SEARCH_BASE` env (default: `newer_than:1d`)
 
-**Auth:** Public docs use an OAuth callback such as `https://gmail-mcp.lan/oauth2callback`. Trigger `start_google_auth` from inside the Claude session. Tokens persist in `/mnt/shared_configs/<stack>/gmail/` or your configured persistent volume.
+**Auth:** Trigger `start_google_auth` from inside the Claude session. The OAuth callback redirects to `http://localhost:8000/oauth2callback`. In production, SSH-tunnel to the Docker host first (see `docs/SETUP.md`). Tokens persist in `/mnt/shared_configs/<stack>/gmail/` or your configured persistent volume.
 
 **Config:**
-- [`docker-compose.yml:96-128`](../docker-compose.yml#L96) — gmail-mcp service (community image, caddy label for OAuth callback, env vars)
+- [`docker-compose.yml:96-128`](../docker-compose.yml#L96) — gmail-mcp service (community image, Docker-internal only, env vars)
 
 ## UC-1.2: Outlook Polling
 

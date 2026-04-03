@@ -131,16 +131,12 @@ services:
     restart: unless-stopped
     labels:
       com.centurylinklabs.watchtower.enable: "false"
-      caddy: ${GMAIL_MCP_DOMAIN:-gmail-mcp.lan}
-      caddy.reverse_proxy: "{{upstreams 8000}}"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),5); s.close()\""]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 15s
-    ports:
-      - "8000:8000"
     volumes:
       # OAuth tokens persist here
       - ${PA_DATA_DIR:-/mnt/shared_configs/personal-assistant}/gmail:/app/store_creds

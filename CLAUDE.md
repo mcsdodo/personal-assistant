@@ -12,7 +12,7 @@ Public docs use realistic placeholders instead of site-specific values.
 
 Examples:
 
-- `documents.lan`, `gmail-mcp.lan`, `invoices.lan`
+- `documents.lan`, `invoices.lan`
 - `/mnt/shared_configs/<stack>/...`
 - `YOUR_DOCKER_HOST`, `YOUR_OTEL_ENDPOINT`
 
@@ -186,7 +186,7 @@ Two Haiku subagents:
 
 ### Authentication
 - **Claude**: `docker exec -it personal-assistant-claude claude login` (one-time)
-- **Gmail**: trigger `start_google_auth` from Claude session -> callback via `https://gmail-mcp.lan/oauth2callback`
+- **Gmail**: trigger `start_google_auth` from Claude session -> callback to `http://localhost:8000/oauth2callback` (SSH tunnel in production, see `docs/SETUP.md`)
 - **Outlook**: restart container, get device code from `docker logs personal-assistant-outlook-mcp 2>&1 | grep -A3 "OUTLOOK AUTH"`
 - **Telegram**: DM the bot, access.json in volume handles pairing
 - Tokens persist in `/mnt/shared_configs/<stack>/` or your configured persistent volume
