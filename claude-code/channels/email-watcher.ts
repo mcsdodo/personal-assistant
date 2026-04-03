@@ -177,14 +177,14 @@ function renderMetrics(db: Database): string {
     )
     .all() as Array<{ source: string; status: string; count: number }>;
 
-  for (const row of recent) {
-    lines.push(
-      metricLine(
-        "email_watcher_recent_discovered_total",
-        { source: row.source, status: row.status },
-        row.count,
-      ),
-    );
+  const recentMap = new Map(recent.map((r) => [`${r.source}:${r.status}`, r.count]));
+  for (const src of ["gmail", "outlook"]) {
+    // Always emit at least a 0 for the common statuses so Grafana lastNotNull works after restarts
+    const statuses = new Set(["ignored", "processed", "failed"]);
+    for (const r of recent) { if (r.source === src) statuses.add(r.status); }
+    for (const st of statuses) {
+      lines.push(metricLine("email_watcher_recent_discovered_total", { source: src, status: st }, recentMap.get(`${src}:${st}`) ?? 0));
+    }
   }
 
   lines.push(
