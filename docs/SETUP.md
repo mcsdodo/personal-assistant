@@ -331,7 +331,7 @@ The gmail-mcp container has no published ports — it is only accessible from ot
 
 If you created a **Desktop app** OAuth client in [Step 2.4](#24-create-oauth-credentials), `http://localhost` (any port) is automatically allowed as a redirect URI. No additional configuration needed for local dev.
 
-For production behind a reverse proxy, set `GOOGLE_OAUTH_REDIRECT_URI` to your callback URL (e.g., `https://gmail-mcp.yourdomain.com/oauth2callback`) and register it in Google Cloud Console if using a **Web application** client.
+For production behind a reverse proxy, set `GOOGLE_OAUTH_REDIRECT_URI` to your callback URL (e.g., `https://gmail-mcp.lan/oauth2callback`) and register it in Google Cloud Console if using a **Web application** client.
 
 ### Auth procedure
 
@@ -526,7 +526,7 @@ Every variable from `.env.example` with its purpose and default.
 | `GMAIL_SEARCH_BASE` | (empty) | Additional Gmail search filter. Use `to:you+dev@gmail.com` during development to avoid processing real mail |
 | `GMAIL_CLIENT_SECRET_FILE` | `./data/gmail/client_secret.json` | Path to downloaded Google OAuth JSON (alternative to individual env vars) |
 | `GOOGLE_CLIENT_SECRET_JSON` | — | Full JSON credentials as a string (alternative for production secret injection) |
-| `GOOGLE_OAUTH_REDIRECT_URI` | — | OAuth callback URI. Desktop app clients auto-allow `http://localhost`. Set to your public URL for production (e.g., `https://gmail-mcp.yourdomain.com/oauth2callback`) |
+| `GOOGLE_OAUTH_REDIRECT_URI` | — | OAuth callback URI. Desktop app clients auto-allow `http://localhost`. Set to your public URL for production (e.g., `https://gmail-mcp.lan/oauth2callback`) |
 | `GMAIL_MCP_TOKEN` | — | Bearer token for the gmail-mcp-auth sidecar. Generate with `openssl rand -hex 32`. Only needed if the MCP port is exposed to the network |
 
 ### Outlook
@@ -620,8 +620,8 @@ This path should be a mounted NAS share or persistent volume containing:
 
 If running behind a reverse proxy (Caddy, Traefik, nginx), configure:
 
-- **Checker web UI**: expose port 5000 via your proxy (e.g., `https://invoices.yourdomain.com`)
-- **Gmail OAuth callback**: set `GOOGLE_OAUTH_REDIRECT_URI` to your callback URL (e.g., `https://gmail-mcp.yourdomain.com/oauth2callback`). The `gmail-mcp-auth` sidecar passes `/oauth2callback` through to gmail-mcp without auth.
+- **Checker web UI**: expose port 5000 via your proxy (e.g., `https://invoices.lan`)
+- **Gmail OAuth callback**: set `GOOGLE_OAUTH_REDIRECT_URI` to your callback URL (e.g., `https://gmail-mcp.lan/oauth2callback`). The `gmail-mcp-auth` sidecar passes `/oauth2callback` through to gmail-mcp without auth.
 - **Gmail MCP endpoint**: protected by the `gmail-mcp-auth` Caddy sidecar — requests to `/mcp*` require a `GMAIL_MCP_TOKEN` bearer token. Internal clients (claude-code, email-watcher) bypass the sidecar via Docker DNS.
 
 ### Secrets
