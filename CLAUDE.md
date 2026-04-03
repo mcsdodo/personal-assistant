@@ -198,7 +198,7 @@ Two Haiku subagents:
 Permission model: `--permission-mode dontAsk` auto-denies any tool not in the allowlist.
 
 - **No permission needed** (always available): `Read`, `Glob`, `Grep`, `Agent`, `ToolSearch`
-- **Allowed via settings**: MCP tools (wildcards for our servers, individual for gmail), `Bash(sleep *)`, `Bash(ls /workspace/*)`, `Edit`/`Write` for memory dir only
+- **Allowed via settings**: MCP tools (wildcards for our servers, individual for gmail), `Bash(sleep *)`, `Edit`/`Write` for memory dir only
 - **Denied**: gmail write/browse tools, all file-manipulating Bash commands (`curl`, `rm`, `mkdir`, `cp`, `find`, `base64`, `qpdf`, `echo`, `cat`, `env`, `node`) — file operations are handled by the `file-ops` MCP instead
 
 See [README.md#permission-model](README.md#permission-model) for the design rationale.
