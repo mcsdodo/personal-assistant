@@ -132,8 +132,9 @@ function renderMetrics(db: Database): string {
     )
     .all() as Array<{ source: string; count: number }>;
 
-  for (const row of backlog) {
-    lines.push(metricLine("email_watcher_backlog_total", { source: row.source }, row.count));
+  const backlogMap = new Map(backlog.map((r) => [r.source, r.count]));
+  for (const src of ["gmail", "outlook"]) {
+    lines.push(metricLine("email_watcher_backlog_total", { source: src }, backlogMap.get(src) ?? 0));
   }
 
   lines.push(

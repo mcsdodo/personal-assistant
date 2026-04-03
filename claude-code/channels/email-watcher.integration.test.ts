@@ -207,6 +207,10 @@ mock.module("./db", () => ({
   updateEmail: updateEmailMock,
   getRecentEmails: getRecentEmailsMock,
   getEmailStats: getEmailStatsMock,
+  getEmailTraceId: (db: Database, id: string) => {
+    const row = db.prepare("SELECT trace_id FROM emails WHERE id = ? LIMIT 1").get(id) as { trace_id: string | null } | null;
+    return row?.trace_id ?? null;
+  },
 }));
 
 // ---------------------------------------------------------------------------
