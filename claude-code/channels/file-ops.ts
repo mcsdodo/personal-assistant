@@ -310,7 +310,9 @@ async function main() {
   console.error("[file-ops] MCP server started");
 }
 
-main().catch((err) => {
-  console.error(`[file-ops] Fatal: ${err.message}`);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(`[file-ops] Fatal: ${err.message}`);
+    process.exit(1);
+  });
+}
