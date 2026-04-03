@@ -37,9 +37,9 @@ import { extractInvoiceLinks } from "./invoice-links";
 // Pure functions live in email-watcher-utils.ts (no side effects, safe to import from tests).
 // Re-export for backward compatibility + import for internal use.
 export type { EmailInfo } from "./email-watcher-utils";
-export { parseDuration, esc, metricLine, parseToolResult, extractGmailIds, parseGmailEmails } from "./email-watcher-utils";
+export { parseDuration, esc, metricLine, emitWithDefaults, parseToolResult, extractGmailIds, parseGmailEmails } from "./email-watcher-utils";
 import type { EmailInfo } from "./email-watcher-utils";
-import { buildGmailQuery as _buildGmailQuery, parseDuration, esc, metricLine, parseToolResult, extractGmailIds, parseGmailEmails } from "./email-watcher-utils";
+import { buildGmailQuery as _buildGmailQuery, parseDuration, esc, metricLine, emitWithDefaults, parseToolResult, extractGmailIds, parseGmailEmails } from "./email-watcher-utils";
 
 // ---------------------------------------------------------------------------
 // Config (env vars)
@@ -132,10 +132,7 @@ function renderMetrics(db: Database): string {
     )
     .all() as Array<{ source: string; count: number }>;
 
-  const backlogMap = new Map(backlog.map((r) => [r.source, r.count]));
-  for (const src of ["gmail", "outlook"]) {
-    lines.push(metricLine("email_watcher_backlog_total", { source: src }, backlogMap.get(src) ?? 0));
-  }
+  lines.push(...emitWithDefaults("email_watcher_backlog_total", backlog, { source: ["gmail", "outlook"] }));
 
   lines.push(
     "# HELP email_watcher_attachments_total Emails with attachments by source and status.",
@@ -177,15 +174,10 @@ function renderMetrics(db: Database): string {
     )
     .all() as Array<{ source: string; status: string; count: number }>;
 
-  const recentMap = new Map(recent.map((r) => [`${r.source}:${r.status}`, r.count]));
-  for (const src of ["gmail", "outlook"]) {
-    // Always emit at least a 0 for the common statuses so Grafana lastNotNull works after restarts
-    const statuses = new Set(["ignored", "processed", "failed"]);
-    for (const r of recent) { if (r.source === src) statuses.add(r.status); }
-    for (const st of statuses) {
-      lines.push(metricLine("email_watcher_recent_discovered_total", { source: src, status: st }, recentMap.get(`${src}:${st}`) ?? 0));
-    }
-  }
+  lines.push(...emitWithDefaults("email_watcher_recent_discovered_total", recent, {
+    source: ["gmail", "outlook"],
+    status: ["ignored", "processed", "failed"],
+  }));
 
   lines.push(
     "# HELP email_watcher_actions_total Classified actions recorded by the workflow.",

@@ -6,6 +6,7 @@ import {
   parseDuration,
   esc,
   metricLine,
+  emitWithDefaults,
   parseToolResult,
   extractGmailIds,
   parseGmailEmails,
@@ -155,6 +156,55 @@ describe("metricLine", () => {
 
   test("handles zero value", () => {
     expect(metricLine("m", { a: "b" }, 0)).toBe('m{a="b"} 0');
+  });
+});
+
+describe("emitWithDefaults", () => {
+  test("fills zeros for missing label combos", () => {
+    const rows = [{ source: "gmail", count: 3 }];
+    const result = emitWithDefaults("m", rows, { source: ["gmail", "outlook"] });
+    expect(result).toEqual([
+      'm{source="gmail"} 3',
+      'm{source="outlook"} 0',
+    ]);
+  });
+
+  test("returns all zeros when rows empty", () => {
+    const result = emitWithDefaults("m", [], { source: ["gmail", "outlook"] });
+    expect(result).toEqual([
+      'm{source="gmail"} 0',
+      'm{source="outlook"} 0',
+    ]);
+  });
+
+  test("handles multi-label cartesian product", () => {
+    const rows = [
+      { source: "gmail", status: "ignored", count: 10 },
+      { source: "outlook", status: "failed", count: 2 },
+    ];
+    const result = emitWithDefaults("m", rows, {
+      source: ["gmail", "outlook"],
+      status: ["ignored", "processed", "failed"],
+    });
+    expect(result).toContainEqual('m{source="gmail",status="ignored"} 10');
+    expect(result).toContainEqual('m{source="gmail",status="processed"} 0');
+    expect(result).toContainEqual('m{source="gmail",status="failed"} 0');
+    expect(result).toContainEqual('m{source="outlook",status="ignored"} 0');
+    expect(result).toContainEqual('m{source="outlook",status="processed"} 0');
+    expect(result).toContainEqual('m{source="outlook",status="failed"} 2');
+    expect(result).toHaveLength(6);
+  });
+
+  test("includes extra statuses from rows not in required", () => {
+    const rows = [{ source: "gmail", status: "seed", count: 5 }];
+    const result = emitWithDefaults("m", rows, {
+      source: ["gmail", "outlook"],
+      status: ["ignored"],
+    });
+    // Required combos + the extra "seed" from actual data
+    expect(result).toContainEqual('m{source="gmail",status="ignored"} 0');
+    expect(result).toContainEqual('m{source="outlook",status="ignored"} 0');
+    expect(result).toContainEqual('m{source="gmail",status="seed"} 5');
   });
 });
 

@@ -73,6 +73,56 @@ export function metricLine(
     : `${name} ${value}`;
 }
 
+/**
+ * Emit metric lines for SQL GROUP BY results, filling in zeros for any
+ * required label combinations that the query didn't return.
+ *
+ * @param name      Prometheus metric name
+ * @param rows      Query results — each row must have a `count` field plus label fields
+ * @param required  Map of label name → required values (e.g. { source: ["gmail", "outlook"] })
+ * @returns         Array of metric lines (pass to lines.push(...result))
+ */
+export function emitWithDefaults(
+  name: string,
+  rows: Array<Record<string, any>>,
+  required: Record<string, string[]>,
+): string[] {
+  const labelKeys = Object.keys(required);
+  // Build a set of all required label combos (e.g. "gmail", "outlook")
+  // For single label key this is just the values; for multiple it's the cartesian product.
+  const combos: Record<string, string>[] = labelKeys.reduce<Record<string, string>[]>(
+    (acc, key) => {
+      const values = required[key];
+      if (acc.length === 0) return values.map((v) => ({ [key]: v }));
+      return acc.flatMap((combo) => values.map((v) => ({ ...combo, [key]: v })));
+    },
+    [],
+  );
+
+  // Index actual rows by their label combo key
+  const rowKey = (labels: Record<string, string>) => labelKeys.map((k) => labels[k]).join("\0");
+  const rowMap = new Map<string, number>();
+  for (const row of rows) {
+    const labels: Record<string, string> = {};
+    for (const k of labelKeys) labels[k] = row[k];
+    rowMap.set(rowKey(labels), row.count);
+  }
+
+  // Also include any label combos from actual rows that aren't in required
+  const seen = new Set(combos.map(rowKey));
+  for (const row of rows) {
+    const labels: Record<string, string> = {};
+    for (const k of labelKeys) labels[k] = row[k];
+    const key = rowKey(labels);
+    if (!seen.has(key)) {
+      combos.push(labels);
+      seen.add(key);
+    }
+  }
+
+  return combos.map((labels) => metricLine(name, labels, rowMap.get(rowKey(labels)) ?? 0));
+}
+
 // ---------------------------------------------------------------------------
 // MCP tool result parsing
 // ---------------------------------------------------------------------------
