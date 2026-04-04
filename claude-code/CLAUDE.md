@@ -76,17 +76,11 @@ The workflow worker drives the full invoice pipeline deterministically:
 - Sends Telegram notification on completion/failure
 - Pauses automatically for unknown vendors, low confidence, or browser-required cases
 
-Use `create_invoice_intake_job` for email invoices. Use `create_scan_intake_job` for scanned documents from Google Drive.
+Use `create_invoice_intake_job` or `create_scan_intake_job` only for manual reprocessing (with `force: true`). Watchers create jobs automatically.
 
 ## When you receive an email-watcher channel event
 
-The email-watcher polls Gmail and Outlook every 30 seconds for new emails and pushes events here.
-
-Each event has these meta fields:
-- `email_source`: `gmail` or `outlook` — which MCP server to use for downloads
-- `message_id`: the email ID — pass to the relevant MCP tools
-- `sender`, `subject`, `has_attachments`: email metadata
-- `received_at`: when the email was received
+The email-watcher creates workflow jobs directly when it detects new emails — you do NOT receive channel events for normal email detection. The only email-watcher channel events you receive are startup events.
 
 ### Startup events
 
@@ -96,48 +90,28 @@ The email-watcher tracks a `last_checked` timestamp per source. On startup:
 
 - **`catchup_required` event**: Too many emails found since `last_checked` (exceeds threshold). Ask the user via Telegram: "{N} emails found for {source} since last check. Process all or skip?" Then call `approve_catchup(source)` or `skip_catchup(source)`.
 
-Normal new-email events work the same as before — classify and process.
+## GDrive watcher
 
-## When you receive a gdrive-watcher channel event
+The gdrive-watcher creates workflow jobs directly when it detects new files — you do NOT receive channel events for normal file detection. The gdrive-watcher polls multiple Google Drive folders every 30 seconds (configured via `GDRIVE_LEVEL1` × `GDRIVE_LEVEL2`).
 
-The gdrive-watcher polls multiple Google Drive folders every 30 seconds for new files and pushes events here. Folders are configured via `GDRIVE_LEVEL1` × `GDRIVE_LEVEL2` (e.g. `techlab/invoicing`, `techlab/documents`).
+After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure (permanent), it moves to `errors/`. The `month_tag` is a hard rule — always the scan date, not document content date.
 
-Each event has these meta fields:
-- `source`: always `"gdrive"`
-- `file_id`: the Google Drive file ID — use with gmail MCP Drive tools
-- `name`: original filename
-- `mime_type`: file MIME type
-- `created_time`: when the file was uploaded (scan date)
-- `month_tag`: `YYYY-MM` tag derived from scan date — use this for tagging (hard rule)
-- `watch_folder`: which folder the file came from (e.g. `techlab/invoicing`) — pass to `create_scan_intake_job`
+## Email/Scan Processing Pipeline
 
-**Processing pipeline:**
-1. **Create job:** `create_scan_intake_job(file_id, watch_folder, month_tag, filename)` — the worker handles the full pipeline
-2. **Respond to classification requests** — when you receive a `classify_document` channel event from the worker, run the document-classifier haiku subagent and call `submit_classification` (same as email flow)
-3. **Monitor job** — poll with `get_job(job_id)`:
-   - `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
-   - `state: completed` with `outcome: duplicate` → silently skip (worker does not notify)
-   - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response
-   - `state: retryable` → transient failure, worker will retry automatically. No action needed.
-   - `state: failed` → permanent failure, worker sends Telegram notification automatically. Create a fresh job with `force: true`.
-4. **Record** — call `update_gdrive_scan_status` with the outcome
+Jobs are created automatically by watchers. You only interact with jobs when:
+1. **Responding to classification requests** — when you receive `classify_email` or `classify_document` channel events from the worker, run the appropriate haiku subagent and call `submit_classification` (see "When you receive a workflow channel event" below)
+2. **Handling approval gates** — when a job enters `awaiting_approval`, notify user via Telegram, wait for response, then call `approve_job` or `cancel_job`
+3. **Manual reprocessing** — when a user asks to reprocess, call `create_invoice_intake_job(email_source, message_id, force=true)` or `create_scan_intake_job(file_id, watch_folder, month_tag, force=true)`
 
-The `month_tag` is a hard rule — always use the scan date, not the document content date. The worker downloads from GDrive, requests classification via channel, then uploads. After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure (permanent), it moves to `errors/`.
+### Job monitoring
 
-## Email Processing Pipeline
-
-When you receive an email-watcher channel event or a user asks to reprocess an email:
-
-1. **Create a job:** `create_invoice_intake_job(email_source, message_id)` — add `force: true` for reprocess
-2. **The worker handles the full pipeline** — email classification, download, document classification, dedup, upload, notification
-3. **Respond to classification requests** — when you receive `classify_email` or `classify_document` channel events from the worker, run the appropriate haiku subagent and call `submit_classification` (see "When you receive a workflow channel event" below)
-4. **Monitor the job** — poll with `get_job(job_id)` after a short delay:
-   - `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
-   - `state: completed` with `outcome: duplicate` → silently skip, no notification
-   - `state: completed` with `outcome: ignored` → email classifier determined it's not an invoice, no action needed
-   - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response, then call `approve_job` or `cancel_job`
-   - `state: retryable` → transient failure, worker retries automatically. No action needed.
-   - `state: failed` → permanent failure, worker sends Telegram notification automatically. Create a fresh job with `force: true`.
+After classification submissions, poll with `get_job(job_id)`:
+- `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
+- `state: completed` with `outcome: duplicate` → silently skip, no notification
+- `state: completed` with `outcome: ignored` → email classifier determined it's not an invoice, no action needed
+- `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response, then call `approve_job` or `cancel_job`
+- `state: retryable` → transient failure, worker retries automatically. No action needed.
+- `state: failed` → permanent failure, worker sends Telegram notification automatically. Create a fresh job with `force: true`.
 5. **Record** — call `update_email_status` on the email-watcher after the job completes. Always pass `source`:
    - After job completion: `update_email_status(id, status="processed", source=<email_source>, process_result="Uploaded X to Paperless")`
    - On job failure: `update_email_status(id, status="failed", source=<email_source>, process_result="error details")`

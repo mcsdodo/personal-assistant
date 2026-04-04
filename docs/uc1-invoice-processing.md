@@ -74,67 +74,52 @@ sequenceDiagram
     EW->>DB: emailExists(id)?
     DB-->>EW: false
     EW->>DB: INSERT status="new"
-    EW--)C: channel notification<br/>(sender, subject, message_id, source)
+    EW->>DB: createJob(workflow.db)<br/>invoice_intake job
+    note over EW: No channel notification —<br/>Claude not in job creation path
     EW->>DB: setLastChecked(source, now)
     end
 
     rect rgb(50, 40, 40)
-    note over C,CL: Step 1 — Classify
-    C->>CL: dispatch (email metadata)
-    CL-->>C: JSON {is_invoice, confidence,<br/>vendor, action, doc_type}
-    C->>EW: update_email_status(id,<br/>status="classified",<br/>classification, action,<br/>vendor, confidence)
-    EW->>DB: UPDATE classified_at=now()
+    note over IW,TG: Worker-driven pipeline (3 ticks)
+
+    note over IW,C: Tick 1 — Email classification
+    IW->>IW: claimNextQueuedJob
+    IW--)C: channel event (classify_email)
+    C->>CL: dispatch email-classifier (Haiku)
+    CL-->>C: JSON {vendor, action, download_strategy, ...}
+    C->>WF: submit_classification(job_id, "classify_email", result)
+
+    note over IW,C: Tick 2 — Download + document classification
+    IW->>IW: resume job, download PDF
+    IW--)C: channel event (classify_document)
+    C->>DC: dispatch document-classifier (Haiku)
+    DC-->>C: JSON {vendor, total_amount, doc_type, owner, ...}
+    C->>WF: submit_classification(job_id, "classify_document", result)
+
+    note over IW,P: Tick 3 — Upload
+    IW->>IW: merge classifications, resolve tags
+    IW->>P: dedup check (order_id + correspondent)
+
+    alt exact duplicate (same amount)
+        IW-->>WF: completed (outcome: duplicate)
+        note over IW: Skip silently (no notification)
+    else duplicate_likely (amount mismatch)
+        IW-->>WF: awaiting_approval
+        C->>TG: reply("Possible duplicate, approve?")
+    else no duplicate
+        IW->>P: post_document + custom fields
+        IW->>IW: delete local file
+        IW-->>WF: completed (outcome: uploaded)
+        IW->>TG: notifyTelegram("✔️ {vendor} | {amount} EUR | ...")
     end
 
-    rect rgb(40, 50, 40)
-    note over C,TG: Step 2 — Act on classification
-
-    alt action = "download_and_upload"
-        note over C,G: Download PDF to disk
-        alt strategy = "attachment"
-            C->>G: download_attachment via MCP
-        else strategy = "known_link" / "direct_url"
-            C->>G: invoice_links from event → file-ops download_file
-        end
-        G-->>C: file on disk (file_path)
-        opt encrypted PDF
-            C->>C: file-ops decrypt_pdf
-        end
-
-        note over C,DC: Classify document
-        C->>DC: dispatch document-classifier (Haiku)
-        DC-->>C: {vendor, total_amount, doc_type, ...}
-        C->>C: merge: DC non-null values override email-classifier
-
-        note over C,WF: Create job (file_path + month_tag + merged classification)
-        C->>WF: create_invoice_intake_job
-        WF->>IW: execute job
-        IW->>IW: read file from disk (file_path)
-        IW->>P: dedup check (order_id + correspondent)
-
-        alt exact duplicate (same amount)
-            IW-->>WF: completed (outcome: duplicate)
-            note over IW: Skip silently (no notification)
-        else duplicate_likely (amount mismatch)
-            IW-->>WF: awaiting_approval
-            C->>TG: reply("Possible duplicate, approve?")
-        else no duplicate
-            IW->>P: post_document + custom fields
-            IW->>IW: delete local file
-            IW-->>WF: completed (outcome: uploaded)
-            IW->>TG: notifyTelegram("✔️ {vendor} | {amount} EUR | ...")
-        end
-
-    else action = "notify_user"
-        C->>TG: reply("New invoice from {sender}.<br/>Process? Reply yes/no")
-
-    else action = "ignore"
-        note over C: Silent — no notification
+    alt action = "ignore"
+        note over IW: Job completed (outcome: ignored)
     end
     end
 
     rect rgb(40, 40, 50)
-    note over C,DB: Step 3 — Record final status
+    note over C,DB: Record final status
     C->>EW: update_email_status(id,<br/>status="processed|failed|ignored",<br/>process_result="...")
     EW->>DB: UPDATE processed_at=now()
     end
@@ -276,8 +261,7 @@ Claude still handles notifications that require user interaction:
 - `notify_user` classification → ask user what to do
 - Auth expired → alert user to re-authenticate
 
-**Channel notifications (email-watcher → Claude):**
-- [`email-watcher.ts:595-606`](../claude-code/channels/email-watcher.ts#L595) — channel notification format: meta fields include `email_source`, `message_id`, `sender`, `subject`, `has_attachments`, `received_at`
+**Watcher notifications:** Email-watcher and gdrive-watcher no longer send channel notifications for new emails/files. They create workflow jobs directly in `workflow.db`. Claude only receives channel events for startup flows (`first_start`, `catchup_required`) and classification requests from the worker.
 
 **Telegram plugin:** Official Anthropic plugin, cloned at Docker build time from `github.com/anthropics/claude-plugins-official`.
 - [`Dockerfile:33-36`](../claude-code/Dockerfile#L33) — git clone + bun install
@@ -312,7 +296,7 @@ Claude can query Paperless directly using `search_documents` from the community 
 
 Scanned documents dropped into Google Drive are automatically classified and uploaded to Paperless.
 
-**Pipeline:** gdrive-watcher polls multiple level2 folders under a level1 parent → Claude downloads file via `file-ops` MCP `download_file` → document-classifier (Haiku) extracts metadata → `create_scan_intake_job` with `file_path`, `month_tag`, and `watch_folder` → worker reads from disk, uploads to Paperless with tags derived from the folder path, moves file to `processed/`.
+**Pipeline:** gdrive-watcher polls multiple level2 folders under a level1 parent → creates `scan_intake` job directly in workflow.db with `file_id`, `month_tag`, and `watch_folder` → worker downloads from GDrive, requests document classification via channel → uploads to Paperless with tags derived from the folder path, moves file to `processed/`.
 
 **Multi-folder config:**
 ```env
@@ -320,7 +304,7 @@ GDRIVE_LEVEL1=techlab              # parent folder(s), comma-separated
 GDRIVE_LEVEL2=invoicing,documents  # subfolders to watch, comma-separated
 ```
 
-At startup, the watcher resolves every level1 × level2 combination (e.g. `techlab/invoicing`, `techlab/documents`). Both levels support comma-separated values, so `GDRIVE_LEVEL1=techlab,personal` with `GDRIVE_LEVEL2=invoicing,documents` would watch 4 folders. Each leaf folder gets `processed/` and `errors/` subfolders ensured. Files are polled from all folders every cycle. The `watch_folder` (e.g. `techlab/invoicing`) flows through the channel notification → job input → worker, where it determines both tags and file move destination.
+At startup, the watcher resolves every level1 × level2 combination (e.g. `techlab/invoicing`, `techlab/documents`). Both levels support comma-separated values, so `GDRIVE_LEVEL1=techlab,personal` with `GDRIVE_LEVEL2=invoicing,documents` would watch 4 folders. Each leaf folder gets `processed/` and `errors/` subfolders ensured. Files are polled from all folders every cycle. The `watch_folder` (e.g. `techlab/invoicing`) flows through the job input → worker, where it determines both tags and file move destination.
 
 **Unified classifier:** Both email PDFs and GDrive scans use the same `document-classifier` agent. The email path adds an email-classifier triage step before download; the GDrive path skips it.
 
@@ -416,7 +400,7 @@ stateDiagram-v2
 
 | Status | Meaning | Set by | Timestamp |
 |--------|---------|--------|-----------|
-| `new` | Newly detected, pushed to Claude as channel event | email-watcher `pollCycle` | `discovered_at` |
+| `new` | Newly detected, job created in workflow.db | email-watcher `processNewEmails` | `discovered_at` |
 | `classified` | email-classifier returned classification JSON | Claude via `update_email_status` | `classified_at` (auto) |
 | `processed` | invoice-worker completed (uploaded or duplicate) | Claude via `update_email_status` | `processed_at` (auto) |
 | `ignored` | Classifier said action=ignore (not an invoice) | Claude via `update_email_status` | `processed_at` |
@@ -432,4 +416,4 @@ stateDiagram-v2
 - **MCP client retry**: The invoice-worker calls MCP servers (gmail, outlook, paperless) via HTTP. Transient network errors (DNS resolution, connection refused) are retried with exponential backoff (3 retries, 1s→2s→4s). See [`mcp-client.ts:40-55`](../claude-code/channels/mcp-client.ts#L40)
 
 **Startup flow:** On first run for a source, a `first_start` event triggers user interaction (init_source). On subsequent starts, if too many emails accumulated, a `catchup_required` event triggers approval (approve_catchup/skip_catchup). Normal polls resume after.
-- [`email-watcher.ts:624-730`](../claude-code/channels/email-watcher.ts#L624) — `pollCycle()`: checkpoint check, catchup detection, dedup, notification push
+- [`email-watcher.ts:624-730`](../claude-code/channels/email-watcher.ts#L624) — `pollCycle()`: checkpoint check, catchup detection, dedup, direct job creation

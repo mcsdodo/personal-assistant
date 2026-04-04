@@ -163,7 +163,7 @@ MSAL device code auth with singleton caching (`_msal_lock`). `get_access_token()
 
 ### claude-code/channels/email-watcher.ts (~1100 lines)
 
-Polls Gmail + Outlook every 30s. SQLite audit trail (`emails.db`). Metrics endpoint `:9465` (Prometheus format). Health endpoint `/health` with staleness detection. Tools: `update_email_status()`, `get_recent_emails()`, `get_email_stats()`. Startup events: `first_start`, `catchup_required`.
+Polls Gmail + Outlook every 30s. Creates `invoice_intake` jobs directly in `workflow.db` (no channel notification to Claude for new emails). SQLite audit trail (`emails.db`). Metrics endpoint `:9465` (Prometheus format). Health endpoint `/health` with staleness detection. Tools: `update_email_status()`, `get_recent_emails()`, `get_email_stats()`. Startup events (`first_start`, `catchup_required`) still use channel notifications.
 
 ### claude-code/channels/invoice-worker.ts (~1580 lines)
 
@@ -171,11 +171,11 @@ Deterministic job worker and pipeline orchestrator. Drives the full pipeline: re
 
 ### claude-code/channels/gdrive-watcher.ts (~750 lines)
 
-Polls Google Drive folders (`LEVEL1`/`LEVEL2`) every 30s. SQLite audit trail (`gdrive.db`). Creates `processed/` and `errors/` subfolders for post-upload file management.
+Polls Google Drive folders (`LEVEL1`/`LEVEL2`) every 30s. Creates `scan_intake` jobs directly in `workflow.db` (no channel notification to Claude for new files). SQLite audit trail (`gdrive.db`). Creates `processed/` and `errors/` subfolders for post-upload file management.
 
 ### claude-code/channels/workflow-mcp.ts (~430 lines)
 
-Durable job queue backed by SQLite (`workflow.db`). Stdio channel with health endpoint on :8003. Job states: queued → running → awaiting_classification → awaiting_approval → completed/failed. Tools: `create_invoice_intake_job(email_source, message_id, force?)`, `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`, `submit_classification(job_id, step, result)`. Worker drives the full pipeline — classification requests go via channel notifications to Claude.
+Durable job queue backed by SQLite (`workflow.db`). Stdio channel with health endpoint on :8003. Job states: queued → running → awaiting_classification → awaiting_approval → completed/failed. Tools: `create_invoice_intake_job(email_source, message_id, force?)` (manual/force reprocessing only — watchers create jobs directly), `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`, `submit_classification(job_id, step, result)`. Worker drives the full pipeline — classification requests go via channel notifications to Claude.
 
 ### claude-code/agents/
 
