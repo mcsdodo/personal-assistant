@@ -224,7 +224,7 @@ flowchart TD
     L --> M
 ```
 
-**`month_tag` source** also differs: email path infers it from email context (subject, document date, `received_at` fallback); GDrive path uses the file's `created_time` (hard rule — always scan date, not document content date).
+**`month_tag` source** also differs: email path infers it from email context (subject, document date, `received_at` fallback); GDrive path defaults to the file's `created_time` (scan date) but the worker overrides it with `doc_date` from the document classifier when present.
 
 **Code:**
 - [`invoice-worker.ts:596-637`](../claude-code/channels/invoice-worker.ts#L596) — `resolveCorrespondent()`: list → fuzzy match (via `fuzzy-match.ts`) → create if needed
