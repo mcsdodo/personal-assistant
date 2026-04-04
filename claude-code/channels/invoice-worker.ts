@@ -558,14 +558,12 @@ async function downloadAttachment(
       message_id: messageId,
     });
     const attachmentsText = extractText(attachmentsResult);
-    const attachments = JSON.parse(attachmentsText) as Array<{
-      id: string;
-      name: string;
-      content_type: string;
-      size: number;
-    }>;
+    const parsed = JSON.parse(attachmentsText);
+    // FastMCP unwraps single-element arrays into a plain object
+    const attachments: Array<{ id: string; name: string; content_type: string; size: number }> =
+      Array.isArray(parsed) ? parsed : [parsed];
 
-    if (!attachments.length) {
+    if (!attachments.length || !attachments[0]?.id) {
       throw new Error("No attachments found on email");
     }
 
@@ -581,7 +579,7 @@ async function downloadAttachment(
       attachment_id: target.id,
     });
     const downloadData = extractText(downloadResult);
-    const parsed = JSON.parse(downloadData) as {
+    const dlParsed = JSON.parse(downloadData) as {
       name: string;
       content_type: string;
       size: number;
@@ -589,9 +587,9 @@ async function downloadAttachment(
     };
 
     return {
-      filename: parsed.name,
-      content_base64: parsed.content_base64,
-      content_type: parsed.content_type,
+      filename: dlParsed.name,
+      content_base64: dlParsed.content_base64,
+      content_type: dlParsed.content_type,
       size: parsed.size,
     };
   }
