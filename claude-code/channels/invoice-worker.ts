@@ -51,8 +51,9 @@ export interface InvoiceIntakeInput {
   email_source: string;
   /** Email message ID from the email provider */
   message_id: string;
-  /** Merged classification (email-classifier + document-classifier override) */
-  classification: {
+  /** Merged classification (email-classifier + document-classifier override).
+   *  Optional in V2: if absent, worker requests classification via channel. */
+  classification?: {
     is_invoice: boolean;
     confidence: "high" | "medium" | "low";
     vendor: string;
@@ -175,21 +176,75 @@ export async function executeInvoiceIntake(
     return;
   }
 
-  const { classification } = input;
-  const strategy = classification.download_strategy;
+  // Mutable classification — may be populated from job input or from channel classification
+  let classification = input.classification ? { ...input.classification } : null;
+  const strategy = classification?.download_strategy ?? null;
 
-  await tracer.startActiveSpan(`invoice-worker.execute ${classification.vendor}`, {
+  await tracer.startActiveSpan(`invoice-worker.execute ${classification?.vendor ?? "unknown"}`, {
     attributes: {
       "job.id": job.id,
       "job.type": "invoice_intake",
-      "invoice.vendor": classification.vendor,
-      "invoice.download_strategy": classification.download_strategy ?? "unknown",
+      "invoice.vendor": classification?.vendor ?? "unknown",
+      "invoice.download_strategy": strategy ?? "unknown",
     },
   }, async (span: Span) => {
     let outcome = "unknown";
     try {
       // Resume logic — read completed steps to skip on re-entry
       const completedSteps = getCompletedSteps(db, job.id);
+
+      // Step 0: Email classification (if not provided in job input)
+      if (!classification) {
+        const cachedEmailClass = completedSteps.get("classify_email");
+        if (cachedEmailClass?.result) {
+          // Resume: use cached email classification
+          classification = cachedEmailClass.result as NonNullable<typeof classification>;
+          logger.log(`Resuming: using cached email classification (vendor=${classification.vendor})`);
+
+          // Handle ignore action
+          if (classification.action === "ignore") {
+            completeJob(db, job.id, { outcome: "ignored", classification });
+            logger.log(`Job ${job.id} completed: ignored by email classifier`);
+            outcome = "ignored";
+            span.setAttribute("invoice.outcome", "ignored");
+            span.setStatus({ code: SpanStatusCode.OK });
+            return;
+          }
+        } else if (channel) {
+          // Park the job and request email classification from Claude
+          requestClassification(db, job.id, "classify_email", {
+            sender: input.sender ?? "",
+            subject: input.subject ?? "",
+            has_attachments: true, // email jobs typically have attachments/links
+            email_source: input.email_source,
+            message_id: input.message_id,
+          });
+          await channel.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: `Classification request: run email-classifier and call submit_classification.`,
+              meta: {
+                event_type: "classify_email",
+                job_id: job.id,
+                sender: input.sender ?? "",
+                subject: input.subject ?? "",
+                email_source: input.email_source,
+                message_id: input.message_id,
+              },
+            },
+          });
+          logger.log(`Job ${job.id} parked for email classification`);
+          outcome = "awaiting_classification";
+          span.setAttribute("invoice.outcome", "awaiting_classification");
+          span.setStatus({ code: SpanStatusCode.OK });
+          return;
+        } else {
+          failJob(db, job.id, { code: "no_classification", message: "No classification in job input and no channel available" });
+          outcome = "failed";
+          span.setAttribute("invoice.outcome", "failed");
+          return;
+        }
+      }
 
       // Step 1: Get file — prefer disk, fallback to MCP download
       let file: DownloadedFile;

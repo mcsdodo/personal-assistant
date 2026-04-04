@@ -173,6 +173,13 @@ This pipeline keeps routine classification on Haiku (fast, cheap), deterministic
 
 The workflow worker sends classification requests via channel when it needs LLM judgment.
 
+**`event_type: "classify_email"`** — the worker needs email classification before proceeding:
+1. Read `sender`, `subject`, `email_source`, `message_id`, and `job_id` from the event meta
+2. If needed, fetch more email context (body preview) from the email MCP using the message_id
+3. Invoke the `email-classifier` subagent with the email metadata
+4. Call `submit_classification(job_id, step="classify_email", result=<classifier output>)` on the workflow tools
+5. If the classifier returns `action: "ignore"`, the worker will complete the job as ignored automatically
+
 **`event_type: "classify_document"`** — the worker has downloaded a PDF and needs document classification:
 1. Read `file_path` and `job_id` from the event meta
 2. Invoke the `document-classifier` subagent with the file path. Before invoking, replace `${...}` placeholders with business identifier env vars (use `get_env` on file-ops MCP for `BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`).
