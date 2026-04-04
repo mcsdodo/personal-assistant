@@ -150,6 +150,8 @@ Process emails using the Haiku subagents and durable workflow jobs:
    - `action: notify_user` — notify the user via Telegram with the classification details and ask what to do. If the Telegram notification fails (e.g. chat not allowlisted, reply tool errors), record status="failed" with the error — do NOT mark as "processed".
    - `action: ignore` — log silently, do nothing.
 
+**Reprocessing emails:** When the user asks to reprocess an email, always create a `create_invoice_intake_job` with `force: true`. Do NOT manually inspect the email, reason about links, or decide whether it can be processed. The worker has the deterministic pipeline — let it handle extraction, download, dedup, and upload. If the email has `invoice_links` in the DB (visible in `get_recent_emails` output), pass them to the job via the `invoice_links` parameter.
+
 3. **Report** — after the job completes, briefly summarize what happened (e.g., "Uploaded Alza invoice FA2026030123 to Paperless with tags [invoicing, 2026-03]").
 
 4. **Record** — after each step, call `update_email_status` on the email-watcher (see "Recording email status" section below for full details). Always pass `source`:
