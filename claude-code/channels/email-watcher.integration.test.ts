@@ -537,21 +537,15 @@ describe("processNewEmails integration", () => {
     for (let i = 5; i < 8; i++) expect(emailExistsMock(db, `cap-${i}`)).toBe(false);
   });
 
-  test("includes invoice_links in notification meta", async () => {
-    setGmailCallTool(async () => mcpRawTextResult("<html><body>hi</body></html>"));
-
+  test("notification meta does not include invoice_links (worker extracts)", async () => {
     await processNewEmails(db, mockChannel, [{
       id: "proc-links-001", source: "gmail" as const,
       sender: "noreply@alza.sk", subject: "Invoice",
-      invoiceLinks: [{ url: "https://alza.sk/invoice/123", text: "Download" }],
     }]);
 
     const notif = mockChannel._notifications[0];
-    expect(notif.params.meta.invoice_links).toBeTruthy();
-    const links = JSON.parse(notif.params.meta.invoice_links);
-    expect(links).toHaveLength(1);
-    expect(links[0].url).toBe("https://alza.sk/invoice/123");
-    expect(notif.params.content).toContain("Invoice links:");
+    expect(notif.params.meta.invoice_links).toBeUndefined();
+    expect(notif.params.content).not.toContain("Invoice links:");
   });
 
   test("sets correct meta for outlook emails (no HTML fetch)", async () => {
