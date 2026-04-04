@@ -18,6 +18,7 @@ export interface CreateJobInput {
   sourceRef?: string | null;
   idempotencyKey?: string | null;
   requiresApproval?: boolean;
+  traceId?: string | null;
 }
 
 export interface JobRow {
@@ -37,6 +38,7 @@ export interface JobRow {
   completed_at: string | null;
   retry_count: number;
   scheduled_at: string | null;
+  trace_id: string | null;
 }
 
 export interface JobEventRow {
@@ -98,6 +100,7 @@ export function openWorkflowDb(path: string): Database {
   // Migrations — safe ADD COLUMN (ignore "duplicate column" error)
   try { db.exec("ALTER TABLE jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"); } catch {}
   try { db.exec("ALTER TABLE jobs ADD COLUMN scheduled_at TEXT"); } catch {}
+  try { db.exec("ALTER TABLE jobs ADD COLUMN trace_id TEXT"); } catch {}
   db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_retryable ON jobs(state, scheduled_at)");
 
   return db;
@@ -145,9 +148,10 @@ export function createJob(db: Database, input: CreateJobInput): JobRow {
        idempotency_key,
        input_json,
        requires_approval,
+       trace_id,
        created_at,
        updated_at
-     ) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.workflowType,
@@ -155,6 +159,7 @@ export function createJob(db: Database, input: CreateJobInput): JobRow {
     idempotencyKey,
     input.inputJson ?? null,
     input.requiresApproval ? 1 : 0,
+    input.traceId ?? null,
     nowIso(),
     nowIso(),
   );

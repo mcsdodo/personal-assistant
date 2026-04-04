@@ -554,6 +554,7 @@ export async function processNewEmails(db: Database, channel: Server, emails: Em
       sourceRef: `${email.source}:${email.id}`,
       idempotencyKey: `${email.source}:${email.id}`,
       requiresApproval: false,
+      traceId: getActiveTraceId(),
     });
 
     // OTel span — links job creation to the poll cycle trace

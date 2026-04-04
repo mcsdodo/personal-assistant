@@ -68,17 +68,22 @@ function executeSyntheticJob(db: Database, job: JobRow, logger: WorkflowLogger):
 }
 
 /**
- * Look up the trace_id from the email DB for a given source_ref.
- * Returns a parent context to continue the email-watcher trace, or undefined.
+ * Resolve the parent trace context for a job.
+ * Uses the trace_id stored directly on the job (set by watchers at job creation).
+ * Falls back to email DB lookup for jobs created before the trace_id column existed.
  */
-function resolveEmailTraceParent(sourceRef: string | null) {
+function resolveJobTraceParent(job: JobRow) {
+  // Prefer trace_id stored directly on the job
+  if (job.trace_id) return remoteParentContext(job.trace_id);
+
+  // Fallback: look up trace from email DB (legacy path for workflow-mcp-created jobs)
+  const sourceRef = job.source_ref;
   if (!sourceRef) return undefined;
   const colonIdx = sourceRef.indexOf(":");
   if (colonIdx < 0) return undefined;
   const messageId = sourceRef.slice(colonIdx + 1);
 
   try {
-    // Open email DB read-only to look up the trace_id stored by email-watcher
     const { Database: BunDb } = require("bun:sqlite");
     const emailDb = new BunDb(EMAIL_DB_PATH, { readonly: true });
     const traceId = getEmailTraceId(emailDb, messageId);
@@ -104,8 +109,8 @@ export async function executeNextJob(
   const spanName = `workflow.execute_job ${job.workflow_type}`;
   const spanOpts = { attributes: { "job.id": job.id, "job.type": job.workflow_type, "job.retry_attempt": job.retry_count } };
 
-  // Try to link to the email-watcher trace via the email DB
-  const parentCtx = resolveEmailTraceParent(job.source_ref);
+  // Try to link to the watcher trace via job.trace_id (or email DB fallback)
+  const parentCtx = resolveJobTraceParent(job);
 
   // Use 4-arg form with parent context if available, otherwise 3-arg form
   const spanFn = async (span: Span) => {

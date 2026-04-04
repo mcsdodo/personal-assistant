@@ -27,7 +27,7 @@ import {
   getFileStats,
 } from "./gdrive-db";
 
-import { initTracing, getTracer, withSpan, createLogger, SpanStatusCode } from "./tracing";
+import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId, SpanStatusCode } from "./tracing";
 import { openWorkflowDb, createJob } from "./workflow-db";
 
 // ---------------------------------------------------------------------------
@@ -465,6 +465,7 @@ export async function pollCycle(db: Database, channel: Server, wfDb?: Database):
         sourceRef: `gdrive:${file.id}`,
         idempotencyKey: `gdrive:${file.id}`,
         requiresApproval: false,
+        traceId: getActiveTraceId(),
       });
 
       // OTel span — links job creation to the poll cycle trace
