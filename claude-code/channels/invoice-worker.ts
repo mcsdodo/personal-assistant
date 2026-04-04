@@ -85,7 +85,7 @@ export interface ScanIntakeInput {
   file_id: string;
   /** Watch folder path (e.g. "techlab/invoicing") — segments become Paperless tags */
   watch_folder: string;
-  /** YYYY-MM tag from scan date — hard rule, not derived from document content */
+  /** YYYY-MM tag from scan date — fallback if document classifier has no doc_date */
   month_tag: string;
   /** Original filename from GDrive (for title fallback) */
   filename?: string;
@@ -1204,6 +1204,12 @@ export async function executeScanIntake(
       vendorForSpan = classification.vendor;
       span.setAttribute("invoice.vendor", classification.vendor);
 
+      // Derive month_tag from doc_date if available, fall back to scan date from input
+      const resolvedMonthTag = resolveMonthTag(null, null, classification.doc_date) ?? month_tag;
+      if (resolvedMonthTag !== month_tag) {
+        logger.log(`month_tag overridden: ${month_tag} → ${resolvedMonthTag} (from doc_date ${classification.doc_date})`);
+      }
+
       // Step 3: Resolve correspondent
       addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
       const correspondent = await resolveCorrespondent(classification.vendor, logger);
@@ -1252,7 +1258,7 @@ export async function executeScanIntake(
       const scanTagOwner = watch_folder.split("/").filter(Boolean)[0];
       const allTagNames = buildTagNames(
         { owner: scanTagOwner, doc_type: classification.doc_type, is_fuel: classification.is_fuel },
-        month_tag,
+        resolvedMonthTag,
       );
       const tagIds = await resolveTags(allTagNames, logger);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });

@@ -1526,6 +1526,71 @@ describe("executeScanIntake", () => {
     expect(output.title).toBe("Alza - 20260325_blok_tankovanie");
   });
 
+  test("month_tag derived from doc_date overrides scan date", async () => {
+    const filePath = join(tmpDir, "docdate_scan.pdf");
+    writeFileSync(filePath, Buffer.from("JVBER-fake-pdf"));
+
+    // Input has month_tag 2026-03 (from GDrive creation date)
+    // But doc_date is 2026-01-07 → should resolve to 2026-01
+    const input = makeScanInput({ file_path: filePath, month_tag: "2026-03" });
+    const job = createRunningScanJob(input, defaultScanClassification({
+      doc_date: "2026-01-07",
+    }));
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([
+        { id: 11, name: "accounting" },
+        { id: 3, name: "techlab" },
+      ])),
+      () => jsonResponse(rpcResponse({ id: 20 })),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      storagePathsMockHandler(),
+      () => new Response('"task-uuid-docdate"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry, notify);
+
+    const output = JSON.parse(getJob(db, job.id)!.output_json!);
+    expect(output.outcome).toBe("uploaded");
+    expect(output.tags).toContain("2026-01");
+    expect(output.tags).not.toContain("2026-03");
+  });
+
+  test("month_tag falls back to scan date when doc_date is null", async () => {
+    const filePath = join(tmpDir, "nodocdate_scan.pdf");
+    writeFileSync(filePath, Buffer.from("JVBER-fake-pdf"));
+
+    const input = makeScanInput({ file_path: filePath, month_tag: "2026-03" });
+    const job = createRunningScanJob(input, defaultScanClassification({
+      doc_date: null,
+    }));
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([
+        { id: 11, name: "accounting" },
+        { id: 3, name: "techlab" },
+      ])),
+      () => jsonResponse(rpcResponse({ id: 20 })),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      storagePathsMockHandler(),
+      () => new Response('"task-uuid-fallback"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry, notify);
+
+    const output = JSON.parse(getJob(db, job.id)!.output_json!);
+    expect(output.outcome).toBe("uploaded");
+    expect(output.tags).toContain("2026-03");
+  });
+
   test("fails with invalid input_json", async () => {
     const job = createJob(db, {
       workflowType: "scan_intake",
