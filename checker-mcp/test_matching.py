@@ -40,9 +40,11 @@ TAG_IDS = {
     "2026-02": 102,
     "2026-03": 103,
     "2026-04": 104,
-    "invoicing": 200,
+    "accounting": 200,
+    "account-statement": 201,
 }
-STATEMENT_TYPE_ID = 10
+INVOICE_TYPE_ID = 99  # document_type for invoices
+DOCUMENT_TYPE_ID = 10  # document_type for Document (statements, worklogs)
 TOTAL_AMOUNT_FIELD_ID = 50
 TOTAL_AMOUNT_ALT_FIELD_ID = 51
 
@@ -52,8 +54,8 @@ def _make_statement(doc_id, month_tag, content):
     return {
         "id": doc_id,
         "title": f"Statement {month_tag}",
-        "document_type": STATEMENT_TYPE_ID,
-        "tags": [TAG_IDS[month_tag], TAG_IDS["invoicing"]],
+        "document_type": DOCUMENT_TYPE_ID,
+        "tags": [TAG_IDS[month_tag], TAG_IDS["accounting"], TAG_IDS["account-statement"]],
         "content": content,
         "custom_fields": [],
     }
@@ -66,7 +68,7 @@ def _make_invoice(doc_id, title, filename, month_tag, amount):
         "title": title,
         "original_file_name": filename,
         "document_type": 99,
-        "tags": [TAG_IDS[month_tag], TAG_IDS["invoicing"]],
+        "tags": [TAG_IDS[month_tag], TAG_IDS["accounting"]],
         "content": "",
         "custom_fields": [
             {"field": TOTAL_AMOUNT_FIELD_ID, "value": str(amount)},
@@ -81,7 +83,7 @@ def _make_invoice_alt(doc_id, title, filename, month_tag, amount, alt_amount):
         "title": title,
         "original_file_name": filename,
         "document_type": 99,
-        "tags": [TAG_IDS[month_tag], TAG_IDS["invoicing"]],
+        "tags": [TAG_IDS[month_tag], TAG_IDS["accounting"]],
         "content": "",
         "custom_fields": [
             {"field": TOTAL_AMOUNT_FIELD_ID, "value": str(amount)},
@@ -97,7 +99,7 @@ def _make_invoice_no_field(doc_id, title, filename, month_tag, content):
         "title": title,
         "original_file_name": filename,
         "document_type": 99,
-        "tags": [TAG_IDS[month_tag], TAG_IDS["invoicing"]],
+        "tags": [TAG_IDS[month_tag], TAG_IDS["accounting"]],
         "content": content,
         "custom_fields": [],
     }
@@ -135,7 +137,6 @@ def _mock_client(documents_by_tag):
 def _collect(
     client,
     month,
-    invoicing_tag_id=TAG_IDS["invoicing"],
     doc_cache=None,
     global_matched_ids=None,
     alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID,
@@ -144,16 +145,17 @@ def _collect(
     return collect_month(
         client,
         month,
-        STATEMENT_TYPE_ID,
+        TAG_IDS["account-statement"],
+        TAG_IDS["accounting"],
+        INVOICE_TYPE_ID,
         TOTAL_AMOUNT_FIELD_ID,
         doc_cache if doc_cache is not None else {},
-        invoicing_tag_id,
         global_matched_ids,
         total_amount_alt_field_id=alt_field_id,
     )
 
 
-def _process_months(client, months, invoicing_tag_id=TAG_IDS["invoicing"]):
+def _process_months(client, months):
     """Replicate the webapp's oldest-first processing with shared global_matched_ids."""
     doc_cache = {}
     global_matched_ids = set()
@@ -161,10 +163,11 @@ def _process_months(client, months, invoicing_tag_id=TAG_IDS["invoicing"]):
         collect_month(
             client,
             m,
-            STATEMENT_TYPE_ID,
+            TAG_IDS["account-statement"],
+            TAG_IDS["accounting"],
+            INVOICE_TYPE_ID,
             TOTAL_AMOUNT_FIELD_ID,
             doc_cache,
-            invoicing_tag_id,
             global_matched_ids,
             total_amount_alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID,
         )
@@ -174,7 +177,7 @@ def _process_months(client, months, invoicing_tag_id=TAG_IDS["invoicing"]):
     return results
 
 
-def _process_months_with_warmup(client, months, invoicing_tag_id=TAG_IDS["invoicing"]):
+def _process_months_with_warmup(client, months):
     """Like _process_months but pre-processes MONTH_WINDOW months before the range.
 
     Replicates the webapp fix: pre-process earlier months to populate
@@ -187,10 +190,11 @@ def _process_months_with_warmup(client, months, invoicing_tag_id=TAG_IDS["invoic
         collect_month(
             client,
             month_offset(months[0], -i),
-            STATEMENT_TYPE_ID,
+            TAG_IDS["account-statement"],
+            TAG_IDS["accounting"],
+            INVOICE_TYPE_ID,
             TOTAL_AMOUNT_FIELD_ID,
             doc_cache,
-            invoicing_tag_id,
             global_matched_ids,
             total_amount_alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID,
         )
@@ -198,10 +202,11 @@ def _process_months_with_warmup(client, months, invoicing_tag_id=TAG_IDS["invoic
         collect_month(
             client,
             m,
-            STATEMENT_TYPE_ID,
+            TAG_IDS["account-statement"],
+            TAG_IDS["accounting"],
+            INVOICE_TYPE_ID,
             TOTAL_AMOUNT_FIELD_ID,
             doc_cache,
-            invoicing_tag_id,
             global_matched_ids,
             total_amount_alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID,
         )
@@ -725,7 +730,8 @@ class TestCollectMonthBasicMatching:
         client = MagicMock()
         client.get_tag_id.return_value = None
         result = collect_month(
-            client, "2099-01", STATEMENT_TYPE_ID, TOTAL_AMOUNT_FIELD_ID, {}
+            client, "2099-01", TAG_IDS["account-statement"], TAG_IDS["accounting"],
+            INVOICE_TYPE_ID, TOTAL_AMOUNT_FIELD_ID, {},
         )
         assert "No tag found" in result["header"]
         assert result["rows"] == []
@@ -992,10 +998,10 @@ class TestCollectMonthAmountSources:
         assert result["stats"]["ok"] == 1
 
 
-class TestCollectMonthInvoicingTagFilter:
-    """Only documents with the 'invoicing' tag should participate."""
+class TestCollectMonthAccountingTagFilter:
+    """Only documents with the 'accounting' tag should participate."""
 
-    def test_doc_without_invoicing_tag_excluded(self):
+    def test_doc_without_accounting_tag_excluded(self):
         stmt = _make_statement(
             900,
             "2026-01",
@@ -1004,7 +1010,7 @@ class TestCollectMonthInvoicingTagFilter:
             ),
         )
         inv = _make_invoice(1, "inv", "inv.pdf", "2026-01", 50.00)
-        # Remove the invoicing tag
+        # Remove the accounting tag — doc should be excluded from matching
         inv["tags"] = [TAG_IDS["2026-01"]]
         client = _mock_client(
             {
@@ -1623,15 +1629,16 @@ def _mock_client_for_pl(documents_by_tag):
 
 
 def _collect_pl(
-    client, year, inv_tag=TAG_IDS["invoicing"], alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID
+    client, year, alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID
 ):
     """Shorthand for collect_pl with test defaults."""
     return collect_pl(
         client,
         year,
-        STATEMENT_TYPE_ID,
+        TAG_IDS["account-statement"],
+        TAG_IDS["accounting"],
+        INVOICE_TYPE_ID,
         TOTAL_AMOUNT_FIELD_ID,
-        inv_tag,
         total_amount_alt_field_id=alt_field_id,
     )
 

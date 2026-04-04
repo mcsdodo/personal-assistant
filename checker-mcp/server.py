@@ -8,8 +8,9 @@ from mcp.server.fastmcp import FastMCP
 
 # match_invoices.py is copied into the same directory at Docker build time
 from match_invoices import (
-    DOCUMENT_TYPE_STATEMENT,
-    INVOICING_TAG_NAME,
+    ACCOUNTING_TAG_NAME,
+    ACCOUNT_STATEMENT_TAG_NAME,
+    INVOICE_TYPE_NAME,
     TOTAL_AMOUNT_ALT_FIELD_NAME,
     TOTAL_AMOUNT_FIELD_NAME,
     PaperlessClient,
@@ -33,16 +34,15 @@ class _ClientHolder:
         url = os.environ["PAPERLESS_URL"]
         token = os.environ["PAPERLESS_API_TOKEN"]
         self.client = PaperlessClient(url, token)
-        self.statement_type_id = self.client.get_document_type_id(
-            DOCUMENT_TYPE_STATEMENT
-        )
+        self.acct_stmt_tag_id = self.client.get_tag_id(ACCOUNT_STATEMENT_TAG_NAME)
+        self.accounting_tag_id = self.client.get_tag_id(ACCOUNTING_TAG_NAME)
+        self.invoice_type_id = self.client.get_document_type_id(INVOICE_TYPE_NAME)
         self.total_amount_field_id = self.client.get_custom_field_id(
             TOTAL_AMOUNT_FIELD_NAME
         )
         self.total_amount_alt_field_id = self.client.get_custom_field_id(
             TOTAL_AMOUNT_ALT_FIELD_NAME
         )
-        self.invoicing_tag_id = self.client.get_tag_id(INVOICING_TAG_NAME)
 
     @classmethod
     def get(cls):
@@ -73,10 +73,11 @@ def match_invoices(month: str) -> dict:
     result = collect_month(
         h.client,
         month,
-        h.statement_type_id,
+        h.acct_stmt_tag_id,
+        h.accounting_tag_id,
+        h.invoice_type_id,
         h.total_amount_field_id,
         doc_cache,
-        h.invoicing_tag_id,
         global_matched_ids,
         total_amount_alt_field_id=h.total_amount_alt_field_id,
     )
@@ -106,10 +107,11 @@ def match_invoices_range(month_from: str, month_to: str) -> list[dict]:
         collect_month(
             h.client,
             m,
-            h.statement_type_id,
+            h.acct_stmt_tag_id,
+            h.accounting_tag_id,
+            h.invoice_type_id,
             h.total_amount_field_id,
             doc_cache,
-            h.invoicing_tag_id,
             global_matched_ids,
             total_amount_alt_field_id=h.total_amount_alt_field_id,
         )
@@ -132,9 +134,10 @@ def get_pl_summary(year: int) -> dict:
     return collect_pl(
         h.client,
         year,
-        h.statement_type_id,
+        h.acct_stmt_tag_id,
+        h.accounting_tag_id,
+        h.invoice_type_id,
         h.total_amount_field_id,
-        h.invoicing_tag_id,
         total_amount_alt_field_id=h.total_amount_alt_field_id,
     )
 
@@ -156,10 +159,11 @@ def get_month_status(month: str | None = None) -> dict:
     result = collect_month(
         h.client,
         month,
-        h.statement_type_id,
+        h.acct_stmt_tag_id,
+        h.accounting_tag_id,
+        h.invoice_type_id,
         h.total_amount_field_id,
         doc_cache,
-        h.invoicing_tag_id,
         global_matched_ids,
         total_amount_alt_field_id=h.total_amount_alt_field_id,
     )

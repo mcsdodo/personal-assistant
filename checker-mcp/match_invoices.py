@@ -30,8 +30,9 @@ from dotenv import load_dotenv
 # ── Configuration ──────────────────────────────────────────────────────────
 
 PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "")
-DOCUMENT_TYPE_STATEMENT = "Account Statement"
-INVOICING_TAG_NAME = "invoicing"  # only docs with this tag are matched
+ACCOUNTING_TAG_NAME = "accounting"  # docs in bookkeeping cycle (both directions)
+ACCOUNT_STATEMENT_TAG_NAME = "account-statement"  # bank statements
+INVOICE_TYPE_NAME = "Invoice"  # only Invoice-typed docs are matched as candidates
 MONTH_WINDOW = 1  # +/- months for cross-matching
 TOTAL_AMOUNT_FIELD_NAME = "total_amount"  # Paperless custom field name
 TOTAL_AMOUNT_ALT_FIELD_NAME = "total_amount_alt"  # alt amount for split payments
@@ -597,10 +598,11 @@ def find_matching_invoice(
 def collect_month(
     client: PaperlessClient,
     yyyy_mm: str,
-    statement_type_id: int,
+    acct_stmt_tag_id: int,
+    accounting_tag_id: int,
+    invoice_type_id: int,
     total_amount_field_id: int | None,
     doc_cache: dict,
-    invoicing_tag_id: int | None = None,
     global_matched_ids: set | None = None,
     total_amount_alt_field_id: int | None = None,
 ) -> dict:
@@ -625,11 +627,13 @@ def collect_month(
         result["header"] = f"No tag found for {yyyy_mm}, skipping."
         return result
 
-    statements = client.get_documents(
-        tags__id=tag_id, document_type__id=statement_type_id
-    )
+    # Statements: identified by account-statement tag (not document type)
+    if tag_id not in doc_cache:
+        doc_cache[tag_id] = client.get_documents(tags__id=tag_id)
+    statements = [d for d in doc_cache[tag_id] if acct_stmt_tag_id in d.get("tags", [])]
 
-    # Fetch invoices for this month + window (only docs with "invoicing" tag)
+    # Fetch invoices for this month + window
+    # Three-part filter: accounting tag + Invoice type + NOT account-statement
     # Ordered oldest-first so older unclaimed invoices are matched before same-month.
     # Real-world pattern: invoices issued month M, paid in month M+1.
     invoice_docs, seen_ids = [], set()
@@ -642,11 +646,12 @@ def collect_month(
         for doc in doc_cache[wm_tag_id]:
             if (
                 doc["id"] not in seen_ids
-                and doc.get("document_type") != statement_type_id
+                and accounting_tag_id in doc.get("tags", [])
+                and doc.get("document_type") == invoice_type_id
+                and acct_stmt_tag_id not in doc.get("tags", [])
             ):
-                if invoicing_tag_id is None or invoicing_tag_id in doc.get("tags", []):
-                    seen_ids.add(doc["id"])
-                    invoice_docs.append(doc)
+                seen_ids.add(doc["id"])
+                invoice_docs.append(doc)
 
     # Extract amounts (priority: total_amount custom field > regex)
     for inv in invoice_docs:
@@ -953,9 +958,10 @@ def filter_resolved_unmatched(results: list[dict]) -> None:
 def collect_pl(
     client: PaperlessClient,
     year: int,
-    statement_type_id: int,
+    acct_stmt_tag_id: int,
+    accounting_tag_id: int,
+    invoice_type_id: int,
     total_amount_field_id: int | None,
-    invoicing_tag_id: int | None,
     total_amount_alt_field_id: int | None = None,
 ) -> dict:
     """Collect P&L data for a given year.
@@ -975,10 +981,11 @@ def collect_pl(
         collect_month(
             client,
             m,
-            statement_type_id,
+            acct_stmt_tag_id,
+            accounting_tag_id,
+            invoice_type_id,
             total_amount_field_id,
             doc_cache,
-            invoicing_tag_id,
             global_matched_ids,
             total_amount_alt_field_id=total_amount_alt_field_id,
         )
@@ -1272,28 +1279,38 @@ def main():
     client = PaperlessClient(PAPERLESS_URL, token)
     tag_map = client.get_all_tags()
 
-    statement_type_id = client.get_document_type_id(DOCUMENT_TYPE_STATEMENT)
-    if statement_type_id is None:
+    acct_stmt_tag_id = client.get_tag_id(ACCOUNT_STATEMENT_TAG_NAME)
+    if acct_stmt_tag_id is None:
         print(
-            f"Error: document type '{DOCUMENT_TYPE_STATEMENT}' not found",
+            f"Error: tag '{ACCOUNT_STATEMENT_TAG_NAME}' not found",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    accounting_tag_id = client.get_tag_id(ACCOUNTING_TAG_NAME)
+    if accounting_tag_id is None:
+        print(
+            f"Error: tag '{ACCOUNTING_TAG_NAME}' not found",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    invoice_type_id = client.get_document_type_id(INVOICE_TYPE_NAME)
+    if invoice_type_id is None:
+        print(
+            f"Error: document type '{INVOICE_TYPE_NAME}' not found",
             file=sys.stderr,
         )
         sys.exit(1)
 
     total_amount_field_id = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     total_amount_alt_field_id = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
-    invoicing_tag_id = client.get_tag_id(INVOICING_TAG_NAME)
-    if invoicing_tag_id is None:
-        print(
-            f"Warning: tag '{INVOICING_TAG_NAME}' not found, matching all documents",
-            file=sys.stderr,
-        )
 
     if args.month:
         months = [args.month]
     elif args.all:
         # Process all months that have statements + current month
-        statements = client.get_documents(document_type__id=statement_type_id)
+        statements = client.get_documents(tags__id=acct_stmt_tag_id)
         month_tags = set()
         for stmt in statements:
             for tid in stmt.get("tags", []):
@@ -1334,10 +1351,11 @@ def main():
             collect_month(
                 client,
                 month_offset(months[0], -i),
-                statement_type_id,
+                acct_stmt_tag_id,
+                accounting_tag_id,
+                invoice_type_id,
                 total_amount_field_id,
                 doc_cache,
-                invoicing_tag_id,
                 global_matched_ids,
                 total_amount_alt_field_id=total_amount_alt_field_id,
             )
@@ -1347,10 +1365,11 @@ def main():
         collect_month(
             client,
             m,
-            statement_type_id,
+            acct_stmt_tag_id,
+            accounting_tag_id,
+            invoice_type_id,
             total_amount_field_id,
             doc_cache,
-            invoicing_tag_id,
             global_matched_ids,
             total_amount_alt_field_id=total_amount_alt_field_id,
         )
