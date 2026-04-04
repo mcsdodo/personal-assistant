@@ -10,7 +10,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { existsSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
 
 import { getTracer, getMeter, withSpan, SpanStatusCode } from "./tracing";
 import type { Span } from "./tracing";
@@ -72,12 +72,12 @@ export interface InvoiceClassification {
   subtitle: string | null;
   total_amount: number | null;
   currency: string | null;
-  /** Email sender address — included in classify_email result for invoice link extraction */
-  sender?: string;
-  /** Email subject — included in classify_email result for month_tag derivation */
-  subject?: string;
-  /** Email received timestamp ISO — included in classify_email result for month_tag fallback */
-  received_at?: string;
+  /** Email subject — required in classify_email result for month_tag and title */
+  subject: string;
+  /** Email received timestamp ISO — required in classify_email result for month_tag fallback */
+  received_at: string;
+  /** Email sender — required in classify_email result for link extraction */
+  sender: string;
 }
 
 export interface ScanIntakeInput {
@@ -217,7 +217,7 @@ export async function executeInvoiceIntake(
       const classification = cachedEmailClass.result as InvoiceClassification;
       vendorForSpan = classification.vendor;
       span.setAttribute("invoice.vendor", classification.vendor);
-      span.setAttribute("invoice.download_strategy", classification.download_strategy ?? "unknown");
+      span.setAttribute("invoice.download_strategy", String(classification.download_strategy));
 
       // Handle ignore action
       if (classification.action === "ignore") {
@@ -255,10 +255,17 @@ export async function executeInvoiceIntake(
         });
       }
 
+      // Save downloaded file to disk for document-classifier (needs visual inspection)
+      const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/workspace/downloads";
+      const filePath = input.file_path ?? `${DOWNLOAD_DIR}/${file.filename}`;
+      if (!input.file_path) {
+        mkdirSync(DOWNLOAD_DIR, { recursive: true });
+        writeFileSync(filePath, Buffer.from(file.content_base64, "base64"));
+      }
+
       // Step 1.5: Document classification via channel (non-blocking)
       const cachedDocClassification = completedSteps.get("classify_document");
       if (!cachedDocClassification?.result) {
-        const filePath = input.file_path ?? `(downloaded: ${file.filename})`;
         requestClassification(db, job.id, "classify_document", { file_path: filePath });
         if (channel) {
           await channel.notification({
@@ -287,10 +294,10 @@ export async function executeInvoiceIntake(
       logger.log(`Merged doc classification (owner=${merged.owner})`);
 
       // Step 3.5: Derive month_tag from classification metadata
-      const docDate = (docResult as any)?.doc_date ?? null;
+      const docDate = (docResult as { doc_date?: string }).doc_date ?? null;
       const monthTag = resolveMonthTag(
-        classification.subject ?? null,
-        classification.received_at ?? null,
+        classification.subject,
+        classification.received_at,
         docDate,
       );
 
@@ -624,14 +631,12 @@ async function downloadViaLink(
   logger: WorkerLogger,
 ): Promise<DownloadedFile> {
   const { email_source: source, message_id: messageId } = input;
-  const sender = classification.sender ?? "";
-  const subject = classification.subject ?? "";
+  const { sender, subject } = classification;
   logger.log(`Downloading via link extraction from ${source} message ${messageId}`);
 
   // 1. Extract invoice links from email HTML
   let links: InvoiceLink[] = [];
-
-  if (links.length === 0) {
+  {
     let html: string | undefined;
 
     if (source === "outlook") {
@@ -651,7 +656,7 @@ async function downloadViaLink(
     }
 
     if (html) {
-      links = extractInvoiceLinks(html, sender ?? "", subject ?? "");
+      links = extractInvoiceLinks(html, sender, subject);
     }
   }
 
