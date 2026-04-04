@@ -59,7 +59,7 @@ Tools:
 
 The workflow MCP adds durable background-job primitives:
 - `create_invoice_intake_job(email_source, message_id, force?)` — create an invoice processing job. The worker handles the full pipeline (classification, download, upload). Set `force=true` to reprocess.
-- `create_scan_intake_job(file_id, classification, filename?, month_tag?, watch_folder?, file_path?, force?)` — create a scan processing job. Set `force=true` to reprocess.
+- `create_scan_intake_job(file_id, watch_folder, month_tag, filename?, force?)` — create a scan processing job. The worker handles classification via channel, download, and upload. Set `force=true` to reprocess.
 - `get_job(job_id)` — fetch job by ID
 - `list_jobs(state?, workflow_type?, limit?)` — list recent jobs
 - `get_job_events(job_id)` — full event history for a job
@@ -112,18 +112,17 @@ Each event has these meta fields:
 - `watch_folder`: which folder the file came from (e.g. `techlab/invoicing`) — pass to `create_scan_intake_job`
 
 **Processing pipeline:**
-1. **Download to disk** — use gmail MCP `get_drive_file_download_url` with the `file_id` and `user_google_email` (read it once at start via `get_env("GMAIL_EMAIL")` on file-ops MCP). Then use `download_file(url, filename)` on file-ops MCP to save the file locally. This preserves the visual content for classification. **Always pass `user_google_email` on every Gmail/Drive MCP call.**
-2. **Classify** — invoke the `document-classifier` subagent with the local file path (e.g., `/workspace/downloads/20260325_blok_tankovanie.pdf`). Before invoking, replace the `${...}` placeholders in the prompt with business identifier env vars (use `get_env` on file-ops MCP for `BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`). The subagent uses the Read tool to visually inspect the PDF/image and returns vendor, total_amount, doc_type, owner, etc.
-3. **Create job** — call `create_scan_intake_job` on workflow MCP with the classification result, file_id, `month_tag`, `watch_folder`, and `file_path` (the local download path). The worker reads from disk, handles dedup, upload, and file move. Tags are derived from `watch_folder` path segments (e.g. `techlab/invoicing` → tags `[techlab, invoicing]`).
-4. **Monitor job** — poll with `get_job(job_id)`:
+1. **Create job:** `create_scan_intake_job(file_id, watch_folder, month_tag, filename)` — the worker handles the full pipeline
+2. **Respond to classification requests** — when you receive a `classify_document` channel event from the worker, run the document-classifier haiku subagent and call `submit_classification` (same as email flow)
+3. **Monitor job** — poll with `get_job(job_id)`:
    - `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
    - `state: completed` with `outcome: duplicate` → silently skip (worker does not notify)
    - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response
-   - `state: retryable` → transient failure, worker will retry automatically (up to 3 attempts with exponential backoff). No action needed.
-   - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Re-download the file, re-run document-classifier, and create a fresh job with `create_scan_intake_job(..., force: true)`.
-5. **Record** — call `update_gdrive_scan_status` with the outcome
+   - `state: retryable` → transient failure, worker will retry automatically. No action needed.
+   - `state: failed` → permanent failure, worker sends Telegram notification automatically. Create a fresh job with `force: true`.
+4. **Record** — call `update_gdrive_scan_status` with the outcome
 
-The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag, not the document content date. After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure (permanent), it moves to `errors/`. Retryable failures do NOT move the file.
+The `month_tag` is a hard rule — always use the scan date, not the document content date. The worker downloads from GDrive, requests classification via channel, then uploads. After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure (permanent), it moves to `errors/`.
 
 ## Email Processing Pipeline
 

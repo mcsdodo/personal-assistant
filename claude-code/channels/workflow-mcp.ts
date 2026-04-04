@@ -114,31 +114,20 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "create_scan_intake_job",
-      description: "Create a durable workflow job for a scanned document from Google Drive. Set force=true to reprocess a file that already has a completed job.",
+      description:
+        "Create a durable workflow job for a scanned document from Google Drive. " +
+        "The worker handles the full pipeline: download, classification (via channel), upload. " +
+        "Set force=true to reprocess a file that already has a completed job.",
       inputSchema: {
         type: "object" as const,
         properties: {
           file_id: { type: "string", description: "Google Drive file ID" },
-          filename: { type: "string", description: "Original filename" },
-          month_tag: { type: "string", description: "YYYY-MM tag derived from scan date" },
-          classification: {
-            type: "object",
-            description: "Classification result from scan-classifier agent",
-          },
-          file_path: {
-            type: "string",
-            description: "Path to pre-downloaded file on disk",
-          },
-          watch_folder: {
-            type: "string",
-            description: "Watch folder path (e.g. techlab/invoicing) — segments become Paperless tags",
-          },
-          force: {
-            type: "boolean",
-            description: "Bypass idempotency check to reprocess a file that already has a completed job",
-          },
+          watch_folder: { type: "string", description: "Watch folder path (e.g. techlab/invoicing)" },
+          month_tag: { type: "string", description: "YYYY-MM tag from scan date (hard rule)" },
+          filename: { type: "string", description: "Original filename from GDrive" },
+          force: { type: "boolean", description: "Bypass idempotency check" },
         },
-        required: ["file_id", "classification"],
+        required: ["file_id", "watch_folder", "month_tag"],
       },
     },
     {
@@ -283,23 +272,22 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "create_scan_intake_job": {
         const fileId = args?.file_id as string;
-        const classification = args?.classification as Record<string, unknown>;
-        if (!fileId || !classification) {
-          return { content: [text("Error: file_id and classification are required")], isError: true };
+        const watchFolder = args?.watch_folder as string;
+        const monthTag = args?.month_tag as string;
+        if (!fileId || !watchFolder || !monthTag) {
+          return { content: [text("Error: file_id, watch_folder, and month_tag are required")], isError: true };
         }
 
         const inputPayload = {
           source: "gdrive",
           file_id: fileId,
+          watch_folder: watchFolder,
+          month_tag: monthTag,
           filename: (args?.filename as string | undefined) ?? undefined,
-          month_tag: (args?.month_tag as string | undefined) ?? undefined,
-          watch_folder: (args?.watch_folder as string | undefined) ?? undefined,
-          classification,
-          file_path: (args?.file_path as string | undefined) ?? undefined,
         };
 
-        const forceS = Boolean(args?.force);
-        const idempotencyKey = forceS
+        const force = Boolean(args?.force);
+        const idempotencyKey = force
           ? `gdrive:${fileId}:force-${Date.now()}`
           : `gdrive:${fileId}`;
 
@@ -310,7 +298,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           idempotencyKey,
           requiresApproval: false,
         });
-        return { content: [text(JSON.stringify(job, null, 2))] };
+        return { content: [text(job)] };
       }
 
       case "get_job": {

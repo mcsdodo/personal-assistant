@@ -96,7 +96,7 @@ function seedClassificationSteps(
   });
 }
 
-/** Build a minimal valid ScanIntakeInput */
+/** Build a minimal valid ScanIntakeInput (V2: no classification) */
 function makeScanInput(overrides: Partial<ScanIntakeInput> = {}): ScanIntakeInput {
   return {
     source: "gdrive",
@@ -104,18 +104,23 @@ function makeScanInput(overrides: Partial<ScanIntakeInput> = {}): ScanIntakeInpu
     filename: "scan_lifecycle.pdf",
     month_tag: "2026-03",
     watch_folder: "techlab/accounting",
-    classification: {
-      doc_type: "invoice",
-      vendor: "Orange",
-      total_amount: 29.99,
-      currency: "EUR",
-      is_fuel: false,
-      owner: "techlab",
-      confidence: "high",
-      order_id: "OR2026040001",
-      subtitle: null,
-    },
     ...overrides,
+  };
+}
+
+/** Default scan classification (seeded as step_completed event) */
+function defaultScanClassification(): Record<string, unknown> {
+  return {
+    doc_type: "invoice",
+    vendor: "Orange",
+    total_amount: 29.99,
+    currency: "EUR",
+    is_fuel: false,
+    owner: "techlab",
+    confidence: "high",
+    order_id: "OR2026040001",
+    subtitle: null,
+    doc_date: "2026-03-20",
   };
 }
 
@@ -339,6 +344,11 @@ describe("workflow lifecycle: scan_intake", () => {
       inputJson: JSON.stringify(input),
       sourceRef: `gdrive:${input.file_id}`,
       idempotencyKey: `gdrive:${input.file_id}`,
+    });
+    // Seed classification step (simulates channel roundtrip)
+    addJobEvent(db, job.id, "step_completed", {
+      step: "classify_document",
+      result: defaultScanClassification(),
     });
 
     expect(getJob(db, job.id)!.state).toBe("queued");

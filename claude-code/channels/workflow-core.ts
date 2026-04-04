@@ -120,7 +120,7 @@ export async function executeNextJob(
           await executeInvoiceIntake(db, job, logger, registry!, notify, channel);
           break;
         case "scan_intake":
-          await executeScanIntake(db, job, logger, registry!, notify);
+          await executeScanIntake(db, job, logger, registry!, notify, channel);
           break;
         default:
           failJob(db, job.id, {

@@ -83,23 +83,29 @@ export interface InvoiceClassification {
 export interface ScanIntakeInput {
   source: "gdrive";
   file_id: string;
-  filename?: string;
-  month_tag?: string;
   /** Watch folder path (e.g. "techlab/invoicing") — segments become Paperless tags */
-  watch_folder?: string;
-  /** Path to pre-downloaded file on disk */
+  watch_folder: string;
+  /** YYYY-MM tag from scan date — hard rule, not derived from document content */
+  month_tag: string;
+  /** Original filename from GDrive (for title fallback) */
+  filename?: string;
+  /** Path to pre-downloaded file on disk (worker reads instead of downloading from GDrive) */
   file_path?: string;
-  classification: {
-    doc_type: string;
-    vendor: string;
-    total_amount: number | null;
-    currency: string | null;
-    is_fuel: boolean;
-    owner?: "techlab" | "personal";
-    confidence: string;
-    order_id: string | null;
-    subtitle: string | null;
-  };
+}
+
+/** Classification fields produced by the document-classifier for scan intake.
+ *  Stored in step_completed event, read back via getCompletedSteps. */
+export interface ScanClassification {
+  doc_type: string;
+  vendor: string;
+  total_amount: number | null;
+  currency: string | null;
+  is_fuel: boolean;
+  owner?: "techlab" | "personal";
+  confidence: string;
+  order_id: string | null;
+  subtitle: string | null;
+  doc_date: string | null;
 }
 
 export interface InvoiceIntakeResult {
@@ -1109,6 +1115,7 @@ export async function executeScanIntake(
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
   notify?: NotifyFn,
+  channel?: Server,
 ): Promise<void> {
   seedCounterFromDb(db);
   const input = parseJobJson<ScanIntakeInput>(job.input_json);
@@ -1117,42 +1124,87 @@ export async function executeScanIntake(
     return;
   }
 
-  const { classification, file_id } = input;
-  const watchFolder = input.watch_folder ?? "techlab/invoicing";
+  const { file_id, watch_folder, month_tag } = input;
 
-  await tracer.startActiveSpan(`invoice-worker.execute ${classification.vendor}`, {
+  await tracer.startActiveSpan(`scan-worker.execute`, {
     attributes: {
       "job.id": job.id,
       "job.type": "scan_intake",
-      "invoice.vendor": classification.vendor,
       "source": "gdrive",
-      "gdrive.watch_folder": watchFolder,
+      "gdrive.watch_folder": watch_folder,
     },
   }, async (span: Span) => {
     let outcome = "unknown";
+    let vendorForSpan = "unknown";
     try {
-      // Step 1: Get file — prefer disk, fallback to GDrive download
+      const completedSteps = getCompletedSteps(db, job.id);
+      const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/workspace/downloads";
+
+      // Step 1: Download file from GDrive (or read from disk)
+      const cachedDownload = completedSteps.get("download") ?? completedSteps.get("read_from_disk");
+      let filePath: string;
       let file: DownloadedFile;
-      if (input.file_path && existsSync(input.file_path)) {
-        addJobEvent(db, job.id, "step_started", { step: "read_from_disk", file_path: input.file_path });
-        file = readFileAsDownload(input.file_path);
+
+      if (cachedDownload) {
+        filePath = (cachedDownload as { file_path?: string }).file_path
+          ?? `${DOWNLOAD_DIR}/${(cachedDownload as { filename?: string }).filename ?? "unknown"}`;
+        file = readFileAsDownload(filePath);
+        logger.log(`Resuming: reusing file from ${filePath}`);
+      } else if (input.file_path && existsSync(input.file_path)) {
+        filePath = input.file_path;
+        file = readFileAsDownload(filePath);
+        addJobEvent(db, job.id, "step_started", { step: "read_from_disk", file_path: filePath });
         addJobEvent(db, job.id, "step_completed", {
           step: "read_from_disk",
+          file_path: filePath,
           filename: file.filename,
           size: file.size,
         });
       } else {
         addJobEvent(db, job.id, "step_started", { step: "download", source: "gdrive" });
         file = await downloadFromGdrive(file_id, input.filename, logger);
+        mkdirSync(DOWNLOAD_DIR, { recursive: true });
+        filePath = `${DOWNLOAD_DIR}/${file.filename}`;
+        writeFileSync(filePath, Buffer.from(file.content_base64, "base64"));
         addJobEvent(db, job.id, "step_completed", {
           step: "download",
+          file_path: filePath,
           filename: file.filename,
           size: file.size,
           content_type: file.content_type,
         });
       }
 
-      // Step 2: Resolve correspondent
+      // Step 2: Document classification via channel
+      const cachedDocClassification = completedSteps.get("classify_document");
+      if (!cachedDocClassification?.result) {
+        requestClassification(db, job.id, "classify_document", { file_path: filePath });
+        if (channel) {
+          await channel.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: `Classification request: run document-classifier on the scanned file and call submit_classification.`,
+              meta: {
+                event_type: "classify_document",
+                job_id: job.id,
+                file_path: filePath,
+                source: "gdrive",
+              },
+            },
+          });
+        }
+        logger.log(`Job ${job.id} parked for document classification`);
+        outcome = "awaiting_classification";
+        span.setAttribute("invoice.outcome", "awaiting_classification");
+        span.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
+
+      const classification = cachedDocClassification.result as ScanClassification;
+      vendorForSpan = classification.vendor;
+      span.setAttribute("invoice.vendor", classification.vendor);
+
+      // Step 3: Resolve correspondent
       addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
       const correspondent = await resolveCorrespondent(classification.vendor, logger);
       addJobEvent(db, job.id, "step_completed", {
@@ -1160,29 +1212,20 @@ export async function executeScanIntake(
         correspondent,
       });
 
-      // Step 3: Deduplicate (only if order_id exists)
+      // Step 4: Deduplicate
       addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
-      const dedupeResult = await checkDuplicate(
-        classification,
-        correspondent,
-        logger,
-        registry,
-      );
+      const dedupeResult = await checkDuplicate(classification, correspondent, logger, registry);
       if (dedupeResult) {
-        addJobEvent(db, job.id, "step_completed", {
-          step: "deduplicate",
-          ...dedupeResult,
-        });
+        addJobEvent(db, job.id, "step_completed", { step: "deduplicate", ...dedupeResult });
 
         if (dedupeResult.outcome === "duplicate") {
-          const result: InvoiceIntakeResult = {
+          completeJob(db, job.id, {
             outcome: "duplicate",
             duplicate_of: dedupeResult.existing_id,
             duplicate_message: dedupeResult.message,
-          };
-          completeJob(db, job.id, result);
-          await moveGdriveFile(file_id, "processed", watchFolder, logger);
-          logger.log(`Job ${job.id} completed: duplicate of doc #${dedupeResult.existing_id}`);
+          });
+          await moveGdriveFile(file_id, "processed", watch_folder, logger);
+          logger.log(`Job ${job.id} completed: duplicate`);
           outcome = "duplicate";
           span.setAttribute("invoice.outcome", "duplicate");
           span.setStatus({ code: SpanStatusCode.OK });
@@ -1201,72 +1244,47 @@ export async function executeScanIntake(
           return;
         }
       } else {
-        addJobEvent(db, job.id, "step_completed", {
-          step: "deduplicate",
-          outcome: "no_duplicate",
-        });
+        addJobEvent(db, job.id, "step_completed", { step: "deduplicate", outcome: "no_duplicate" });
       }
 
-      // Step 4: Resolve tags — owner from watch folder LEVEL1 (e.g. techlab/accounting → techlab)
+      // Step 5: Resolve tags — owner from watch folder LEVEL1
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-      const segments = (input.watch_folder ?? "techlab/accounting").split("/").filter(Boolean);
-      const scanTagOwner = segments[0]; // "techlab" or "personal"
+      const scanTagOwner = watch_folder.split("/").filter(Boolean)[0];
       const allTagNames = buildTagNames(
         { owner: scanTagOwner, doc_type: classification.doc_type, is_fuel: classification.is_fuel },
-        input.month_tag ?? null,
+        month_tag,
       );
       const tagIds = await resolveTags(allTagNames, logger);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
 
-      // Step 5: Resolve document type
+      // Step 6: Resolve document type + storage path
       const documentTypeId = await resolveDocumentType(classification.doc_type, logger);
+      const storagePathId = await resolveStoragePath(scanTagOwner, classification.doc_type, logger);
 
-      // Step 5b: Resolve storage path
-      const scanOwner = (input.watch_folder ?? "techlab/accounting").split("/")[0];
-      const storagePathId = await resolveStoragePath(scanOwner, classification.doc_type, logger);
-
-      // Step 6: Upload to Paperless
+      // Step 7: Upload to Paperless
       addJobEvent(db, job.id, "step_started", { step: "upload" });
-      const title = buildScanTitle(
-        classification.vendor,
-        classification.order_id,
-        classification.subtitle,
-        input.filename,
-      );
+      const title = buildScanTitle(classification.vendor, classification.order_id, classification.subtitle, input.filename);
       const uploadResult = await uploadToPaperless({
-        title,
-        file,
-        correspondentId: correspondent.id,
-        tagIds,
-        documentTypeId,
-        storagePathId,
-        totalAmount: classification.total_amount,
-        orderId: classification.order_id,
+        title, file,
+        correspondentId: correspondent.id, tagIds, documentTypeId, storagePathId,
+        totalAmount: classification.total_amount, orderId: classification.order_id,
       }, logger);
-      addJobEvent(db, job.id, "step_completed", {
-        step: "upload",
-        ...uploadResult,
-      });
+      addJobEvent(db, job.id, "step_completed", { step: "upload", ...uploadResult });
 
-      // Step 7: Set custom fields (total_amount, order_id) if available
+      // Step 8: Set custom fields
       if (classification.total_amount != null || classification.order_id) {
         addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
         const cfResult = await setDocumentCustomFields(
-          uploadResult.task_uuid,
-          classification.total_amount,
-          classification.order_id,
-          logger,
-          registry,
+          uploadResult.task_uuid, classification.total_amount, classification.order_id, logger, registry,
         );
         addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
       }
 
-      // Step 8: Move GDrive file to Processed/
-      await moveGdriveFile(file_id, "processed", watchFolder, logger);
+      // Step 9: Move GDrive file to Processed/
+      await moveGdriveFile(file_id, "processed", watch_folder, logger);
 
       const result: InvoiceIntakeResult = {
-        outcome: "uploaded",
-        title,
+        outcome: "uploaded", title,
         paperless_document_id: uploadResult.document_id,
         correspondent: correspondent.name,
         tags: allTagNames,
@@ -1300,19 +1318,14 @@ export async function executeScanIntake(
         span.setAttribute("invoice.outcome", "retryable");
       } else {
         failJob(db, job.id, errPayload);
-        await moveGdriveFile(file_id, "errors", watchFolder, logger).catch((moveErr) => {
+        await moveGdriveFile(file_id, "errors", watch_folder, logger).catch((moveErr) => {
           logger.log(`Failed to move file to errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
         });
         logger.log(`Job ${job.id} failed permanently: ${message}`);
         if (notify) {
           const msg = formatNotification({
-            outcome: "failed",
-            vendor: classification.vendor,
-            total_amount: classification.total_amount,
-            currency: classification.currency,
-            doc_type: classification.doc_type,
-            owner: classification.owner ?? null,
-            error: message,
+            outcome: "failed", vendor: vendorForSpan,
+            total_amount: null, currency: null, doc_type: null, owner: null, error: message,
           });
           if (msg) await notify(msg).catch(() => {});
         }
@@ -1322,7 +1335,7 @@ export async function executeScanIntake(
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       span.recordException(error instanceof Error ? error : new Error(message));
     } finally {
-      span.updateName(`invoice-worker.execute ${classification.vendor} → ${outcome}`);
+      span.updateName(`scan-worker.execute ${vendorForSpan} → ${outcome}`);
       span.end();
     }
   });

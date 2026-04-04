@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { executeInvoiceIntake, executeScanIntake, type InvoiceIntakeInput, type InvoiceClassification, type ScanIntakeInput } from "./invoice-worker";
+import { executeInvoiceIntake, executeScanIntake, type InvoiceIntakeInput, type InvoiceClassification, type ScanIntakeInput, type ScanClassification } from "./invoice-worker";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 import {
@@ -1108,7 +1108,7 @@ describe("invoice-worker channel classification flow", () => {
 
 // ── Scan intake helpers ─────────────────────────────────────────────────
 
-/** Build a minimal valid ScanIntakeInput */
+/** Build a minimal valid ScanIntakeInput (no classification — that comes via step_completed) */
 function makeScanInput(overrides: Partial<ScanIntakeInput> = {}): ScanIntakeInput {
   return {
     source: "gdrive",
@@ -1116,23 +1116,33 @@ function makeScanInput(overrides: Partial<ScanIntakeInput> = {}): ScanIntakeInpu
     filename: "scan_invoice.pdf",
     month_tag: "2026-03",
     watch_folder: "techlab/invoicing",
-    classification: {
-      doc_type: "invoice",
-      vendor: "Alza",
-      total_amount: 59.99,
-      currency: "EUR",
-      is_fuel: false,
-      owner: "techlab",
-      confidence: "high",
-      order_id: "FA2026030001",
-      subtitle: null,
-    },
     ...overrides,
   };
 }
 
-/** Create a scan_intake job and set it to running */
-function createRunningScanJob(input: ScanIntakeInput): JobRow {
+/** Default scan classification result (what the document-classifier returns via submit_classification) */
+function defaultScanClassification(overrides: Partial<ScanClassification> = {}): ScanClassification {
+  return {
+    doc_type: "invoice",
+    vendor: "Alza",
+    total_amount: 59.99,
+    currency: "EUR",
+    is_fuel: false,
+    owner: "techlab",
+    confidence: "high",
+    order_id: "FA2026030001",
+    subtitle: null,
+    doc_date: null,
+    ...overrides,
+  };
+}
+
+/** Create a scan_intake job, set it to running, and seed a classify_document step_completed event.
+ *  Same pattern as createRunningJob for invoice intake. */
+function createRunningScanJob(
+  input: ScanIntakeInput,
+  scanClass?: ScanClassification,
+): JobRow {
   const job = createJob(db, {
     workflowType: "scan_intake",
     inputJson: JSON.stringify(input),
@@ -1142,6 +1152,11 @@ function createRunningScanJob(input: ScanIntakeInput): JobRow {
   db.prepare("UPDATE jobs SET state = 'running', started_at = datetime('now') WHERE id = ?").run(
     job.id,
   );
+  // Seed classification step (production path: channel roundtrip completed)
+  addJobEvent(db, job.id, "step_completed", {
+    step: "classify_document",
+    result: scanClass ?? defaultScanClassification(),
+  });
   return getJob(db, job.id)!;
 }
 
@@ -1273,15 +1288,11 @@ describe("executeScanIntake", () => {
     const filePath = join(tmpDir, "unknown_vendor.pdf");
     writeFileSync(filePath, Buffer.from("fake-pdf"));
 
-    const input = makeScanInput({
-      file_path: filePath,
-      classification: {
-        ...makeScanInput().classification,
-        vendor: "NewCorp",
-        order_id: null,
-      },
-    });
-    const job = createRunningScanJob(input);
+    const input = makeScanInput({ file_path: filePath });
+    const job = createRunningScanJob(input, defaultScanClassification({
+      vendor: "NewCorp",
+      order_id: null,
+    }));
 
     mockFetch(
       // 1. list_correspondents → no match
@@ -1321,15 +1332,11 @@ describe("executeScanIntake", () => {
     const filePath = join(tmpDir, "fail_scan.pdf");
     writeFileSync(filePath, Buffer.from("fake-pdf"));
 
-    const input = makeScanInput({
-      file_path: filePath,
-      classification: {
-        ...makeScanInput().classification,
-        order_id: null,
-        total_amount: null,
-      },
-    });
-    const job = createRunningScanJob(input);
+    const input = makeScanInput({ file_path: filePath });
+    const job = createRunningScanJob(input, defaultScanClassification({
+      order_id: null,
+      total_amount: null,
+    }));
 
     mockFetch(
       // 1. list_correspondents
@@ -1363,15 +1370,11 @@ describe("executeScanIntake", () => {
     const filePath = join(tmpDir, "no_fields_scan.pdf");
     writeFileSync(filePath, Buffer.from("fake-pdf"));
 
-    const input = makeScanInput({
-      file_path: filePath,
-      classification: {
-        ...makeScanInput().classification,
-        order_id: null,
-        total_amount: null,
-      },
-    });
-    const job = createRunningScanJob(input);
+    const input = makeScanInput({ file_path: filePath });
+    const job = createRunningScanJob(input, defaultScanClassification({
+      order_id: null,
+      total_amount: null,
+    }));
 
     mockFetch(
       // 1. list_correspondents
@@ -1410,14 +1413,12 @@ describe("executeScanIntake", () => {
       file_path: filePath,
       watch_folder: "personal/receipts",
       month_tag: "2026-01",
-      classification: {
-        ...makeScanInput().classification,
-        order_id: null,
-        total_amount: null,
-        is_fuel: true,
-      },
     });
-    const job = createRunningScanJob(input);
+    const job = createRunningScanJob(input, defaultScanClassification({
+      order_id: null,
+      total_amount: null,
+      is_fuel: true,
+    }));
 
     mockFetch(
       // 1. list_correspondents
@@ -1452,16 +1453,12 @@ describe("executeScanIntake", () => {
     const filePath = join(tmpDir, "subtitle_scan.pdf");
     writeFileSync(filePath, Buffer.from("fake-pdf"));
 
-    const input = makeScanInput({
-      file_path: filePath,
-      classification: {
-        ...makeScanInput().classification,
-        order_id: null,
-        total_amount: null,
-        subtitle: "Dochádzka marec 2026",
-      },
-    });
-    const job = createRunningScanJob(input);
+    const input = makeScanInput({ file_path: filePath });
+    const job = createRunningScanJob(input, defaultScanClassification({
+      order_id: null,
+      total_amount: null,
+      subtitle: "Dochádzka marec 2026",
+    }));
 
     mockFetch(
       // 1. list_correspondents
@@ -1496,14 +1493,12 @@ describe("executeScanIntake", () => {
     const input = makeScanInput({
       file_path: filePath,
       filename: "20260325_blok_tankovanie.pdf",
-      classification: {
-        ...makeScanInput().classification,
-        order_id: null,
-        total_amount: null,
-        subtitle: null,
-      },
     });
-    const job = createRunningScanJob(input);
+    const job = createRunningScanJob(input, defaultScanClassification({
+      order_id: null,
+      total_amount: null,
+      subtitle: null,
+    }));
 
     mockFetch(
       // 1. list_correspondents
