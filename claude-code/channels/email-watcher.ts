@@ -683,7 +683,8 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
       // null = poll error (auth expired, connection refused, etc.)
       // Skip this source entirely — do NOT advance last_checked cursor.
       if (pollResult === null) {
-        log(`${source}: poll returned error, skipping cursor advance`);
+        span.setAttribute(`poll.${source}.error`, true);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: `${source} poll failed, cursor not advanced` });
         continue;
       }
 
