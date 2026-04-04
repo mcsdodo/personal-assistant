@@ -1024,6 +1024,13 @@ async function uploadToPaperless(
   return withSpan(tracer, "invoice-worker.upload", {
     "upload.title": params.title,
     "upload.filename": params.file.filename,
+    "upload.correspondent_id": params.correspondentId,
+    "upload.tag_ids": params.tagIds.join(","),
+    "upload.document_type_id": params.documentTypeId ?? 0,
+    "upload.storage_path_id": params.storagePathId ?? 0,
+    "upload.total_amount": String(params.totalAmount ?? ""),
+    "upload.order_id": params.orderId ?? "",
+    "upload.file_size": params.file.content_base64.length,
   }, async (span) => {
     logger.log(`Uploading to Paperless: "${params.title}"`);
 
@@ -1445,8 +1452,9 @@ async function setDocumentCustomFields(
   registry: PaperlessFieldRegistry,
 ): Promise<CustomFieldResult> {
   return withSpan(tracer, "invoice-worker.set_fields", {
-    "fields.total_amount": totalAmount ?? 0,
-    "fields.order_id": orderId ?? "none",
+    "fields.total_amount": String(totalAmount ?? ""),
+    "fields.order_id": orderId ?? "",
+    "fields.task_uuid": taskUuid ?? "",
   }, async (span) => {
     if (!taskUuid) {
       logger.log("Warning: no task UUID from upload, cannot set custom fields");
