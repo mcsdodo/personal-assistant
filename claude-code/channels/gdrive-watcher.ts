@@ -4,9 +4,9 @@
 //
 // MCP Server (stdio) that polls a Google Drive folder for new scanned
 // documents via gmail-mcp's Drive tools (Streamable HTTP), persists
-// discovered files in SQLite, and pushes channel notifications for new scans.
-// Also exposes update_gdrive_scan_status, get_gdrive_scan_status, and
-// get_gdrive_scan_stats tools so Claude can write back results.
+// discovered files in SQLite, and creates scan_intake jobs directly in
+// workflow.db. Also exposes update_gdrive_scan_status, get_gdrive_scan_status,
+// and get_gdrive_scan_stats tools so Claude can write back results.
 // ---------------------------------------------------------------------------
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -27,7 +27,8 @@ import {
   getFileStats,
 } from "./gdrive-db";
 
-import { initTracing, getTracer, withSpan, createLogger } from "./tracing";
+import { initTracing, getTracer, withSpan, createLogger, SpanStatusCode } from "./tracing";
+import { openWorkflowDb, createJob } from "./workflow-db";
 
 // ---------------------------------------------------------------------------
 // Config (env vars)
@@ -50,6 +51,7 @@ const METRICS_PORT = parseInt(
   process.env.GDRIVE_WATCHER_METRICS_PORT ?? "9466",
   10
 );
+const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
 const HEALTH_STALE_MULTIPLIER = 5;
 
 const GDRIVE_MCP_URL =
@@ -411,7 +413,7 @@ export async function pollGdrive(): Promise<DriveFile[]> {
 // Poll cycle
 // ---------------------------------------------------------------------------
 
-export async function pollCycle(db: Database, channel: Server): Promise<void> {
+export async function pollCycle(db: Database, channel: Server, wfDb?: Database): Promise<void> {
   return withSpan(tracer, "gdrive-watcher.poll", {}, async (span) => {
     const files = await pollGdrive();
 
@@ -434,8 +436,9 @@ export async function pollCycle(db: Database, channel: Server): Promise<void> {
       log(`Capped new files from ${newFiles.length} to ${MAX_NEW_PER_CYCLE}`);
     }
 
+    const jobDb = wfDb ?? workflowDb;
+
     for (const file of capped) {
-      // Insert as 'new'
       insertFile(db, {
         id: file.id,
         filename: file.name,
@@ -449,36 +452,43 @@ export async function pollCycle(db: Database, channel: Server): Promise<void> {
       const scanDate = new Date(file.createdTime);
       const monthTag = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, "0")}`;
 
-      // Push channel notification
-      const contentLines = [
-        "New scanned document detected in Google Drive:",
-        `Name: ${file.name}`,
-        `MIME type: ${file.mimeType}`,
-        `Scanned: ${file.createdTime}`,
-        `Month tag: ${monthTag}`,
-        `File ID: ${file.id}`,
-        `Folder: ${file.watchFolder}`,
-      ];
-
-      await channel.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: contentLines.join("\n"),
-          meta: {
-            source: "gdrive",
-            file_id: file.id,
-            name: file.name,
-            mime_type: file.mimeType,
-            created_time: file.createdTime,
-            month_tag: monthTag,
-            watch_folder: file.watchFolder,
-            timestamp: new Date().toISOString(),
-          },
-        },
+      // Create workflow job directly (no channel notification to Claude)
+      const job = createJob(jobDb, {
+        workflowType: "scan_intake",
+        inputJson: JSON.stringify({
+          source: "gdrive",
+          file_id: file.id,
+          watch_folder: file.watchFolder,
+          month_tag: monthTag,
+          filename: file.name,
+        }),
+        sourceRef: `gdrive:${file.id}`,
+        idempotencyKey: `gdrive:${file.id}`,
+        requiresApproval: false,
       });
+
+      // OTel span — links job creation to the poll cycle trace
+      try {
+        const tracer = getTracer("gdrive-watcher");
+        tracer.startActiveSpan("gdrive-watcher.job_created", {
+          attributes: {
+            "job.id": job.id,
+            "job.type": "scan_intake",
+            "job.state": job.state,
+            "gdrive.file_id": file.id,
+            "gdrive.watch_folder": file.watchFolder,
+            "gdrive.month_tag": monthTag,
+          },
+        }, (span) => {
+          span.setStatus({ code: SpanStatusCode.OK });
+          span.end();
+        });
+      } catch { /* tracing unavailable */ }
+
+      log(`Created job ${job.id} for gdrive:${file.id} (state: ${job.state})`);
     }
 
-    log(`Pushed ${capped.length} new file(s)`);
+    log(`Processed ${capped.length} new file(s), created jobs directly`);
   });
 }
 
@@ -570,6 +580,7 @@ const mcp = new Server(
 // ---------------------------------------------------------------------------
 
 let db: Database;
+let workflowDb: Database;
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -704,6 +715,8 @@ async function main(): Promise<void> {
   // 1. Open SQLite DB
   log(`Opening database at ${DB_PATH}`);
   db = openDb(DB_PATH);
+  log(`Opening workflow database at ${WORKFLOW_DB_PATH}`);
+  workflowDb = openWorkflowDb(WORKFLOW_DB_PATH);
   startMetricsServer(db);
 
   // 2. Connect MCP server (stdio)

@@ -55,6 +55,7 @@ import {
   resetWatchFolders,
   resetDriveClient,
 } from "./gdrive-watcher";
+import { openWorkflowDb, getJobByIdempotencyKey } from "./workflow-db";
 
 // ---------------------------------------------------------------------------
 // Read the same env vars the production code uses so mocks match reality.
@@ -143,10 +144,12 @@ function createStandardCallTool(files: any[] = []) {
 describe("gdrive-watcher integration", () => {
   let tmpDir: string;
   let db: Database;
+  let wfDb: ReturnType<typeof openWorkflowDb>;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "gdrive-int-test-"));
     db = openDb(join(tmpDir, "test.db"));
+    wfDb = openWorkflowDb(join(tmpDir, "workflow.db"));
     // Reset module-level caches so each test starts fresh
     resetWatchFolders();
     resetDriveClient();
@@ -154,6 +157,7 @@ describe("gdrive-watcher integration", () => {
 
   afterEach(() => {
     db.close();
+    try { wfDb.close(); } catch {}
     try {
       rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -162,9 +166,9 @@ describe("gdrive-watcher integration", () => {
   });
 
   // -------------------------------------------------------------------------
-  // pollCycle: detect new file and push notification
+  // pollCycle: detect new file and create workflow job
   // -------------------------------------------------------------------------
-  test("pollCycle detects new file and pushes notification", async () => {
+  test("pollCycle detects new file and creates workflow job", async () => {
     const driveFile = {
       id: "file-abc123",
       name: "scan_invoice_march.pdf",
@@ -176,23 +180,27 @@ describe("gdrive-watcher integration", () => {
     callToolImpl = createStandardCallTool([driveFile]);
     const channel = createMockChannel();
 
-    await pollCycle(db, channel as any);
+    await pollCycle(db, channel as any, wfDb);
 
-    // File should be inserted into DB
+    // File should be inserted into gdrive DB
     expect(fileExists(db, "file-abc123")).toBe(true);
 
-    // Notification should have been pushed
-    expect(channel.notification).toHaveBeenCalledTimes(1);
-    const notif = channel.notifications[0];
-    expect(notif.method).toBe("notifications/claude/channel");
-    expect(notif.params.content).toContain("scan_invoice_march.pdf");
-    expect(notif.params.content).toContain("file-abc123");
-    expect(notif.params.meta.source).toBe("gdrive");
-    expect(notif.params.meta.file_id).toBe("file-abc123");
-    expect(notif.params.meta.name).toBe("scan_invoice_march.pdf");
-    expect(notif.params.meta.mime_type).toBe("application/pdf");
-    expect(notif.params.meta.month_tag).toBe("2026-03");
-    expect(notif.params.meta.watch_folder).toBe(PRIMARY_WATCH);
+    // No channel notification — jobs are created directly
+    expect(channel.notification).toHaveBeenCalledTimes(0);
+
+    // Workflow job should exist with correct fields
+    const job = getJobByIdempotencyKey(wfDb, "gdrive:file-abc123");
+    expect(job).not.toBeNull();
+    expect(job!.workflow_type).toBe("scan_intake");
+    expect(job!.state).toBe("queued");
+    expect(job!.source_ref).toBe("gdrive:file-abc123");
+
+    const input = JSON.parse(job!.input_json!);
+    expect(input.source).toBe("gdrive");
+    expect(input.file_id).toBe("file-abc123");
+    expect(input.filename).toBe("scan_invoice_march.pdf");
+    expect(input.month_tag).toBe("2026-03");
+    expect(input.watch_folder).toBe(PRIMARY_WATCH);
   });
 
   // -------------------------------------------------------------------------
@@ -220,11 +228,12 @@ describe("gdrive-watcher integration", () => {
     callToolImpl = createStandardCallTool([driveFile]);
     const channel = createMockChannel();
 
-    await pollCycle(db, channel as any);
+    await pollCycle(db, channel as any, wfDb);
 
-    // No notification — file was already known
+    // No job created — file was already known
     expect(channel.notification).toHaveBeenCalledTimes(0);
-    expect(channel.notifications).toHaveLength(0);
+    const job = getJobByIdempotencyKey(wfDb, "gdrive:file-existing");
+    expect(job).toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -255,7 +264,7 @@ describe("gdrive-watcher integration", () => {
     const channel = createMockChannel();
 
     // Should not throw — error is caught internally
-    await pollCycle(db, channel as any);
+    await pollCycle(db, channel as any, wfDb);
 
     // No notifications since poll returned empty due to error
     expect(channel.notification).toHaveBeenCalledTimes(0);
@@ -294,20 +303,26 @@ describe("gdrive-watcher integration", () => {
     callToolImpl = createStandardCallTool(files);
     const channel = createMockChannel();
 
-    await pollCycle(db, channel as any);
+    await pollCycle(db, channel as any, wfDb);
 
     // All three files inserted
     expect(fileExists(db, "file-001")).toBe(true);
     expect(fileExists(db, "file-002")).toBe(true);
     expect(fileExists(db, "file-003")).toBe(true);
 
-    // Three notifications
-    expect(channel.notification).toHaveBeenCalledTimes(3);
+    // No channel notifications — jobs created directly
+    expect(channel.notification).toHaveBeenCalledTimes(0);
 
-    // Verify month tags are correct
-    expect(channel.notifications[0].params.meta.month_tag).toBe("2026-01");
-    expect(channel.notifications[1].params.meta.month_tag).toBe("2026-02");
-    expect(channel.notifications[2].params.meta.month_tag).toBe("2026-03");
+    // Three workflow jobs with correct month tags
+    const job1 = getJobByIdempotencyKey(wfDb, "gdrive:file-001");
+    const job2 = getJobByIdempotencyKey(wfDb, "gdrive:file-002");
+    const job3 = getJobByIdempotencyKey(wfDb, "gdrive:file-003");
+    expect(job1).not.toBeNull();
+    expect(job2).not.toBeNull();
+    expect(job3).not.toBeNull();
+    expect(JSON.parse(job1!.input_json!).month_tag).toBe("2026-01");
+    expect(JSON.parse(job2!.input_json!).month_tag).toBe("2026-02");
+    expect(JSON.parse(job3!.input_json!).month_tag).toBe("2026-03");
 
     // Verify DB records
     const rows = getRecentFiles(db, { limit: 10 });
@@ -317,7 +332,7 @@ describe("gdrive-watcher integration", () => {
   // -------------------------------------------------------------------------
   // pollCycle: mix of new and existing files
   // -------------------------------------------------------------------------
-  test("pollCycle only notifies for new files in mixed batch", async () => {
+  test("pollCycle only creates jobs for new files in mixed batch", async () => {
     // Pre-insert one file
     insertFile(db, {
       id: "file-old",
@@ -348,13 +363,19 @@ describe("gdrive-watcher integration", () => {
     callToolImpl = createStandardCallTool(driveFiles);
     const channel = createMockChannel();
 
-    await pollCycle(db, channel as any);
+    await pollCycle(db, channel as any, wfDb);
 
-    // Only the new file triggers notification
-    expect(channel.notification).toHaveBeenCalledTimes(1);
-    expect(channel.notifications[0].params.meta.file_id).toBe("file-new");
+    // No channel notifications
+    expect(channel.notification).toHaveBeenCalledTimes(0);
 
-    // Both exist in DB
+    // Only the new file gets a job
+    const jobOld = getJobByIdempotencyKey(wfDb, "gdrive:file-old");
+    const jobNew = getJobByIdempotencyKey(wfDb, "gdrive:file-new");
+    expect(jobOld).toBeNull();
+    expect(jobNew).not.toBeNull();
+    expect(jobNew!.workflow_type).toBe("scan_intake");
+
+    // Both exist in gdrive DB
     expect(fileExists(db, "file-old")).toBe(true);
     expect(fileExists(db, "file-new")).toBe(true);
   });
@@ -375,14 +396,22 @@ describe("gdrive-watcher integration", () => {
     callToolImpl = createStandardCallTool(files);
     const channel = createMockChannel();
 
-    await pollCycle(db, channel as any);
+    await pollCycle(db, channel as any, wfDb);
 
-    // Only 5 notifications (capped)
-    expect(channel.notification).toHaveBeenCalledTimes(5);
+    // No channel notifications — jobs created directly
+    expect(channel.notification).toHaveBeenCalledTimes(0);
 
-    // Only 5 files in DB (only capped ones get inserted)
+    // Only 5 files in DB (capped) and 5 jobs created
     const rows = getRecentFiles(db, { limit: 20 });
     expect(rows).toHaveLength(5);
+
+    // Verify exactly 5 jobs exist (first 5 files)
+    let jobCount = 0;
+    for (let i = 0; i < 7; i++) {
+      const job = getJobByIdempotencyKey(wfDb, `gdrive:file-cap-${i}`);
+      if (job) jobCount++;
+    }
+    expect(jobCount).toBe(5);
   });
 
   // -------------------------------------------------------------------------
@@ -392,7 +421,7 @@ describe("gdrive-watcher integration", () => {
     callToolImpl = createStandardCallTool([]);
     const channel = createMockChannel();
 
-    await pollCycle(db, channel as any);
+    await pollCycle(db, channel as any, wfDb);
 
     expect(channel.notification).toHaveBeenCalledTimes(0);
     expect(getRecentFiles(db, { limit: 10 })).toHaveLength(0);
@@ -427,18 +456,24 @@ describe("gdrive-watcher integration", () => {
 
     const channel = createMockChannel();
 
-    await pollCycle(db, channel as any);
+    await pollCycle(db, channel as any, wfDb);
 
     expect(fileExists(db, "text-file-id")).toBe(true);
-    expect(channel.notification).toHaveBeenCalledTimes(1);
-    expect(channel.notifications[0].params.meta.file_id).toBe("text-file-id");
-    expect(channel.notifications[0].params.meta.name).toBe("text_format_scan.pdf");
+    // No channel notification — job created directly
+    expect(channel.notification).toHaveBeenCalledTimes(0);
+
+    // Job should exist with correct file metadata
+    const job = getJobByIdempotencyKey(wfDb, "gdrive:text-file-id");
+    expect(job).not.toBeNull();
+    const input = JSON.parse(job!.input_json!);
+    expect(input.file_id).toBe("text-file-id");
+    expect(input.filename).toBe("text_format_scan.pdf");
   });
 
   // -------------------------------------------------------------------------
-  // pollCycle: notification content includes all expected fields
+  // pollCycle: job input_json includes all expected fields
   // -------------------------------------------------------------------------
-  test("notification content includes all expected fields", async () => {
+  test("job input_json includes all expected fields", async () => {
     const driveFile = {
       id: "file-detail-check",
       name: "detailed_scan.pdf",
@@ -450,34 +485,27 @@ describe("gdrive-watcher integration", () => {
     callToolImpl = createStandardCallTool([driveFile]);
     const channel = createMockChannel();
 
-    await pollCycle(db, channel as any);
+    await pollCycle(db, channel as any, wfDb);
 
-    const notif = channel.notifications[0];
+    // No channel notification
+    expect(channel.notification).toHaveBeenCalledTimes(0);
 
-    // Content text should have all key info
-    expect(notif.params.content).toContain("New scanned document detected");
-    expect(notif.params.content).toContain("Name: detailed_scan.pdf");
-    expect(notif.params.content).toContain("MIME type: application/pdf");
-    expect(notif.params.content).toContain("Scanned: 2026-06-15T08:45:00Z");
-    expect(notif.params.content).toContain("Month tag: 2026-06");
-    expect(notif.params.content).toContain("File ID: file-detail-check");
-    expect(notif.params.content).toContain(`Folder: ${PRIMARY_WATCH}`);
+    // Verify job fields
+    const job = getJobByIdempotencyKey(wfDb, "gdrive:file-detail-check");
+    expect(job).not.toBeNull();
+    expect(job!.workflow_type).toBe("scan_intake");
+    expect(job!.state).toBe("queued");
+    expect(job!.source_ref).toBe("gdrive:file-detail-check");
+    expect(job!.idempotency_key).toBe("gdrive:file-detail-check");
 
-    // Meta should have all fields
-    expect(notif.params.meta).toEqual(
-      expect.objectContaining({
-        source: "gdrive",
-        file_id: "file-detail-check",
-        name: "detailed_scan.pdf",
-        mime_type: "application/pdf",
-        created_time: "2026-06-15T08:45:00Z",
-        month_tag: "2026-06",
-        watch_folder: PRIMARY_WATCH,
-      })
-    );
-    // timestamp should be a valid ISO string
-    expect(notif.params.meta.timestamp).toBeTruthy();
-    expect(new Date(notif.params.meta.timestamp).getTime()).toBeGreaterThan(0);
+    const input = JSON.parse(job!.input_json!);
+    expect(input).toEqual({
+      source: "gdrive",
+      file_id: "file-detail-check",
+      filename: "detailed_scan.pdf",
+      month_tag: "2026-06",
+      watch_folder: PRIMARY_WATCH,
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -495,7 +523,7 @@ describe("gdrive-watcher integration", () => {
     callToolImpl = createStandardCallTool([driveFile]);
     const channel = createMockChannel();
 
-    await pollCycle(db, channel as any);
+    await pollCycle(db, channel as any, wfDb);
 
     const rows = getRecentFiles(db, { limit: 1 });
     expect(rows).toHaveLength(1);
@@ -512,7 +540,7 @@ describe("gdrive-watcher integration", () => {
   // -------------------------------------------------------------------------
   // pollCycle: second poll cycle finds no new files
   // -------------------------------------------------------------------------
-  test("second pollCycle does not re-notify for same files", async () => {
+  test("second pollCycle does not re-create job for same files", async () => {
     const driveFile = {
       id: "file-once",
       name: "once_only.pdf",
@@ -524,17 +552,24 @@ describe("gdrive-watcher integration", () => {
     callToolImpl = createStandardCallTool([driveFile]);
     const channel = createMockChannel();
 
-    // First poll — should notify
-    await pollCycle(db, channel as any);
-    expect(channel.notification).toHaveBeenCalledTimes(1);
+    // First poll — should create job
+    await pollCycle(db, channel as any, wfDb);
+    const job1 = getJobByIdempotencyKey(wfDb, "gdrive:file-once");
+    expect(job1).not.toBeNull();
 
     // Reset watch folders cache (simulates fresh poll resolution)
     // but keep DB and drive client
     resetWatchFolders();
 
-    // Second poll — same file still in Drive, should not re-notify
-    await pollCycle(db, channel as any);
-    expect(channel.notification).toHaveBeenCalledTimes(1); // Still 1, no new call
+    // Second poll — same file still in Drive, should not create a new job
+    await pollCycle(db, channel as any, wfDb);
+
+    // No channel notifications at all
+    expect(channel.notification).toHaveBeenCalledTimes(0);
+
+    // Job ID should be the same (no duplicate)
+    const job2 = getJobByIdempotencyKey(wfDb, "gdrive:file-once");
+    expect(job2!.id).toBe(job1!.id);
   });
 
   // -------------------------------------------------------------------------
@@ -559,7 +594,7 @@ describe("gdrive-watcher integration", () => {
 
     // Should throw since no watch folders resolved
     try {
-      await pollCycle(db, channel as any);
+      await pollCycle(db, channel as any, wfDb);
       // pollGdrive catches the error from resolveWatchFolders, so no throw
       // but no files or notifications
     } catch {
@@ -569,6 +604,46 @@ describe("gdrive-watcher integration", () => {
     // No notifications, no DB entries
     expect(channel.notification).toHaveBeenCalledTimes(0);
     expect(getRecentFiles(db, { limit: 10 })).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // pollCycle: idempotency — same file processed twice creates only one job
+  // -------------------------------------------------------------------------
+  test("idempotency: same file in two cycles creates only one job", async () => {
+    const driveFile = {
+      id: "file-idempotent",
+      name: "idempotent_scan.pdf",
+      mimeType: "application/pdf",
+      createdTime: "2026-04-01T09:00:00Z",
+      modifiedTime: "2026-04-01T09:00:00Z",
+    };
+
+    callToolImpl = createStandardCallTool([driveFile]);
+    const channel = createMockChannel();
+
+    // First poll — creates file in gdrive DB + job in workflow DB
+    await pollCycle(db, channel as any, wfDb);
+
+    const job1 = getJobByIdempotencyKey(wfDb, "gdrive:file-idempotent");
+    expect(job1).not.toBeNull();
+    expect(job1!.workflow_type).toBe("scan_intake");
+
+    // Manually remove file from gdrive DB to simulate a scenario where
+    // the file appears as "new" again (e.g. DB corruption/reset)
+    db.prepare("DELETE FROM gdrive_files WHERE id = ?").run("file-idempotent");
+    expect(fileExists(db, "file-idempotent")).toBe(false);
+
+    // Reset watch folders so pollGdrive re-resolves
+    resetWatchFolders();
+
+    // Second poll — file appears "new" again, but workflow DB idempotency
+    // key prevents a duplicate job
+    await pollCycle(db, channel as any, wfDb);
+
+    const job2 = getJobByIdempotencyKey(wfDb, "gdrive:file-idempotent");
+    expect(job2).not.toBeNull();
+    // Same job ID — not a new row
+    expect(job2!.id).toBe(job1!.id);
   });
 
   // -------------------------------------------------------------------------
