@@ -1,37 +1,9 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { Database } from "bun:sqlite";
-
-// email-watcher.integration.test.ts uses mock.module("./db") which pollutes
-// the module cache globally in Bun. To test the REAL db module, we inline
-// openDb and use require() for the stateless functions (which work regardless
-// of which openDb created the database — they just run SQL on the db handle).
-
-/** Inline openDb — matches db.ts exactly, immune to mock.module pollution */
-function openDb(path: string): Database {
-  const db = new Database(path, { create: true });
-  db.exec("PRAGMA journal_mode = WAL;");
-  db.exec(`CREATE TABLE IF NOT EXISTS emails (
-    id TEXT PRIMARY KEY, source TEXT NOT NULL, sender TEXT, subject TEXT,
-    preview TEXT, has_attachments INTEGER DEFAULT 0, received_at TEXT,
-    discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
-    classified_at TEXT, classification TEXT, action TEXT, vendor TEXT,
-    confidence TEXT, processed_at TEXT, process_result TEXT,
-    status TEXT NOT NULL DEFAULT 'new'
-  );`);
-  db.exec(`CREATE TABLE IF NOT EXISTS source_state (
-    source TEXT PRIMARY KEY, last_checked TEXT NOT NULL
-  );`);
-  try { db.exec("ALTER TABLE emails ADD COLUMN trace_id TEXT;"); } catch {}
-  try { db.exec("ALTER TABLE emails ADD COLUMN invoice_links TEXT;"); } catch {}
-  return db;
-}
-
-// These functions are stateless (operate on a db handle) — safe to import
-// even through the mock, since the mock reimplements the same SQL.
 import {
+  openDb,
   insertEmail,
   emailExists,
   updateEmail,
@@ -41,6 +13,7 @@ import {
   type EmailRow,
   type StatRow,
 } from "./db";
+import type { Database } from "bun:sqlite";
 
 let tmpDir: string;
 let db: Database;
