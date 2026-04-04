@@ -125,6 +125,8 @@ The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag,
 
 Process emails using the Haiku subagents and durable workflow jobs:
 
+**Hard rule — invoice links override classification:** If the channel event includes `invoice_links` in meta, skip the email-classifier entirely. The watcher already verified the email contains a known vendor invoice download link (deterministic regex match). Use `action: download_and_upload`, `download_strategy: known_link`, `confidence: high`, extract `vendor` from sender domain. Proceed directly to step 1b.
+
 1. **Classify** — dispatch to `email-classifier` agent with the email metadata (sender, subject, body excerpt). It returns a JSON classification including `download_strategy`.
 
 1b. **Download PDF** (if action = download_and_upload) — **always download to disk before creating a job.** The document-classifier (step 1c) needs the local file to determine `owner`, `doc_type`, and refined vendor. Without it, the job will fail with `missing_owner`.
