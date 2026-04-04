@@ -627,9 +627,24 @@ describe("invoice-worker error handling", () => {
     expect(updated.error_json).toContain("500");
   });
 
-  test("fails for unsupported download strategy", async () => {
+  test("browser_required strategy pauses for manual intervention", async () => {
     const input = makeInput();
     const job = createRunningJob(input, defaultEmailClassification({ download_strategy: "browser_required" as any }));
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("awaiting_approval");
+  });
+
+  test("unsupported download strategy fails", async () => {
+    const input = makeInput();
+    const job = createRunningJob(input, defaultEmailClassification({ download_strategy: "nonexistent" as any }));
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "a1", name: "invoice.pdf", content_type: "application/pdf", size: 100 }])),
+      () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 100, content_base64: "X" })),
+    );
 
     await executeInvoiceIntake(db, job, logger, registry, notify);
 
@@ -953,6 +968,141 @@ describe("invoice-worker unified tag derivation", () => {
     const error = JSON.parse(updated.error_json!);
     expect(error.code).toBe("missing_owner");
     expect(error.message).toContain("Missing owner field");
+  });
+});
+
+// ── Production flow tests (classification via channel roundtrip) ────────
+
+describe("invoice-worker channel classification flow", () => {
+  /** Create a running job WITHOUT seeding classification steps — simulates first entry */
+  function createJobWithoutClassification(input: InvoiceIntakeInput): JobRow {
+    const job = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify(input),
+      sourceRef: `${input.email_source}:${input.message_id}`,
+      idempotencyKey: `${input.email_source}:${input.message_id}`,
+    });
+    db.prepare("UPDATE jobs SET state = 'running', started_at = datetime('now') WHERE id = ?").run(job.id);
+    return getJob(db, job.id)!;
+  }
+
+  test("parks job for email classification when no completed steps", async () => {
+    const input = makeInput();
+    const job = createJobWithoutClassification(input);
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("awaiting_classification");
+    const events = getJobEvents(db, job.id);
+    const stepStarted = events.find(e => e.event_type === "step_started");
+    expect(stepStarted).toBeTruthy();
+    expect(JSON.parse(stepStarted!.payload_json!).step).toBe("classify_email");
+  });
+
+  test("parks job for doc classification after download", async () => {
+    const input = makeInput();
+    const job = createJobWithoutClassification(input);
+
+    // Seed only classify_email — no classify_document
+    addJobEvent(db, job.id, "step_completed", {
+      step: "classify_email",
+      result: defaultEmailClassification(),
+    });
+
+    mockFetch(
+      // downloadAttachment: get_attachments
+      () => jsonResponse(rpcResponse([{ id: "a1", name: "invoice.pdf", content_type: "application/pdf", size: 100 }])),
+      // downloadAttachment: download_attachment
+      () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 100, content_base64: "JVBER" })),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("awaiting_classification");
+    const events = getJobEvents(db, job.id);
+    const docStep = events.find(e =>
+      e.event_type === "step_started" && JSON.parse(e.payload_json!).step === "classify_document"
+    );
+    expect(docStep).toBeTruthy();
+  });
+
+  test("ignore action completes job without processing", async () => {
+    const input = makeInput();
+    const job = createJobWithoutClassification(input);
+
+    addJobEvent(db, job.id, "step_completed", {
+      step: "classify_email",
+      result: defaultEmailClassification({ action: "ignore" }),
+    });
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("ignored");
+  });
+
+  test("month_tag derived from doc_date when present", async () => {
+    const input = makeInput();
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ subject: "No date here", received_at: "2026-04-01T10:00:00Z" }),
+      defaultDocClassification({ doc_date: "2026-02-15" }),
+    );
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "a1", name: "invoice.pdf", content_type: "application/pdf", size: 100 }])),
+      () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 100, content_base64: "JVBER" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([
+        { id: 1, name: "techlab" }, { id: 2, name: "accounting" }, { id: 3, name: "2026-02" },
+      ])),
+      () => jsonResponse({ results: [{ id: 1, name: "Invoice" }] }),
+      storagePathsMockHandler(),
+      () => jsonResponse("task-uuid-123"),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.tags).toContain("2026-02");
+  });
+
+  test("month_tag falls back to subject regex when no doc_date", async () => {
+    const input = makeInput();
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ subject: "Faktúra 03/2026", received_at: "2026-04-01T10:00:00Z" }),
+      defaultDocClassification({ doc_date: null }),
+    );
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "a1", name: "invoice.pdf", content_type: "application/pdf", size: 100 }])),
+      () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 100, content_base64: "JVBER" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([
+        { id: 1, name: "techlab" }, { id: 2, name: "accounting" }, { id: 3, name: "2026-03" },
+      ])),
+      () => jsonResponse({ results: [{ id: 1, name: "Invoice" }] }),
+      storagePathsMockHandler(),
+      () => jsonResponse("task-uuid-123"),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.tags).toContain("2026-03");
   });
 });
 

@@ -229,38 +229,55 @@ export async function executeInvoiceIntake(
         return;
       }
 
-      // Step 1: Get file — prefer disk, fallback to MCP download
-      let file: DownloadedFile;
+      // Step 1: Download file and persist to disk
+      const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/workspace/downloads";
       const cachedDownload = completedSteps.get("download") ?? completedSteps.get("read_from_disk");
-      if (cachedDownload && input.file_path && existsSync(input.file_path)) {
-        logger.log(`Resuming: reusing downloaded file from ${input.file_path}`);
-        file = readFileAsDownload(input.file_path);
+      let filePath: string;
+      let file: DownloadedFile;
+
+      if (cachedDownload) {
+        // Resume: file already downloaded in a previous tick
+        filePath = (cachedDownload as { file_path?: string }).file_path
+          ?? `${DOWNLOAD_DIR}/${(cachedDownload as { filename?: string }).filename ?? "unknown"}`;
+        file = readFileAsDownload(filePath);
+        logger.log(`Resuming: reusing file from ${filePath}`);
       } else if (input.file_path && existsSync(input.file_path)) {
-        addJobEvent(db, job.id, "step_started", { step: "read_from_disk", file_path: input.file_path });
-        file = readFileAsDownload(input.file_path);
+        // Pre-existing file on disk (e.g. tests)
+        filePath = input.file_path;
+        file = readFileAsDownload(filePath);
+        addJobEvent(db, job.id, "step_started", { step: "read_from_disk", file_path: filePath });
         addJobEvent(db, job.id, "step_completed", {
           step: "read_from_disk",
+          file_path: filePath,
           filename: file.filename,
           size: file.size,
         });
       } else {
+        // Download from email MCP, save to disk
         const strategy = classification.download_strategy;
+        if (strategy === "browser_required" || strategy === "manual_review") {
+          requestJobApproval(db, job.id, {
+            reason: `Download strategy "${strategy}" requires manual intervention`,
+            vendor: classification.vendor,
+          });
+          logger.log(`Job ${job.id} paused: ${strategy}`);
+          outcome = "paused";
+          span.setAttribute("invoice.outcome", "paused");
+          span.setStatus({ code: SpanStatusCode.OK });
+          return;
+        }
         addJobEvent(db, job.id, "step_started", { step: "download", strategy });
         file = await downloadInvoice(input, classification, logger);
+        mkdirSync(DOWNLOAD_DIR, { recursive: true });
+        filePath = `${DOWNLOAD_DIR}/${file.filename}`;
+        writeFileSync(filePath, Buffer.from(file.content_base64, "base64"));
         addJobEvent(db, job.id, "step_completed", {
           step: "download",
+          file_path: filePath,
           filename: file.filename,
           size: file.size,
           content_type: file.content_type,
         });
-      }
-
-      // Save downloaded file to disk for document-classifier (needs visual inspection)
-      const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/workspace/downloads";
-      const filePath = input.file_path ?? `${DOWNLOAD_DIR}/${file.filename}`;
-      if (!input.file_path) {
-        mkdirSync(DOWNLOAD_DIR, { recursive: true });
-        writeFileSync(filePath, Buffer.from(file.content_base64, "base64"));
       }
 
       // Step 1.5: Document classification via channel (non-blocking)
@@ -487,6 +504,8 @@ async function downloadInvoice(
     let file: DownloadedFile;
     switch (strategy) {
       case "attachment":
+      case "claude_download":
+        // claude_download: multiple attachments — worker picks the first PDF (best heuristic)
         file = await downloadAttachment(mcpUrl, email_source, message_id, logger);
         break;
 
