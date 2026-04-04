@@ -165,3 +165,26 @@ export async function executeNextJob(
   }
   return tracer.startActiveSpan(spanName, spanOpts, spanFn);
 }
+
+/**
+ * Scan for stale running/awaiting_classification jobs and reclaim or fail them.
+ * Called on every worker tick alongside executeNextJob.
+ */
+export function reclaimStaleJobs(db: Database, logger: WorkflowLogger): void {
+  const staleMinutes = parseInt(process.env.STALE_JOB_MINUTES ?? "5", 10);
+  const stale = db.prepare(
+    `SELECT id FROM jobs
+     WHERE state IN ('running', 'awaiting_classification')
+       AND updated_at < datetime('now', '-' || ? || ' minutes')`
+  ).all(staleMinutes) as { id: string }[];
+
+  for (const { id } of stale) {
+    if (shouldRetry(db, id)) {
+      scheduleRetry(db, id, { code: "stale_timeout", message: `Job stale for ${staleMinutes}+ minutes` });
+      logger.log(`Reclaimed stale job ${id}`);
+    } else {
+      failJob(db, id, { code: "stale_timeout", message: `Job stale for ${staleMinutes}+ minutes, max retries exhausted` });
+      logger.log(`Failed stale job ${id} (max retries)`);
+    }
+  }
+}

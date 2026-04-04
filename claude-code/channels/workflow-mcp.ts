@@ -7,7 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Database } from "bun:sqlite";
 
-import { executeNextJob } from "./workflow-core";
+import { executeNextJob, reclaimStaleJobs } from "./workflow-core";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 import {
@@ -63,7 +63,7 @@ async function workerTick(): Promise<void> {
   if (workerBusy) return;
   workerBusy = true;
   try {
-    // Only create a span when there's actual work (avoids ~43k idle spans/day)
+    reclaimStaleJobs(db, { log });
     await executeNextJob(db, { log }, fieldRegistry, notifyTelegram, mcp);
   } finally {
     workerBusy = false;
