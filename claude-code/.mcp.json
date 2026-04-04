@@ -17,8 +17,8 @@
       "args": ["run", "/app/channels/file-ops.ts"]
     },
     "workflow": {
-      "type": "http",
-      "url": "http://localhost:8003/mcp"
+      "command": "bun",
+      "args": ["run", "/app/channels/workflow-mcp.ts"]
     },
     "paperless": {
       "type": "http",

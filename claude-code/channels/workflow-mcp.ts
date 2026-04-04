@@ -70,13 +70,17 @@ async function workerTick(): Promise<void> {
 }
 
 const mcp = new Server(
-  { name: "workflow", version: "0.2.0" },
+  { name: "workflow", version: "0.3.0" },
   {
-    capabilities: { tools: {} },
+    capabilities: {
+      experimental: { "claude/channel": {} },
+      tools: {},
+    },
     instructions:
-      "Use workflow tools for durable background jobs. " +
-      "For invoice processing, prefer create_invoice_intake_job over direct inline processing. " +
-      "The worker handles download, dedup, and upload deterministically.",
+      "Workflow job queue. Creates and tracks invoice/scan processing jobs.\n" +
+      "Events from workflow arrive as <channel source=\"workflow\" ...>.\n" +
+      "Classification requests: when you see event_type=\"classify_email\" or \"classify_document\", " +
+      "run the appropriate haiku subagent and call submit_classification with the result.",
   },
 );
 
@@ -407,33 +411,25 @@ async function main(): Promise<void> {
   await fieldRegistry.init();
   log("Custom field registry initialized");
 
-  // HTTP transport — stateless, Web Standard API for Bun compatibility.
-  const { WebStandardStreamableHTTPServerTransport } = await import(
-    "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
-  );
-
+  // Side HTTP server for Docker health check only
   Bun.serve({
     port: WORKFLOW_PORT,
-    idleTimeout: 255, // seconds — MCP streaming can hold connections open
-    async fetch(req) {
+    fetch(req) {
       const url = new URL(req.url);
-
-      if (url.pathname === "/health") {
-        return new Response("ok", { status: 200 });
-      }
-
-      if (url.pathname === "/mcp" && (req.method === "POST" || req.method === "GET" || req.method === "DELETE")) {
-        const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-        try { await mcp.close(); } catch {}
-        await mcp.connect(transport);
-        return transport.handleRequest(req);
-      }
-
+      if (url.pathname === "/health") return new Response("ok", { status: 200 });
       return new Response("Not Found", { status: 404 });
     },
   });
-  log(`Workflow MCP listening on :${WORKFLOW_PORT} (/mcp, /health)`);
+  log(`Health endpoint on :${WORKFLOW_PORT}/health`);
 
+  // Connect MCP via stdio (channel mode)
+  const { StdioServerTransport } = await import(
+    "@modelcontextprotocol/sdk/server/stdio.js"
+  );
+  await mcp.connect(new StdioServerTransport());
+  log("MCP server connected (stdio)");
+
+  // Start worker poll loop
   await workerTick();
   setInterval(() => {
     workerTick().catch((error) => {
