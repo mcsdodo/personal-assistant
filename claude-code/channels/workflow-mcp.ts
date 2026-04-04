@@ -90,9 +90,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "create_invoice_intake_job",
       description:
-        "Create a durable invoice processing job. Use this after classifying an email as an invoice. " +
-        "Pass file_path if the PDF is already downloaded to disk. " +
-        "The worker will check for duplicates and upload to Paperless. " +
+        "Create a durable invoice processing job. The worker handles the full pipeline: " +
+        "classification, download, dedup, and upload to Paperless. " +
         "Set force=true to reprocess an email that already has a completed job.",
       inputSchema: {
         type: "object" as const,
@@ -105,44 +104,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Email message ID from the email provider",
           },
-          classification: {
-            type: "object",
-            description:
-              "Classification output from email-classifier. Must include: is_invoice, confidence, vendor, " +
-              "doc_type, action, download_strategy, strategy_confidence, requires_review, " +
-              "order_id, total_amount, currency",
-          },
-          subject: {
-            type: "string",
-            description: "Email subject line (for title generation)",
-          },
-          sender: {
-            type: "string",
-            description: "Email sender address",
-          },
-          received_at: {
-            type: "string",
-            description: "Email received timestamp (ISO format)",
-          },
-          file_path: {
-            type: "string",
-            description: "Path to pre-downloaded file on disk (Claude downloads before creating job)",
-          },
-          month_tag: {
-            type: "string",
-            description: "YYYY-MM tag (Claude infers from email context)",
-          },
           force: {
             type: "boolean",
             description: "Bypass idempotency check to reprocess an email that already has a completed job",
           },
-          invoice_links: {
-            type: "array",
-            description: "Pre-extracted invoice download links (from email-watcher or emails DB). Pass these so the worker doesn't need to re-fetch email HTML.",
-            items: { type: "object" },
-          },
         },
-        required: ["email_source", "message_id", "classification"],
+        required: ["email_source", "message_id"],
       },
     },
     {
@@ -262,25 +229,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "create_invoice_intake_job": {
         const emailSource = args?.email_source as string;
         const messageId = args?.message_id as string;
-        const classification = args?.classification as Record<string, unknown>;
-        if (!emailSource || !messageId || !classification) {
+        if (!emailSource || !messageId) {
           return {
-            content: [text("Error: email_source, message_id, and classification are required")],
+            content: [text("Error: email_source and message_id are required")],
             isError: true,
           };
         }
 
-        // Build the input payload
         const inputPayload = {
           email_source: emailSource,
           message_id: messageId,
-          classification,
-          subject: (args?.subject as string | undefined) ?? undefined,
-          sender: (args?.sender as string | undefined) ?? undefined,
-          received_at: (args?.received_at as string | undefined) ?? undefined,
-          file_path: (args?.file_path as string | undefined) ?? undefined,
-          month_tag: (args?.month_tag as string | undefined) ?? undefined,
-          invoice_links: (args?.invoice_links as unknown[] | undefined) ?? undefined,
         };
 
         // Use source:message_id as idempotency key; force bypasses with unique suffix
@@ -297,7 +255,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           requiresApproval: false,
         });
 
-        // Emit classification snapshot span (links to email's trace)
+        // Emit job_created span (links to email's trace)
         try {
           const emailDbPath = process.env.EMAIL_DB_PATH ?? "/mnt/shared_configs/personal-assistant/email-watcher/emails.db";
           const { Database: BunDb } = require("bun:sqlite");
@@ -307,18 +265,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (traceId) {
             const tracer = getTracer("workflow");
             const parentCtx = remoteParentContext(traceId);
-            tracer.startActiveSpan(`workflow.job_created ${(classification.vendor as string) ?? "unknown"}`, {
+            tracer.startActiveSpan(`workflow.job_created`, {
               attributes: {
                 "job.type": "invoice_intake",
                 "email.source": emailSource,
                 "email.message_id": messageId,
-                "classification.vendor": (classification.vendor as string) ?? "unknown",
-                "classification.has_owner": classification.owner != null,
-                "classification.owner": (classification.owner as string) ?? "missing",
-                "classification.has_file_path": inputPayload.file_path != null,
-                "classification.has_total_amount": classification.total_amount != null,
-                "classification.doc_type": (classification.doc_type as string) ?? "missing",
-                "classification.download_strategy": (classification.download_strategy as string) ?? "unknown",
               },
             }, parentCtx, (span) => {
               span.setStatus({ code: SpanStatusCode.OK });

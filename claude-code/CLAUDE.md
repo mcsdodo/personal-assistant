@@ -123,51 +123,24 @@ The `month_tag` is a hard rule — always use the scan date for the YYYY-MM tag,
 
 ## Email Processing Pipeline
 
-Process emails using the Haiku subagents and durable workflow jobs:
+When you receive an email-watcher channel event or a user asks to reprocess an email:
 
-**Hard rule — invoice links override classification:** If the channel event includes `invoice_links` in meta, skip the email-classifier entirely. The watcher already verified the email contains a known vendor invoice download link (deterministic regex match). Use `action: download_and_upload`, `download_strategy: known_link`, `confidence: high`, extract `vendor` from sender domain. Proceed directly to step 1b.
-
-1. **Classify** — dispatch to `email-classifier` agent with the email metadata (sender, subject, body excerpt). It returns a JSON classification including `download_strategy`.
-
-1b. **Download PDF** (if action = download_and_upload) — **always download to disk before creating a job.** The document-classifier (step 1c) needs the local file to determine `owner`, `doc_type`, and refined vendor. Without it, the job will fail with `missing_owner`.
-   - `attachment` strategy: download the first PDF attachment to `/workspace/downloads/`. For Gmail use `get_gmail_message_content` then `get_gmail_attachment_content(message_id, attachment_id, user_google_email)`. For Outlook use `get_attachments` + `download_attachment`. Pass `file_path` when creating the job. (The worker can also download attachments as a fallback, but you must pre-download so document-classifier can run.)
-   - `claude_download` strategy: used for multi-attachment emails where you need to pick the right one. List attachments, identify which is the invoice (look for PDF, largest file, or invoice-related filename), download it to `/workspace/downloads/`, and pass `file_path` when creating the job. The worker reads from disk only. For Gmail use `get_gmail_message_content` (attachments listed in `--- ATTACHMENTS ---` section with IDs) then `get_gmail_attachment_content(message_id, attachment_id, user_google_email)`. For Outlook use `get_attachments` + `download_attachment`.
-   - `known_link` / `direct_url` strategy: use the `invoice_links` from the channel event meta (if present), or `download_file(url, filename)` on file-ops MCP to save to disk. The workflow worker also handles link extraction automatically from email HTML. If the file is encrypted, call `decrypt_pdf(filename)` on file-ops MCP.
-
-1c. **Classify PDF** — invoke the `document-classifier` subagent with the local file path. Before invoking, replace the `${...}` placeholders in the prompt with business identifier env vars (use `get_env` on file-ops MCP for `BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`). Merge results: document-classifier non-null values override email-classifier values (vendor, total_amount, order_id, is_fuel, currency, confidence, owner). The document-classifier is the sole source for `doc_type`, `subtitle`, and `owner` — the email-classifier does not return these fields. `subtitle` is a short label (e.g. "Dochádzka marec 2026") used for title building when order_id is null. If the classifier fails, fall back to email-classifier metadata only (doc_type defaults to "invoice").
-
-1d. **Infer month_tag** — determine the YYYY-MM tag from email context (subject line billing period, document date from classifier, or received_at as fallback).
-
-2. **Act on classification:**
-   - `action: download_and_upload` — create a durable workflow job using `create_invoice_intake_job` with the email source, message ID, merged classification JSON, `file_path`, and `month_tag`.
-     - After creating the job, poll with `get_job(job_id)` to check status:
-       - `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
-       - `state: completed` with `outcome: duplicate` → silently skip, no notification
-       - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for user response, then call `approve_job` or `cancel_job`
-       - `state: retryable` → transient failure, worker retries automatically (up to 3 attempts). No action needed.
-       - `state: failed` → permanent failure (max retries exhausted), worker sends Telegram notification automatically. Re-download the file, re-run document-classifier, and create a fresh job with `create_invoice_intake_job(..., force: true)`.
-     - You don't need to poll immediately — the worker processes jobs within seconds. Check once after a short delay.
-   - `action: notify_user` — notify the user via Telegram with the classification details and ask what to do. If the Telegram notification fails (e.g. chat not allowlisted, reply tool errors), record status="failed" with the error — do NOT mark as "processed".
-   - `action: ignore` — log silently, do nothing.
-
-**Reprocessing emails:** When the user asks to reprocess an email, follow the EXACT same pipeline as automatic processing (steps 1 → 1b → 1c → 1d → 2). Do NOT skip steps. Specifically:
-1. Look up the email via `get_recent_emails` — get `invoice_links` from the DB if available
-2. Classify (step 1) — or use `invoice_links` override if links present
-3. Download PDF (step 1b) — use `invoice_links` from DB, or let the worker extract from HTML
-4. Classify PDF (step 1c) — run document-classifier on the downloaded file to get `total_amount`, `owner`, `doc_type`
-5. Merge classifications, infer `month_tag` (step 1d)
-6. Create `create_invoice_intake_job` with `force: true`, merged classification, `file_path`, `month_tag`, and `invoice_links`
-Do NOT manually inspect the email and reason about whether it can be processed. Follow the pipeline.
-
-3. **Report** — after the job completes, briefly summarize what happened (e.g., "Uploaded Alza invoice FA2026030123 to Paperless with tags [invoicing, 2026-03]").
-
-4. **Record** — after each step, call `update_email_status` on the email-watcher (see "Recording email status" section below for full details). Always pass `source`:
-   - After classification: `update_email_status(id, status="classified", source=<email_source>, classification=<json>, action=..., vendor=..., confidence=...)`
+1. **Create a job:** `create_invoice_intake_job(email_source, message_id)` — add `force: true` for reprocess
+2. **The worker handles the full pipeline** — email classification, download, document classification, dedup, upload, notification
+3. **Respond to classification requests** — when you receive `classify_email` or `classify_document` channel events from the worker, run the appropriate haiku subagent and call `submit_classification` (see "When you receive a workflow channel event" below)
+4. **Monitor the job** — poll with `get_job(job_id)` after a short delay:
+   - `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
+   - `state: completed` with `outcome: duplicate` → silently skip, no notification
+   - `state: completed` with `outcome: ignored` → email classifier determined it's not an invoice, no action needed
+   - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response, then call `approve_job` or `cancel_job`
+   - `state: retryable` → transient failure, worker retries automatically. No action needed.
+   - `state: failed` → permanent failure, worker sends Telegram notification automatically. Create a fresh job with `force: true`.
+5. **Record** — call `update_email_status` on the email-watcher after the job completes. Always pass `source`:
    - After job completion: `update_email_status(id, status="processed", source=<email_source>, process_result="Uploaded X to Paperless")`
    - On job failure: `update_email_status(id, status="failed", source=<email_source>, process_result="error details")`
    - On ignore: `update_email_status(id, status="ignored", source=<email_source>)`
 
-This pipeline keeps routine classification on Haiku (fast, cheap), deterministic execution in the workflow worker, and only escalates edge cases to you (Sonnet).
+Do NOT manually inspect emails, download PDFs, or run classifiers outside of channel requests. The worker orchestrates.
 
 ## When you receive a workflow channel event
 
