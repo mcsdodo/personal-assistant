@@ -226,6 +226,8 @@ import {
   test,
 } from "bun:test";
 
+import { openWorkflowDb, getJobByIdempotencyKey } from "./workflow-db";
+
 let pollGmail: any;
 let pollOutlook: any;
 let processNewEmails: any;
@@ -247,10 +249,16 @@ beforeAll(async () => {
 
 let db: Database;
 let mockChannel: { _notifications: any[]; notification: (msg: any) => Promise<void> };
+let wfDb: ReturnType<typeof openWorkflowDb>;
+let tmpDir: string;
 
 beforeEach(() => {
   db = createDb();
   currentDb = db;
+
+  // Per-test temp dir for workflow DB
+  tmpDir = mkdtempSync(join(tmpdir(), "ew-integ-wf-"));
+  wfDb = openWorkflowDb(join(tmpDir, "workflow.db"));
 
   // Reset cached MCP clients so each test gets a fresh client
   // that picks up the latest globalThis callTool hooks
@@ -268,6 +276,8 @@ beforeEach(() => {
 
 afterEach(() => {
   try { db.close(); } catch {}
+  try { wfDb.close(); } catch {}
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
 });
 
 // ---------------------------------------------------------------------------
@@ -465,7 +475,7 @@ describe("pollOutlook integration", () => {
 // =========================================================================
 
 describe("processNewEmails integration", () => {
-  test("inserts emails into DB and pushes channel notifications", async () => {
+  test("inserts emails into DB and creates workflow job (no channel notification)", async () => {
     const emails = [{
       id: "proc-001", source: "gmail" as const,
       sender: "invoice@vendor.com", subject: "Invoice #999",
@@ -473,13 +483,7 @@ describe("processNewEmails integration", () => {
       hasAttachments: true, receivedAt: "2026-03-25T10:00:00Z",
     }];
 
-    setGmailCallTool(async ({ name }: any) => {
-      if (name === "get_gmail_message_content")
-        return mcpRawTextResult("<html><body>No links here</body></html>");
-      return { content: [] };
-    });
-
-    await processNewEmails(db, mockChannel, emails);
+    await processNewEmails(db, mockChannel, emails, wfDb);
 
     expect(emailExistsMock(db, "proc-001")).toBe(true);
     const rows = getRecentEmailsMock(db, { status: "new" });
@@ -491,15 +495,18 @@ describe("processNewEmails integration", () => {
     expect(row.has_attachments).toBe(1);
     expect(row.status).toBe("new");
 
-    expect(mockChannel._notifications).toHaveLength(1);
-    const notif = mockChannel._notifications[0];
-    expect(notif.method).toBe("notifications/claude/channel");
-    expect(notif.params.meta.email_source).toBe("gmail");
-    expect(notif.params.meta.message_id).toBe("proc-001");
-    expect(notif.params.meta.sender).toBe("invoice@vendor.com");
-    expect(notif.params.meta.subject).toBe("Invoice #999");
-    expect(notif.params.content).toContain("New email detected:");
-    expect(notif.params.content).toContain("From: invoice@vendor.com");
+    // No channel notifications — jobs are created directly in workflow DB
+    expect(mockChannel._notifications).toHaveLength(0);
+
+    // Verify job was created in workflow DB
+    const job = getJobByIdempotencyKey(wfDb, "gmail:proc-001");
+    expect(job).toBeTruthy();
+    expect(job!.workflow_type).toBe("invoice_intake");
+    expect(job!.state).toBe("queued");
+    expect(job!.source_ref).toBe("gmail:proc-001");
+    const input = JSON.parse(job!.input_json!);
+    expect(input.email_source).toBe("gmail");
+    expect(input.message_id).toBe("proc-001");
   });
 
   test("handles duplicate gracefully (INSERT OR IGNORE)", async () => {
@@ -511,16 +518,19 @@ describe("processNewEmails integration", () => {
     await processNewEmails(db, mockChannel, [{
       id: "proc-002", source: "outlook" as const,
       sender: "dup@example.com", subject: "Duplicate (retry)",
-    }]);
+    }], wfDb);
 
     const rows = db.query("SELECT * FROM emails WHERE id = ?").all("proc-002") as any[];
     expect(rows).toHaveLength(1);
     expect(rows[0].subject).toBe("Duplicate");
-    expect(mockChannel._notifications).toHaveLength(1);
+    // Job created via idempotency — same key returns same job, no notification
+    expect(mockChannel._notifications).toHaveLength(0);
+    const job = getJobByIdempotencyKey(wfDb, "outlook:proc-002");
+    expect(job).toBeTruthy();
   });
 
   test("does nothing for empty email list", async () => {
-    await processNewEmails(db, mockChannel, []);
+    await processNewEmails(db, mockChannel, [], wfDb);
     expect(mockChannel._notifications).toHaveLength(0);
   });
 
@@ -530,37 +540,70 @@ describe("processNewEmails integration", () => {
       sender: `s${i}@example.com`, subject: `Email ${i}`,
     }));
 
-    await processNewEmails(db, mockChannel, emails);
+    await processNewEmails(db, mockChannel, emails, wfDb);
 
-    expect(mockChannel._notifications).toHaveLength(5);
-    for (let i = 0; i < 5; i++) expect(emailExistsMock(db, `cap-${i}`)).toBe(true);
+    // No channel notifications — jobs created directly
+    expect(mockChannel._notifications).toHaveLength(0);
+    // Only first 5 processed (capped)
+    for (let i = 0; i < 5; i++) {
+      expect(emailExistsMock(db, `cap-${i}`)).toBe(true);
+      expect(getJobByIdempotencyKey(wfDb, `outlook:cap-${i}`)).toBeTruthy();
+    }
     for (let i = 5; i < 8; i++) expect(emailExistsMock(db, `cap-${i}`)).toBe(false);
   });
 
-  test("notification meta does not include invoice_links (worker extracts)", async () => {
+  test("creates job without invoice_links in input (worker extracts)", async () => {
     await processNewEmails(db, mockChannel, [{
       id: "proc-links-001", source: "gmail" as const,
       sender: "noreply@alza.sk", subject: "Invoice",
-    }]);
+    }], wfDb);
 
-    const notif = mockChannel._notifications[0];
-    expect(notif.params.meta.invoice_links).toBeUndefined();
-    expect(notif.params.content).not.toContain("Invoice links:");
+    // No channel notification — job created directly
+    expect(mockChannel._notifications).toHaveLength(0);
+    const job = getJobByIdempotencyKey(wfDb, "gmail:proc-links-001");
+    expect(job).toBeTruthy();
+    const input = JSON.parse(job!.input_json!);
+    expect(input.invoice_links).toBeUndefined();
   });
 
-  test("sets correct meta for outlook emails (no HTML fetch)", async () => {
+  test("processNewEmails is idempotent — same email creates one job", async () => {
+    const emails = [{
+      id: "idemp-001", source: "gmail" as const,
+      sender: "repeat@vendor.com", subject: "Same Invoice",
+    }];
+
+    await processNewEmails(db, mockChannel, emails, wfDb);
+    const job1 = getJobByIdempotencyKey(wfDb, "gmail:idemp-001");
+    expect(job1).toBeTruthy();
+
+    // Call again with the same email — should return the same job (idempotent)
+    await processNewEmails(db, mockChannel, emails, wfDb);
+    const job2 = getJobByIdempotencyKey(wfDb, "gmail:idemp-001");
+    expect(job2).toBeTruthy();
+    expect(job2!.id).toBe(job1!.id);
+
+    // Only one job exists for this key
+    const allJobs = wfDb.prepare("SELECT * FROM jobs WHERE idempotency_key = ?").all("gmail:idemp-001");
+    expect(allJobs).toHaveLength(1);
+  });
+
+  test("creates job for outlook emails with correct source_ref", async () => {
     await processNewEmails(db, mockChannel, [{
       id: "proc-outlook-001", source: "outlook" as const,
       sender: "info@company.com", to: "me@outlook.com",
       subject: "Monthly Report", hasAttachments: false,
       receivedAt: "2026-03-25T16:00:00Z",
-    }]);
+    }], wfDb);
 
-    const notif = mockChannel._notifications[0];
-    expect(notif.params.meta.email_source).toBe("outlook");
-    expect(notif.params.meta.has_attachments).toBe("false");
-    expect(notif.params.meta.received_at).toBe("2026-03-25T16:00:00Z");
-    expect(notif.params.content).toContain("Has attachments: no");
+    // No channel notification — job created directly
+    expect(mockChannel._notifications).toHaveLength(0);
+    const job = getJobByIdempotencyKey(wfDb, "outlook:proc-outlook-001");
+    expect(job).toBeTruthy();
+    expect(job!.workflow_type).toBe("invoice_intake");
+    expect(job!.source_ref).toBe("outlook:proc-outlook-001");
+    const input = JSON.parse(job!.input_json!);
+    expect(input.email_source).toBe("outlook");
+    expect(input.message_id).toBe("proc-outlook-001");
   });
 });
 
@@ -569,7 +612,7 @@ describe("processNewEmails integration", () => {
 // =========================================================================
 
 describe("full poll->detect->process flow", () => {
-  test("Gmail: poll detects, process inserts and notifies", async () => {
+  test("Gmail: poll detects, process inserts and creates job", async () => {
     setLastCheckedMock(db, "gmail", "2026-03-20T00:00:00Z");
 
     setGmailCallTool(async ({ name }: any) => {
@@ -587,11 +630,15 @@ describe("full poll->detect->process flow", () => {
     const emails = await pollGmail(db, "after:1711929600");
     expect(emails).toHaveLength(1);
 
-    await processNewEmails(db, mockChannel, emails);
+    await processNewEmails(db, mockChannel, emails, wfDb);
 
     expect(emailExistsMock(db, "flow-gmail-001")).toBe(true);
-    expect(mockChannel._notifications).toHaveLength(1);
-    expect(mockChannel._notifications[0].params.meta.message_id).toBe("flow-gmail-001");
+    // No channel notifications — jobs created directly in workflow DB
+    expect(mockChannel._notifications).toHaveLength(0);
+    const job = getJobByIdempotencyKey(wfDb, "gmail:flow-gmail-001");
+    expect(job).toBeTruthy();
+    expect(job!.workflow_type).toBe("invoice_intake");
+    expect(job!.source_ref).toBe("gmail:flow-gmail-001");
 
     // Poll again — same email in DB, dedup should filter it out.
     const emails2 = await pollGmail(db, "after:1711929600");
@@ -599,7 +646,7 @@ describe("full poll->detect->process flow", () => {
     expect(newOnly).toHaveLength(0);
   });
 
-  test("Outlook: poll detects, process inserts and notifies", async () => {
+  test("Outlook: poll detects, process inserts and creates job", async () => {
     setOutlookCallTool(async () => mcpTextResult([{
       id: "flow-outlook-001", sender: "flow-outlook@example.com",
       subject: "Outlook Flow", preview: "Full flow",
@@ -609,7 +656,7 @@ describe("full poll->detect->process flow", () => {
     const emails = await pollOutlook(db, "2026-03-20T00:00:00Z");
     expect(emails).toHaveLength(1);
 
-    await processNewEmails(db, mockChannel, emails);
+    await processNewEmails(db, mockChannel, emails, wfDb);
 
     expect(emailExistsMock(db, "flow-outlook-001")).toBe(true);
     const rows = getRecentEmailsMock(db, {});
@@ -618,8 +665,13 @@ describe("full poll->detect->process flow", () => {
     expect(row.source).toBe("outlook");
     expect(row.status).toBe("new");
 
-    expect(mockChannel._notifications).toHaveLength(1);
-    expect(mockChannel._notifications[0].params.meta.email_source).toBe("outlook");
+    // No channel notifications — jobs created directly in workflow DB
+    expect(mockChannel._notifications).toHaveLength(0);
+    const job = getJobByIdempotencyKey(wfDb, "outlook:flow-outlook-001");
+    expect(job).toBeTruthy();
+    expect(job!.workflow_type).toBe("invoice_intake");
+    const input = JSON.parse(job!.input_json!);
+    expect(input.email_source).toBe("outlook");
   });
 
   test("mixed sources: Gmail and Outlook in sequence", async () => {
@@ -642,15 +694,19 @@ describe("full poll->detect->process flow", () => {
     expect(gmailEmails).toHaveLength(1);
     expect(outlookEmails).toHaveLength(1);
 
-    await processNewEmails(db, mockChannel, gmailEmails);
-    await processNewEmails(db, mockChannel, outlookEmails);
+    await processNewEmails(db, mockChannel, gmailEmails, wfDb);
+    await processNewEmails(db, mockChannel, outlookEmails, wfDb);
 
     expect(emailExistsMock(db, "mixed-gmail-001")).toBe(true);
     expect(emailExistsMock(db, "mixed-outlook-001")).toBe(true);
-    expect(mockChannel._notifications).toHaveLength(2);
+    // No channel notifications — jobs created directly in workflow DB
+    expect(mockChannel._notifications).toHaveLength(0);
 
-    const sources = mockChannel._notifications.map((n: any) => n.params.meta.email_source);
-    expect(sources).toContain("gmail");
-    expect(sources).toContain("outlook");
+    const gmailJob = getJobByIdempotencyKey(wfDb, "gmail:mixed-gmail-001");
+    const outlookJob = getJobByIdempotencyKey(wfDb, "outlook:mixed-outlook-001");
+    expect(gmailJob).toBeTruthy();
+    expect(outlookJob).toBeTruthy();
+    expect(gmailJob!.workflow_type).toBe("invoice_intake");
+    expect(outlookJob!.workflow_type).toBe("invoice_intake");
   });
 });
