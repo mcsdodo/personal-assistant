@@ -31,6 +31,7 @@ import { readFileAsDownload } from "./download-helper";
 import { extractInvoiceLinks, type InvoiceLink } from "./invoice-links";
 import { findBestCorrespondentMatch } from "./fuzzy-match";
 import { formatNotification, type NotifyFn } from "./telegram-notify";
+import { buildTagNames, generateTitle } from "./invoice-pipeline";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -258,8 +259,6 @@ export async function executeInvoiceIntake(
 
       // Step 4: Resolve tags — derived deterministically from classification
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-      const allTagNames: string[] = [];
-      const docType = classification.doc_type;
       const owner = classification.owner;
       if (!owner) {
         const msg = "Missing owner field — document-classifier may not have run. Cancel this job and re-create with full classification.";
@@ -271,26 +270,10 @@ export async function executeInvoiceIntake(
         return;
       }
 
-      allTagNames.push(owner === "techlab" ? "techlab" : "personal");
-
-      // All techlab docs go to accountant by default (rare exceptions curated manually)
-      if (owner === "techlab") {
-        allTagNames.push("accounting");
-      }
-
-      if (docType === "credit_note") {
-        allTagNames.push("credit-note");
-      }
-      if (docType === "account_statement") {
-        allTagNames.push("account-statement");
-      }
-
-      if (classification.is_fuel) {
-        allTagNames.push("fuel");
-      }
-      if (input.month_tag && !allTagNames.includes(input.month_tag)) {
-        allTagNames.push(input.month_tag);
-      }
+      const allTagNames = buildTagNames(
+        { owner, doc_type: classification.doc_type, is_fuel: classification.is_fuel },
+        input.month_tag ?? null,
+      );
       const tagIds = await resolveTags(allTagNames, logger);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
 
@@ -302,7 +285,7 @@ export async function executeInvoiceIntake(
 
       // Step 6: Upload to Paperless
       addJobEvent(db, job.id, "step_started", { step: "upload" });
-      const title = buildTitle(classification.vendor, classification.order_id, classification.subtitle, input.subject);
+      const title = generateTitle(classification.vendor, classification.order_id, classification.subtitle, input.subject);
       const uploadResult = await uploadToPaperless({
         title,
         file,
@@ -1004,31 +987,6 @@ async function uploadToPaperless(
   });
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────
-
-function buildTitle(
-  vendor: string,
-  orderId: string | null | undefined,
-  subtitle: string | null | undefined,
-  subject: string | undefined,
-): string {
-  if (orderId) {
-    return `${vendor} - ${orderId}`;
-  }
-  if (subtitle) {
-    return `${vendor} - ${subtitle}`;
-  }
-  if (subject) {
-    // Use first meaningful part of subject
-    const cleaned = subject
-      .replace(/^(Fwd|Re|FW):\s*/gi, "")
-      .trim()
-      .slice(0, 80);
-    return `${vendor} - ${cleaned}`;
-  }
-  return `${vendor} - invoice`;
-}
-
 // ── Scan intake (GDrive) ──────────────────────────────────────────────
 
 export async function executeScanIntake(
@@ -1139,26 +1097,10 @@ export async function executeScanIntake(
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
       const segments = (input.watch_folder ?? "techlab/accounting").split("/").filter(Boolean);
       const scanTagOwner = segments[0]; // "techlab" or "personal"
-      const allTagNames: string[] = [scanTagOwner];
-
-      // All techlab docs get accounting tag by default
-      if (scanTagOwner === "techlab") {
-        allTagNames.push("accounting");
-      }
-
-      if (classification.doc_type === "credit_note") {
-        allTagNames.push("credit-note");
-      }
-      if (classification.doc_type === "account_statement") {
-        allTagNames.push("account-statement");
-      }
-
-      if (classification.is_fuel) {
-        allTagNames.push("fuel");
-      }
-      if (input.month_tag && !allTagNames.includes(input.month_tag)) {
-        allTagNames.push(input.month_tag);
-      }
+      const allTagNames = buildTagNames(
+        { owner: scanTagOwner, doc_type: classification.doc_type, is_fuel: classification.is_fuel },
+        input.month_tag ?? null,
+      );
       const tagIds = await resolveTags(allTagNames, logger);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
 
