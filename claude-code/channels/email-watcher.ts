@@ -570,6 +570,7 @@ export async function processNewEmails(db: Database, channel: Server, emails: Em
       receivedAt: email.receivedAt ?? null,
       status: "new",
       traceId: getActiveTraceId(),
+      invoiceLinks: email.invoiceLinks?.length ? JSON.stringify(email.invoiceLinks) : null,
     });
 
     // Push channel notification

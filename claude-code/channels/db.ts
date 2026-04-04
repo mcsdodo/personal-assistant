@@ -14,6 +14,7 @@ export interface InsertEmail {
   receivedAt?: string | null;
   status: "new";
   traceId?: string | null;
+  invoiceLinks?: string | null; // JSON-serialized InvoiceLink[]
 }
 
 export interface EmailRow {
@@ -33,6 +34,7 @@ export interface EmailRow {
   processed_at: string | null;
   process_result: string | null;
   status: string;
+  invoice_links: string | null;
 }
 
 export interface StatRow {
@@ -103,6 +105,8 @@ export function openDb(path: string): Database {
   db.exec(SOURCE_STATE_SCHEMA);
   // Migration: add trace_id column if missing
   try { db.exec("ALTER TABLE emails ADD COLUMN trace_id TEXT;"); } catch { /* already exists */ }
+  // Migration: add invoice_links column if missing
+  try { db.exec("ALTER TABLE emails ADD COLUMN invoice_links TEXT;"); } catch { /* already exists */ }
   return db;
 }
 
@@ -113,9 +117,9 @@ export function openDb(path: string): Database {
 export function insertEmail(db: Database, email: InsertEmail): void {
   db.prepare(
     `INSERT OR IGNORE INTO emails
-       (id, source, sender, subject, preview, has_attachments, received_at, status, trace_id)
+       (id, source, sender, subject, preview, has_attachments, received_at, status, trace_id, invoice_links)
      VALUES
-       (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     email.id,
     email.source,
@@ -126,6 +130,7 @@ export function insertEmail(db: Database, email: InsertEmail): void {
     email.receivedAt ?? null,
     email.status,
     email.traceId ?? null,
+    email.invoiceLinks ?? null,
   );
 }
 

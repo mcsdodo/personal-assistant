@@ -131,6 +131,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "boolean",
             description: "Bypass idempotency check to reprocess an email that already has a completed job",
           },
+          invoice_links: {
+            type: "array",
+            description: "Pre-extracted invoice download links (from email-watcher or emails DB). Pass these so the worker doesn't need to re-fetch email HTML.",
+            items: { type: "object" },
+          },
         },
         required: ["email_source", "message_id", "classification"],
       },
@@ -248,6 +253,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           received_at: (args?.received_at as string | undefined) ?? undefined,
           file_path: (args?.file_path as string | undefined) ?? undefined,
           month_tag: (args?.month_tag as string | undefined) ?? undefined,
+          invoice_links: (args?.invoice_links as unknown[] | undefined) ?? undefined,
         };
 
         // Use source:message_id as idempotency key; force bypasses with unique suffix

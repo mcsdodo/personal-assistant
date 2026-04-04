@@ -157,6 +157,9 @@ services:
         elif [ -s /app/client_secret_mount.json ]; then
           cp /app/client_secret_mount.json /app/client_secret.json
         fi
+        # Raise Gmail MCP body truncation limits (default 20k cuts off invoice links in large HTML emails)
+        sed -i 's/HTML_BODY_TRUNCATE_LIMIT = 20000/HTML_BODY_TRUNCATE_LIMIT = 100000/' /app/gmail/gmail_tools.py
+        sed -i 's/RAW_BODY_TRUNCATE_LIMIT = 20000/RAW_BODY_TRUNCATE_LIMIT = 100000/' /app/gmail/gmail_tools.py
         exec uv run main.py --transport streamable-http --permissions gmail:readonly drive:full
 
   gmail-mcp-auth:
