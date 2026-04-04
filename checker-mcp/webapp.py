@@ -10,8 +10,9 @@ from dotenv import load_dotenv
 from flask import Flask, request as req
 
 from match_invoices import (
-    DOCUMENT_TYPE_STATEMENT,
-    INVOICING_TAG_NAME,
+    ACCOUNTING_TAG_NAME,
+    ACCOUNT_STATEMENT_TAG_NAME,
+    INVOICE_TYPE_NAME,
     MONTH_WINDOW,
     PAPERLESS_URL,
     TOTAL_AMOUNT_ALT_FIELD_NAME,
@@ -49,15 +50,26 @@ def index():
 
     client = PaperlessClient(PAPERLESS_URL, token)
     tag_map = client.get_all_tags()
-    stmt_type = client.get_document_type_id(DOCUMENT_TYPE_STATEMENT)
-    if stmt_type is None:
+    acct_stmt_tag = client.get_tag_id(ACCOUNT_STATEMENT_TAG_NAME)
+    if acct_stmt_tag is None:
         return (
-            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Document type '{DOCUMENT_TYPE_STATEMENT}' not found</pre>",
+            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{ACCOUNT_STATEMENT_TAG_NAME}' not found</pre>",
+            500,
+        )
+    accounting_tag = client.get_tag_id(ACCOUNTING_TAG_NAME)
+    if accounting_tag is None:
+        return (
+            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{ACCOUNTING_TAG_NAME}' not found</pre>",
+            500,
+        )
+    invoice_type = client.get_document_type_id(INVOICE_TYPE_NAME)
+    if invoice_type is None:
+        return (
+            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Document type '{INVOICE_TYPE_NAME}' not found</pre>",
             500,
         )
     ta_field = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     ta_alt_field = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
-    inv_tag = client.get_tag_id(INVOICING_TAG_NAME)
 
     # Determine months
     month_param = req.args.get("month")
@@ -65,7 +77,7 @@ def index():
     if month_param:
         months = [month_param]
     elif all_param:
-        stmts = client.get_documents(document_type__id=stmt_type)
+        stmts = client.get_documents(tags__id=acct_stmt_tag)
         month_tags = set()
         for s in stmts:
             for tid in s.get("tags", []):
@@ -91,10 +103,11 @@ def index():
             collect_month(
                 client,
                 month_offset(months[0], -i),
-                stmt_type,
+                acct_stmt_tag,
+                accounting_tag,
+                invoice_type,
                 ta_field,
                 doc_cache,
-                inv_tag,
                 global_matched_ids,
                 total_amount_alt_field_id=ta_alt_field,
             )
@@ -104,10 +117,11 @@ def index():
         collect_month(
             client,
             m,
-            stmt_type,
+            acct_stmt_tag,
+            accounting_tag,
+            invoice_type,
             ta_field,
             doc_cache,
-            inv_tag,
             global_matched_ids,
             total_amount_alt_field_id=ta_alt_field,
         )
@@ -238,19 +252,30 @@ def profit_loss():
         )
 
     client = PaperlessClient(PAPERLESS_URL, token)
-    stmt_type = client.get_document_type_id(DOCUMENT_TYPE_STATEMENT)
-    if stmt_type is None:
+    acct_stmt_tag = client.get_tag_id(ACCOUNT_STATEMENT_TAG_NAME)
+    if acct_stmt_tag is None:
         return (
-            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Document type '{DOCUMENT_TYPE_STATEMENT}' not found</pre>",
+            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{ACCOUNT_STATEMENT_TAG_NAME}' not found</pre>",
+            500,
+        )
+    accounting_tag = client.get_tag_id(ACCOUNTING_TAG_NAME)
+    if accounting_tag is None:
+        return (
+            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{ACCOUNTING_TAG_NAME}' not found</pre>",
+            500,
+        )
+    invoice_type = client.get_document_type_id(INVOICE_TYPE_NAME)
+    if invoice_type is None:
+        return (
+            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Document type '{INVOICE_TYPE_NAME}' not found</pre>",
             500,
         )
     ta_field = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     ta_alt_field = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
-    inv_tag = client.get_tag_id(INVOICING_TAG_NAME)
 
     # Find years with statement data
     tag_map = client.get_all_tags()
-    stmts = client.get_documents(document_type__id=stmt_type)
+    stmts = client.get_documents(tags__id=acct_stmt_tag)
     years_with_data = set()
     for s in stmts:
         for tid in s.get("tags", []):
@@ -264,9 +289,10 @@ def profit_loss():
     pl = collect_pl(
         client,
         year,
-        stmt_type,
+        acct_stmt_tag,
+        accounting_tag,
+        invoice_type,
         ta_field,
-        inv_tag,
         total_amount_alt_field_id=ta_alt_field,
     )
     return render_pl(pl, available_years)
