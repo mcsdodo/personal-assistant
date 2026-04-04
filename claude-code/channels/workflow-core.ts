@@ -16,6 +16,7 @@ import {
 import { executeInvoiceIntake, executeScanIntake } from "./invoice-worker";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 import { getTracer, SpanStatusCode, remoteParentContext } from "./tracing";
 import type { Span } from "./tracing";
@@ -94,6 +95,7 @@ export async function executeNextJob(
   logger: WorkflowLogger,
   registry?: PaperlessFieldRegistry,
   notify?: NotifyFn,
+  channel?: Server,
 ): Promise<JobRow | null> {
   const job = claimNextQueuedJob(db);
   if (!job) return null;
@@ -119,7 +121,7 @@ export async function executeNextJob(
           executeSyntheticJob(db, job, logger);
           break;
         case "invoice_intake":
-          await executeInvoiceIntake(db, job, logger, registry!, notify);
+          await executeInvoiceIntake(db, job, logger, registry!, notify, channel);
           break;
         case "scan_intake":
           await executeScanIntake(db, job, logger, registry!, notify);

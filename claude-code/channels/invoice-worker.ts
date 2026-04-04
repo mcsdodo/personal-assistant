@@ -19,7 +19,9 @@ import {
   addJobEvent,
   completeJob,
   failJob,
+  getJobEvents,
   parseJobJson,
+  requestClassification,
   requestJobApproval,
   scheduleRetry,
   shouldRetry,
@@ -31,7 +33,8 @@ import { readFileAsDownload } from "./download-helper";
 import { extractInvoiceLinks, type InvoiceLink } from "./invoice-links";
 import { findBestCorrespondentMatch } from "./fuzzy-match";
 import { formatNotification, type NotifyFn } from "./telegram-notify";
-import { buildTagNames, generateTitle } from "./invoice-pipeline";
+import { buildTagNames, generateTitle, getCompletedSteps, mergeClassifications } from "./invoice-pipeline";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -163,6 +166,7 @@ export async function executeInvoiceIntake(
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
   notify?: NotifyFn,
+  channel?: Server,
 ): Promise<void> {
   seedCounterFromDb(db);
   const input = parseJobJson<InvoiceIntakeInput>(job.input_json);
@@ -184,9 +188,17 @@ export async function executeInvoiceIntake(
   }, async (span: Span) => {
     let outcome = "unknown";
     try {
+      // Resume logic — read completed steps to skip on re-entry
+      const completedSteps = getCompletedSteps(db, job.id);
+
       // Step 1: Get file — prefer disk, fallback to MCP download
       let file: DownloadedFile;
-      if (input.file_path && existsSync(input.file_path)) {
+      const cachedDownload = completedSteps.get("download") ?? completedSteps.get("read_from_disk");
+      if (cachedDownload && input.file_path && existsSync(input.file_path)) {
+        // Resume: file was already downloaded in a previous run
+        logger.log(`Resuming: reusing downloaded file from ${input.file_path}`);
+        file = readFileAsDownload(input.file_path);
+      } else if (input.file_path && existsSync(input.file_path)) {
         addJobEvent(db, job.id, "step_started", { step: "read_from_disk", file_path: input.file_path });
         file = readFileAsDownload(input.file_path);
         addJobEvent(db, job.id, "step_completed", {
@@ -206,6 +218,37 @@ export async function executeInvoiceIntake(
           content_type: file.content_type,
         });
       }
+
+      // Step 1.5: Document classification via channel (non-blocking)
+      const cachedDocClassification = completedSteps.get("classify_document");
+      if (cachedDocClassification?.result) {
+        // Resume: merge cached doc classification into email classification
+        const docResult = cachedDocClassification.result as Partial<typeof classification>;
+        Object.assign(classification, mergeClassifications(classification, docResult));
+        logger.log(`Resuming: merged cached doc classification (owner=${classification.owner})`);
+      } else if (channel) {
+        // Park the job and request document classification from Claude
+        const filePath = input.file_path ?? `(downloaded: ${file.filename})`;
+        requestClassification(db, job.id, "classify_document", { file_path: filePath });
+        await channel.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content: `Classification request: run document-classifier on the downloaded file and call submit_classification.`,
+            meta: {
+              event_type: "classify_document",
+              job_id: job.id,
+              file_path: filePath,
+              vendor: classification.vendor,
+            },
+          },
+        });
+        logger.log(`Job ${job.id} parked for document classification`);
+        outcome = "awaiting_classification";
+        span.setAttribute("invoice.outcome", "awaiting_classification");
+        span.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
+      // If no channel available, continue with existing classification (backward compatible)
 
       // Step 2: Resolve correspondent
       addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });

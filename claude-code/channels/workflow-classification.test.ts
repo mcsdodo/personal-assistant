@@ -73,7 +73,7 @@ describe("awaiting_classification state", () => {
     expect(ok).toBe(true);
 
     const updated = getJob(db, job.id);
-    expect(updated!.state).toBe("running");
+    expect(updated!.state).toBe("queued");
 
     const events = getJobEvents(db, job.id);
     const completed = events.find(

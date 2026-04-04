@@ -64,7 +64,7 @@ async function workerTick(): Promise<void> {
   workerBusy = true;
   try {
     // Only create a span when there's actual work (avoids ~43k idle spans/day)
-    await executeNextJob(db, { log }, fieldRegistry, notifyTelegram);
+    await executeNextJob(db, { log }, fieldRegistry, notifyTelegram, mcp);
   } finally {
     workerBusy = false;
   }

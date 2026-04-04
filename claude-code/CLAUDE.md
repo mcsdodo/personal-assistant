@@ -169,6 +169,16 @@ Do NOT manually inspect the email and reason about whether it can be processed. 
 
 This pipeline keeps routine classification on Haiku (fast, cheap), deterministic execution in the workflow worker, and only escalates edge cases to you (Sonnet).
 
+## When you receive a workflow channel event
+
+The workflow worker sends classification requests via channel when it needs LLM judgment.
+
+**`event_type: "classify_document"`** — the worker has downloaded a PDF and needs document classification:
+1. Read `file_path` and `job_id` from the event meta
+2. Invoke the `document-classifier` subagent with the file path. Before invoking, replace `${...}` placeholders with business identifier env vars (use `get_env` on file-ops MCP for `BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`).
+3. Call `submit_classification(job_id, step="classify_document", result=<classifier output>)` on the workflow tools
+4. The worker picks up the result on the next poll tick and continues the pipeline
+
 ## When asked about invoices or matching
 
 Use checker tools for matching and P&L queries. Use paperless tools for document search, upload, and tagging. Use gmail/ms365 tools to fetch and read emails.

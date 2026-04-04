@@ -1,5 +1,7 @@
 /**
- * Pure pipeline functions extracted from invoice-worker.ts.
+ * Pipeline functions extracted from invoice-worker.ts.
+ *
+ * Pure deterministic functions + step resume helper.
  *
  * These are deterministic, side-effect-free functions for:
  * - Classification merging (email + document classifier results)
@@ -119,4 +121,25 @@ export function generateTitle(
     return `${vendor} - ${cleaned}`;
   }
   return `${vendor} - invoice`;
+}
+
+// ── Step resume ─────────────────────────────────────────────────────────
+
+import { getJobEvents } from "./workflow-db";
+import type { Database } from "bun:sqlite";
+
+/**
+ * Read all step_completed events for a job and build a map of step → payload.
+ * Used by the worker to skip already-completed steps on resume.
+ */
+export function getCompletedSteps(db: Database, jobId: string): Map<string, Record<string, unknown>> {
+  const events = getJobEvents(db, jobId);
+  const completed = new Map<string, Record<string, unknown>>();
+  for (const evt of events) {
+    if (evt.event_type === "step_completed" && evt.payload_json) {
+      const payload = JSON.parse(evt.payload_json);
+      if (payload.step) completed.set(payload.step, payload);
+    }
+  }
+  return completed;
 }

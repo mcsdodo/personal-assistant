@@ -410,6 +410,8 @@ export function submitClassification(
 
   const timestamp = nowIso();
   addJobEvent(db, jobId, "step_completed", { step, result: classificationResult });
-  db.prepare(`UPDATE jobs SET state = 'running', updated_at = ? WHERE id = ?`).run(timestamp, jobId);
+  // Set to queued so the worker's claimNextQueuedJob picks it up on next tick.
+  // The worker reads completed steps and resumes from where it left off.
+  db.prepare(`UPDATE jobs SET state = 'queued', updated_at = ? WHERE id = ?`).run(timestamp, jobId);
   return true;
 }
