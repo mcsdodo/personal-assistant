@@ -1,19 +1,21 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import { tmpdir } from "os";
-import {
-  openDb,
-  insertEmail,
-  emailExists,
-  updateEmail,
-  getRecentEmails,
-  getEmailStats,
-  type InsertEmail,
-  type EmailRow,
-  type StatRow,
-} from "./db";
 import type { Database } from "bun:sqlite";
+
+// Import from resolved absolute path to bypass mock.module("./db") pollution
+// from email-watcher.integration.test.ts (Bun's mock.module is global).
+const dbModule = require(resolve(import.meta.dir, "db.ts"));
+const openDb = dbModule.openDb as (path: string) => Database;
+const insertEmail = dbModule.insertEmail as (db: Database, email: any) => void;
+const emailExists = dbModule.emailExists as (db: Database, id: string) => boolean;
+const updateEmail = dbModule.updateEmail as (db: Database, id: string, fields: Record<string, any>, source?: string) => boolean;
+const getRecentEmails = dbModule.getRecentEmails as (db: Database, opts: any) => any[];
+const getEmailStats = dbModule.getEmailStats as (db: Database) => any[];
+type InsertEmail = import("./db").InsertEmail;
+type EmailRow = import("./db").EmailRow;
+type StatRow = import("./db").StatRow;
 
 let tmpDir: string;
 let db: Database;

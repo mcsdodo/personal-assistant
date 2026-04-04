@@ -193,6 +193,7 @@ function moveGdriveMockHandlers(): FetchHandler[] {
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "workflow-lifecycle-test-"));
   db = openWorkflowDb(join(tmpDir, "workflow.db"));
+  process.env.DOWNLOAD_DIR = join(tmpDir, "downloads");
   fetchHandlers = [];
 
   // Make setTimeout resolve instantly so setDocumentCustomFields polling doesn't timeout

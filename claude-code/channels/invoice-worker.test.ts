@@ -176,6 +176,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "invoice-worker-test-"));
   db = openWorkflowDb(join(tmpDir, "workflow.db"));
+  process.env.DOWNLOAD_DIR = join(tmpDir, "downloads");
   fetchHandlers = [];
   notifyCalls = [];
 
