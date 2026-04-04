@@ -7,6 +7,7 @@ export type JobState =
   | "running"
   | "retryable"
   | "awaiting_approval"
+  | "awaiting_classification"
   | "completed"
   | "failed"
   | "cancelled";
@@ -309,7 +310,7 @@ export function cancelJob(db: Database, jobId: string, reason?: string | null): 
     .prepare(
       `UPDATE jobs
        SET state = 'cancelled', completed_at = ?, updated_at = ?
-       WHERE id = ? AND state IN ('queued', 'running', 'awaiting_approval')`
+       WHERE id = ? AND state IN ('queued', 'running', 'awaiting_approval', 'awaiting_classification')`
     )
     .run(timestamp, timestamp, jobId);
 
@@ -356,4 +357,59 @@ export function parseJobJson<T>(value: string | null): T | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Park a running job in awaiting_classification state.
+ * Writes a step_started event and transitions the job.
+ */
+export function requestClassification(
+  db: Database,
+  jobId: string,
+  step: string,
+  payload: unknown,
+): boolean {
+  const timestamp = nowIso();
+  const result = db
+    .prepare(
+      `UPDATE jobs SET state = 'awaiting_classification', updated_at = ? WHERE id = ? AND state = 'running'`
+    )
+    .run(timestamp, jobId);
+  if (result.changes === 0) return false;
+  addJobEvent(db, jobId, "step_started", { step, ...((payload as object) ?? {}) });
+  return true;
+}
+
+/**
+ * Submit a classification result for a parked job.
+ * Writes step_completed event and transitions back to running.
+ * Idempotent: second call for same step is a no-op.
+ */
+export function submitClassification(
+  db: Database,
+  jobId: string,
+  step: string,
+  classificationResult: unknown,
+): boolean {
+  const job = getJob(db, jobId);
+  if (!job) return false;
+
+  // Idempotent: if step already has step_completed, no-op
+  const events = getJobEvents(db, jobId);
+  const alreadyCompleted = events.some(
+    (e) => e.event_type === "step_completed" && JSON.parse(e.payload_json ?? "{}").step === step,
+  );
+  if (alreadyCompleted) return true;
+
+  // Validate step matches last step_started
+  if (job.state !== "awaiting_classification") return false;
+  const lastStarted = [...events].reverse().find((e) => e.event_type === "step_started");
+  if (!lastStarted) return false;
+  const startedPayload = JSON.parse(lastStarted.payload_json ?? "{}");
+  if (startedPayload.step !== step) return false;
+
+  const timestamp = nowIso();
+  addJobEvent(db, jobId, "step_completed", { step, result: classificationResult });
+  db.prepare(`UPDATE jobs SET state = 'running', updated_at = ? WHERE id = ?`).run(timestamp, jobId);
+  return true;
 }

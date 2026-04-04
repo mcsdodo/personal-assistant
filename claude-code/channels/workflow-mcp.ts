@@ -19,6 +19,7 @@ import {
   getJobEvents,
   listJobs,
   openWorkflowDb,
+  submitClassification,
 } from "./workflow-db";
 
 import { initTracing, createLogger, getTracer, remoteParentContext, SpanStatusCode } from "./tracing";
@@ -228,6 +229,28 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["job_id"],
       },
     },
+    {
+      name: "submit_classification",
+      description:
+        "Submit a classification result for a job awaiting classification. " +
+        "Called by Claude after running a haiku subagent (email-classifier or document-classifier).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          job_id: { type: "string", description: "Job ID" },
+          step: {
+            type: "string",
+            enum: ["classify_email", "classify_document"],
+            description: "Which classification step this result is for",
+          },
+          result: {
+            type: "object",
+            description: "Classification result JSON from the haiku subagent",
+          },
+        },
+        required: ["job_id", "step", "result"],
+      },
+    },
   ],
 }));
 
@@ -383,6 +406,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [text(`Job ${jobId} cannot be cancelled`)], isError: true };
         }
         return { content: [text(getJob(db, jobId))] };
+      }
+
+      case "submit_classification": {
+        const jobId = args?.job_id as string;
+        const step = args?.step as string;
+        const result = args?.result as Record<string, unknown>;
+        if (!jobId || !step || !result) {
+          return { content: [text("Error: job_id, step, and result are required")], isError: true };
+        }
+        const ok = submitClassification(db, jobId, step, result);
+        if (!ok) {
+          return { content: [text("Error: job not found, not awaiting classification, or step mismatch")], isError: true };
+        }
+        return { content: [text({ success: true, job_id: jobId, step })] };
       }
 
       default:
