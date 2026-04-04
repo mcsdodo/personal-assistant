@@ -150,7 +150,14 @@ Process emails using the Haiku subagents and durable workflow jobs:
    - `action: notify_user` — notify the user via Telegram with the classification details and ask what to do. If the Telegram notification fails (e.g. chat not allowlisted, reply tool errors), record status="failed" with the error — do NOT mark as "processed".
    - `action: ignore` — log silently, do nothing.
 
-**Reprocessing emails:** When the user asks to reprocess an email, always create a `create_invoice_intake_job` with `force: true`. Do NOT manually inspect the email, reason about links, or decide whether it can be processed. The worker has the deterministic pipeline — let it handle extraction, download, dedup, and upload. If the email has `invoice_links` in the DB (visible in `get_recent_emails` output), pass them to the job via the `invoice_links` parameter.
+**Reprocessing emails:** When the user asks to reprocess an email, follow the EXACT same pipeline as automatic processing (steps 1 → 1b → 1c → 1d → 2). Do NOT skip steps. Specifically:
+1. Look up the email via `get_recent_emails` — get `invoice_links` from the DB if available
+2. Classify (step 1) — or use `invoice_links` override if links present
+3. Download PDF (step 1b) — use `invoice_links` from DB, or let the worker extract from HTML
+4. Classify PDF (step 1c) — run document-classifier on the downloaded file to get `total_amount`, `owner`, `doc_type`
+5. Merge classifications, infer `month_tag` (step 1d)
+6. Create `create_invoice_intake_job` with `force: true`, merged classification, `file_path`, `month_tag`, and `invoice_links`
+Do NOT manually inspect the email and reason about whether it can be processed. Follow the pipeline.
 
 3. **Report** — after the job completes, briefly summarize what happened (e.g., "Uploaded Alza invoice FA2026030123 to Paperless with tags [invoicing, 2026-03]").
 
