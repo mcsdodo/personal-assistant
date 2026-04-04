@@ -16,9 +16,10 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { executeNextJob } from "./workflow-core";
-import type { InvoiceIntakeInput, ScanIntakeInput } from "./invoice-worker";
+import type { InvoiceIntakeInput, InvoiceClassification, ScanIntakeInput } from "./invoice-worker";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import {
+  addJobEvent,
   createJob,
   getJob,
   getJobEvents,
@@ -33,31 +34,65 @@ let registry: PaperlessFieldRegistry;
 
 const logger = { log(_msg: string) {} };
 
-/** Build a minimal valid InvoiceIntakeInput */
+/** Build a minimal valid InvoiceIntakeInput (V2: only source + message_id) */
 function makeInput(overrides: Partial<InvoiceIntakeInput> = {}): InvoiceIntakeInput {
   return {
     email_source: "outlook",
     message_id: "msg-lifecycle-001",
-    classification: {
-      is_invoice: true,
-      confidence: "high",
-      vendor: "Alza",
-      doc_type: "invoice",
-      is_fuel: false,
-      owner: "techlab",
-      action: "download_and_upload",
-      download_strategy: "attachment",
-      strategy_confidence: "high",
-      requires_review: false,
-      order_id: "FA2026040001",
-      total_amount: 42.50,
-      currency: "EUR",
-    },
-    subject: "Your invoice FA2026040001",
+    ...overrides,
+  };
+}
+
+/** Default email classification result */
+function defaultEmailClassification(overrides: Partial<InvoiceClassification> = {}): InvoiceClassification {
+  return {
+    is_invoice: true,
+    confidence: "high",
+    vendor: "Alza",
+    doc_type: "invoice",
+    is_fuel: false,
+    owner: "techlab",
+    action: "download_and_upload",
+    download_strategy: "attachment",
+    strategy_confidence: "high",
+    requires_review: false,
+    order_id: "FA2026040001",
+    subtitle: null,
+    total_amount: 42.50,
+    currency: "EUR",
     sender: "invoices@alza.sk",
+    subject: "Your invoice FA2026040001",
     received_at: "2026-03-31T10:00:00Z",
     ...overrides,
   };
+}
+
+/** Default doc classification result */
+function defaultDocClassification(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    vendor: "Alza",
+    total_amount: 42.50,
+    owner: "techlab",
+    doc_type: "invoice",
+    doc_date: "2026-03-25",
+    ...overrides,
+  };
+}
+
+/** Seed classification step_completed events on a job (simulates channel roundtrip) */
+function seedClassificationSteps(
+  jobId: string,
+  emailClass?: InvoiceClassification,
+  docClass?: Record<string, unknown>,
+): void {
+  addJobEvent(db, jobId, "step_completed", {
+    step: "classify_email",
+    result: emailClass ?? defaultEmailClassification(),
+  });
+  addJobEvent(db, jobId, "step_completed", {
+    step: "classify_document",
+    result: docClass ?? defaultDocClassification(),
+  });
 }
 
 /** Build a minimal valid ScanIntakeInput */
@@ -201,6 +236,7 @@ describe("workflow lifecycle: invoice_intake", () => {
       sourceRef: `outlook:${input.message_id}`,
       idempotencyKey: `outlook:${input.message_id}`,
     });
+    seedClassificationSteps(job.id);
 
     // Verify initial state
     expect(getJob(db, job.id)!.state).toBe("queued");
@@ -211,7 +247,7 @@ describe("workflow lifecycle: invoice_intake", () => {
       // 2. dedup check (direct Paperless API) → no duplicate
       () => jsonResponse({ results: [] }),
       // 3. list_tags
-      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }])),
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
       // 4. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
       // 5. resolveStoragePath
@@ -240,7 +276,7 @@ describe("workflow lifecycle: invoice_intake", () => {
     expect(output.outcome).toBe("uploaded");
     expect(output.title).toBe("Alza - FA2026040001");
     expect(output.correspondent).toBe("Alza");
-    expect(output.tags).toEqual(["techlab", "accounting"]);
+    expect(output.tags).toEqual(["techlab", "accounting", "2026-03"]);
 
     // Verify events include job lifecycle steps
     const events = getJobEvents(db, job.id);
@@ -260,6 +296,7 @@ describe("workflow lifecycle: invoice_intake", () => {
       inputJson: JSON.stringify(input),
       sourceRef: `outlook:${input.message_id}`,
     });
+    seedClassificationSteps(job.id);
 
     mockFetch(
       // 1. list_correspondents
@@ -378,6 +415,7 @@ describe("workflow lifecycle: error handling", () => {
       inputJson: JSON.stringify(input),
       sourceRef: `outlook:${input.message_id}`,
     });
+    seedClassificationSteps(job.id);
 
     const networkError = () => { throw new Error("Network connection refused"); };
     mockFetch(networkError, networkError, networkError, networkError);
@@ -404,6 +442,7 @@ describe("workflow lifecycle: error handling", () => {
       sourceRef: `outlook:${input.message_id}`,
       idempotencyKey: `outlook:max-retry-test`,
     });
+    seedClassificationSteps(job.id);
 
     // Exhaust all retries: MAX_RETRIES=3 means 3 retryable + 1 final fail = 4 executions
     const networkError = () => { throw new Error("Network connection refused"); };

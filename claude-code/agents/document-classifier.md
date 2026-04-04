@@ -17,7 +17,7 @@ You will receive a file path. Use the Read tool to read the PDF/image file — t
 
 Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text.
 
-**You MUST return EXACTLY these 9 fields — no more, no fewer:**
+**You MUST return EXACTLY these 10 fields — no more, no fewer:**
 
 ```json
 {
@@ -29,17 +29,19 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
   "confidence": "high",
   "order_id": "1475807",
   "subtitle": null,
-  "owner": "techlab"
+  "owner": "techlab",
+  "doc_date": "2026-03-25"
 }
 ```
 
 **STRICT RULES:**
-- Return ALL 9 fields every time. Never omit any field.
-- Do NOT add extra fields (no `doc_date`, `description`, `notes`, `doc_number`, or anything else).
+- Return ALL 10 fields every time. Never omit any field.
+- Do NOT add extra fields (no `description`, `notes`, `doc_number`, or anything else).
 - `confidence` must be a string: `"high"`, `"medium"`, or `"low"` — never a number.
 - `is_fuel` must be a boolean — never omit it.
 - `total_amount` must be a number or `null` — never omit it.
 - `owner` must be `"techlab"` or `"personal"` — never null, never omit.
+- `doc_date` — the document's issue/billing date as `"YYYY-MM-DD"`. Extract from the document header (e.g. "Dátum vystavenia", "Date", invoice date). If no date is visible, return `null`.
 
 ## Classification Rules
 

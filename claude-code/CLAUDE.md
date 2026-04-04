@@ -151,10 +151,13 @@ Do NOT manually inspect emails, download PDFs, or run classifiers outside of cha
 The workflow worker sends classification requests via channel when it needs LLM judgment.
 
 **`event_type: "classify_email"`** — the worker needs email classification before proceeding:
-1. Read `sender`, `subject`, `email_source`, `message_id`, and `job_id` from the event meta
-2. If needed, fetch more email context (body preview) from the email MCP using the message_id
+1. Read `email_source`, `message_id`, and `job_id` from the event meta
+2. Fetch the email from the email MCP (use `message_id`) to get sender, subject, body preview, has_attachments, received_at
 3. Invoke the `email-classifier` subagent with the email metadata
-4. Call `submit_classification(job_id, step="classify_email", result=<classifier output>)` on the workflow tools
+4. Call `submit_classification(job_id, step="classify_email", result=<combined>)` — the result MUST include:
+   - All email-classifier output fields (vendor, action, download_strategy, etc.)
+   - `subject`: the email subject line (worker needs it for month_tag inference)
+   - `received_at`: the email received timestamp ISO (worker needs it for month_tag fallback)
 5. If the classifier returns `action: "ignore"`, the worker will complete the job as ignored automatically
 
 **`event_type: "classify_document"`** — the worker has downloaded a PDF and needs document classification:

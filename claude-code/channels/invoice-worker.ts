@@ -33,7 +33,7 @@ import { readFileAsDownload } from "./download-helper";
 import { extractInvoiceLinks, type InvoiceLink } from "./invoice-links";
 import { findBestCorrespondentMatch } from "./fuzzy-match";
 import { formatNotification, type NotifyFn } from "./telegram-notify";
-import { buildTagNames, generateTitle, getCompletedSteps, mergeClassifications } from "./invoice-pipeline";
+import { buildTagNames, generateTitle, getCompletedSteps, mergeClassifications, resolveMonthTag } from "./invoice-pipeline";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -51,34 +51,33 @@ export interface InvoiceIntakeInput {
   email_source: string;
   /** Email message ID from the email provider */
   message_id: string;
-  /** Classification data. In production, the worker derives this via channel
-   *  classification steps. Provided directly only in unit tests. */
-  classification?: {
-    is_invoice: boolean;
-    confidence: "high" | "medium" | "low";
-    vendor: string;
-    doc_type: string;
-    is_fuel: boolean;
-    owner?: "techlab" | "personal";
-    action: string;
-    download_strategy: DownloadStrategy | null;
-    strategy_confidence: "high" | "medium" | "low";
-    requires_review: boolean;
-    order_id: string | null;
-    subtitle: string | null;
-    total_amount: number | null;
-    currency: string | null;
-  };
-  /** Email subject (for title generation) */
-  subject?: string;
-  /** Email sender */
-  sender?: string;
-  /** Email received date ISO */
-  received_at?: string;
-  /** Path to pre-downloaded file on disk (set by Claude, worker reads instead of downloading) */
+  /** Path to pre-downloaded file on disk (worker reads instead of downloading via MCP) */
   file_path?: string;
-  /** YYYY-MM tag for Paperless (derived by worker via resolveMonthTag, or provided in tests) */
-  month_tag?: string;
+}
+
+/** Classification fields produced by the email-classifier + document-classifier channel roundtrips.
+ *  Stored in step_completed events, read back via getCompletedSteps. */
+export interface InvoiceClassification {
+  is_invoice: boolean;
+  confidence: "high" | "medium" | "low";
+  vendor: string;
+  doc_type: string;
+  is_fuel: boolean;
+  owner?: "techlab" | "personal";
+  action: string;
+  download_strategy: DownloadStrategy | null;
+  strategy_confidence: "high" | "medium" | "low";
+  requires_review: boolean;
+  order_id: string | null;
+  subtitle: string | null;
+  total_amount: number | null;
+  currency: string | null;
+  /** Email sender address — included in classify_email result for invoice link extraction */
+  sender?: string;
+  /** Email subject — included in classify_email result for month_tag derivation */
+  subject?: string;
+  /** Email received timestamp ISO — included in classify_email result for month_tag fallback */
+  received_at?: string;
 }
 
 export interface ScanIntakeInput {
@@ -174,81 +173,66 @@ export async function executeInvoiceIntake(
     return;
   }
 
-  // Mutable classification — may be populated from job input or from channel classification
-  let classification = input.classification ? { ...input.classification } : null;
-  const strategy = classification?.download_strategy ?? null;
-
-  await tracer.startActiveSpan(`invoice-worker.execute ${classification?.vendor ?? "unknown"}`, {
+  await tracer.startActiveSpan(`invoice-worker.execute`, {
     attributes: {
       "job.id": job.id,
       "job.type": "invoice_intake",
-      "invoice.vendor": classification?.vendor ?? "unknown",
-      "invoice.download_strategy": strategy ?? "unknown",
     },
   }, async (span: Span) => {
     let outcome = "unknown";
+    let vendorForSpan = "unknown";
     try {
       // Resume logic — read completed steps to skip on re-entry
       const completedSteps = getCompletedSteps(db, job.id);
 
-      // Step 0: Email classification (if not provided in job input)
-      if (!classification) {
-        const cachedEmailClass = completedSteps.get("classify_email");
-        if (cachedEmailClass?.result) {
-          // Resume: use cached email classification
-          classification = cachedEmailClass.result as NonNullable<typeof classification>;
-          logger.log(`Resuming: using cached email classification (vendor=${classification.vendor})`);
-
-          // Handle ignore action
-          if (classification.action === "ignore") {
-            completeJob(db, job.id, { outcome: "ignored", classification });
-            logger.log(`Job ${job.id} completed: ignored by email classifier`);
-            outcome = "ignored";
-            span.setAttribute("invoice.outcome", "ignored");
-            span.setStatus({ code: SpanStatusCode.OK });
-            return;
-          }
-        } else if (channel) {
-          // Park the job and request email classification from Claude
-          requestClassification(db, job.id, "classify_email", {
-            sender: input.sender ?? "",
-            subject: input.subject ?? "",
-            has_attachments: true, // email jobs typically have attachments/links
-            email_source: input.email_source,
-            message_id: input.message_id,
-          });
+      // Step 0: Email classification via channel
+      const cachedEmailClass = completedSteps.get("classify_email");
+      if (!cachedEmailClass?.result) {
+        // Park the job and request email classification from Claude
+        requestClassification(db, job.id, "classify_email", {
+          email_source: input.email_source,
+          message_id: input.message_id,
+        });
+        if (channel) {
           await channel.notification({
             method: "notifications/claude/channel",
             params: {
-              content: `Classification request: run email-classifier and call submit_classification.`,
+              content: `Classification request: fetch the email, run email-classifier, and call submit_classification. Include subject and received_at in the result.`,
               meta: {
                 event_type: "classify_email",
                 job_id: job.id,
-                sender: input.sender ?? "",
-                subject: input.subject ?? "",
                 email_source: input.email_source,
                 message_id: input.message_id,
               },
             },
           });
-          logger.log(`Job ${job.id} parked for email classification`);
-          outcome = "awaiting_classification";
-          span.setAttribute("invoice.outcome", "awaiting_classification");
-          span.setStatus({ code: SpanStatusCode.OK });
-          return;
-        } else {
-          failJob(db, job.id, { code: "no_classification", message: "No classification in job input and no channel available" });
-          outcome = "failed";
-          span.setAttribute("invoice.outcome", "failed");
-          return;
         }
+        logger.log(`Job ${job.id} parked for email classification`);
+        outcome = "awaiting_classification";
+        span.setAttribute("invoice.outcome", "awaiting_classification");
+        span.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
+
+      const classification = cachedEmailClass.result as InvoiceClassification;
+      vendorForSpan = classification.vendor;
+      span.setAttribute("invoice.vendor", classification.vendor);
+      span.setAttribute("invoice.download_strategy", classification.download_strategy ?? "unknown");
+
+      // Handle ignore action
+      if (classification.action === "ignore") {
+        completeJob(db, job.id, { outcome: "ignored", classification });
+        logger.log(`Job ${job.id} completed: ignored by email classifier`);
+        outcome = "ignored";
+        span.setAttribute("invoice.outcome", "ignored");
+        span.setStatus({ code: SpanStatusCode.OK });
+        return;
       }
 
       // Step 1: Get file — prefer disk, fallback to MCP download
       let file: DownloadedFile;
       const cachedDownload = completedSteps.get("download") ?? completedSteps.get("read_from_disk");
       if (cachedDownload && input.file_path && existsSync(input.file_path)) {
-        // Resume: file was already downloaded in a previous run
         logger.log(`Resuming: reusing downloaded file from ${input.file_path}`);
         file = readFileAsDownload(input.file_path);
       } else if (input.file_path && existsSync(input.file_path)) {
@@ -259,11 +243,10 @@ export async function executeInvoiceIntake(
           filename: file.filename,
           size: file.size,
         });
-      } else if (strategy === "claude_download") {
-        throw new Error("claude_download strategy requires file_path — Claude must download the file before creating the job");
       } else {
+        const strategy = classification.download_strategy;
         addJobEvent(db, job.id, "step_started", { step: "download", strategy });
-        file = await downloadInvoice(input, logger);
+        file = await downloadInvoice(input, classification, logger);
         addJobEvent(db, job.id, "step_completed", {
           step: "download",
           filename: file.filename,
@@ -274,38 +257,46 @@ export async function executeInvoiceIntake(
 
       // Step 1.5: Document classification via channel (non-blocking)
       const cachedDocClassification = completedSteps.get("classify_document");
-      if (cachedDocClassification?.result) {
-        // Resume: merge cached doc classification into email classification
-        const docResult = cachedDocClassification.result as Partial<typeof classification>;
-        Object.assign(classification, mergeClassifications(classification, docResult));
-        logger.log(`Resuming: merged cached doc classification (owner=${classification.owner})`);
-      } else if (channel) {
-        // Park the job and request document classification from Claude
+      if (!cachedDocClassification?.result) {
         const filePath = input.file_path ?? `(downloaded: ${file.filename})`;
         requestClassification(db, job.id, "classify_document", { file_path: filePath });
-        await channel.notification({
-          method: "notifications/claude/channel",
-          params: {
-            content: `Classification request: run document-classifier on the downloaded file and call submit_classification.`,
-            meta: {
-              event_type: "classify_document",
-              job_id: job.id,
-              file_path: filePath,
-              vendor: classification.vendor,
+        if (channel) {
+          await channel.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: `Classification request: run document-classifier on the downloaded file and call submit_classification.`,
+              meta: {
+                event_type: "classify_document",
+                job_id: job.id,
+                file_path: filePath,
+                vendor: classification.vendor,
+              },
             },
-          },
-        });
+          });
+        }
         logger.log(`Job ${job.id} parked for document classification`);
         outcome = "awaiting_classification";
         span.setAttribute("invoice.outcome", "awaiting_classification");
         span.setStatus({ code: SpanStatusCode.OK });
         return;
       }
-      // If no channel available, continue with existing classification (backward compatible)
+
+      // Merge doc classification into email classification
+      const docResult = cachedDocClassification.result as Partial<InvoiceClassification>;
+      const merged = mergeClassifications(classification, docResult);
+      logger.log(`Merged doc classification (owner=${merged.owner})`);
+
+      // Step 3.5: Derive month_tag from classification metadata
+      const docDate = (docResult as any)?.doc_date ?? null;
+      const monthTag = resolveMonthTag(
+        classification.subject ?? null,
+        classification.received_at ?? null,
+        docDate,
+      );
 
       // Step 2: Resolve correspondent
       addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
-      const correspondent = await resolveCorrespondent(classification.vendor, logger);
+      const correspondent = await resolveCorrespondent(merged.vendor, logger);
       addJobEvent(db, job.id, "step_completed", {
         step: "resolve_correspondent",
         correspondent,
@@ -313,7 +304,7 @@ export async function executeInvoiceIntake(
 
       // Step 3: Deduplicate
       addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
-      const dedupeResult = await checkDuplicate(classification, correspondent, logger, registry);
+      const dedupeResult = await checkDuplicate(merged, correspondent, logger, registry);
       if (dedupeResult) {
         addJobEvent(db, job.id, "step_completed", {
           step: "deduplicate",
@@ -335,7 +326,6 @@ export async function executeInvoiceIntake(
         }
 
         if (dedupeResult.outcome === "duplicate_likely") {
-          // Pause for user decision on likely duplicates
           requestJobApproval(db, job.id, {
             reason: dedupeResult.message,
             existing_document_id: dedupeResult.existing_id,
@@ -353,11 +343,11 @@ export async function executeInvoiceIntake(
         });
       }
 
-      // Step 4: Resolve tags — derived deterministically from classification
+      // Step 4: Resolve tags — derived deterministically from merged classification
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-      const owner = classification.owner;
+      const owner = merged.owner;
       if (!owner) {
-        const msg = "Missing owner field — document-classifier may not have run. Cancel this job and re-create with full classification.";
+        const msg = "Missing owner field — document-classifier did not return owner.";
         failJob(db, job.id, { code: "missing_owner", message: msg });
         logger.log(`Job ${job.id} failed: missing owner`);
         outcome = "failed";
@@ -367,21 +357,21 @@ export async function executeInvoiceIntake(
       }
 
       const allTagNames = buildTagNames(
-        { owner, doc_type: classification.doc_type, is_fuel: classification.is_fuel },
-        input.month_tag ?? null,
+        { owner, doc_type: merged.doc_type, is_fuel: merged.is_fuel },
+        monthTag,
       );
       const tagIds = await resolveTags(allTagNames, logger);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
 
       // Step 5: Resolve document type
-      const documentTypeId = await resolveDocumentType(classification.doc_type, logger);
+      const documentTypeId = await resolveDocumentType(merged.doc_type, logger);
 
       // Step 5b: Resolve storage path
-      const storagePathId = await resolveStoragePath(owner, classification.doc_type, logger);
+      const storagePathId = await resolveStoragePath(owner, merged.doc_type, logger);
 
       // Step 6: Upload to Paperless
       addJobEvent(db, job.id, "step_started", { step: "upload" });
-      const title = generateTitle(classification.vendor, classification.order_id, classification.subtitle, input.subject);
+      const title = generateTitle(merged.vendor, merged.order_id, merged.subtitle, classification.subject);
       const uploadResult = await uploadToPaperless({
         title,
         file,
@@ -389,8 +379,8 @@ export async function executeInvoiceIntake(
         tagIds,
         documentTypeId,
         storagePathId,
-        totalAmount: classification.total_amount,
-        orderId: classification.order_id,
+        totalAmount: merged.total_amount,
+        orderId: merged.order_id,
       }, logger);
       addJobEvent(db, job.id, "step_completed", {
         step: "upload",
@@ -398,12 +388,12 @@ export async function executeInvoiceIntake(
       });
 
       // Step 7: Set custom fields (total_amount, order_id) if available
-      if (classification.total_amount != null || classification.order_id) {
+      if (merged.total_amount != null || merged.order_id) {
         addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
         const cfResult = await setDocumentCustomFields(
           uploadResult.task_uuid,
-          classification.total_amount,
-          classification.order_id,
+          merged.total_amount,
+          merged.order_id,
           logger,
           registry,
         );
@@ -416,7 +406,7 @@ export async function executeInvoiceIntake(
         paperless_document_id: uploadResult.document_id,
         correspondent: correspondent.name,
         tags: allTagNames,
-        total_amount: classification.total_amount,
+        total_amount: merged.total_amount,
       };
       completeJob(db, job.id, result);
       logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
@@ -425,10 +415,10 @@ export async function executeInvoiceIntake(
         const msg = formatNotification({
           outcome: "uploaded",
           vendor: correspondent.name,
-          total_amount: classification.total_amount,
-          currency: classification.currency,
-          doc_type: classification.doc_type,
-          owner: classification.owner ?? null,
+          total_amount: merged.total_amount,
+          currency: merged.currency,
+          doc_type: merged.doc_type,
+          owner: merged.owner ?? null,
         });
         if (msg) await notify(msg).catch(() => {});
       }
@@ -450,11 +440,11 @@ export async function executeInvoiceIntake(
         if (notify) {
           const msg = formatNotification({
             outcome: "failed",
-            vendor: classification.vendor,
-            total_amount: classification.total_amount,
-            currency: classification.currency,
-            doc_type: classification.doc_type,
-            owner: classification.owner ?? null,
+            vendor: vendorForSpan,
+            total_amount: null,
+            currency: null,
+            doc_type: null,
+            owner: null,
             error: message,
           });
           if (msg) await notify(msg).catch(() => {});
@@ -465,7 +455,7 @@ export async function executeInvoiceIntake(
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       span.recordException(error instanceof Error ? error : new Error(message));
     } finally {
-      span.updateName(`invoice-worker.execute ${classification.vendor} → ${outcome}`);
+      span.updateName(`invoice-worker.execute ${vendorForSpan} → ${outcome}`);
       span.end();
     }
   });
@@ -475,15 +465,16 @@ export async function executeInvoiceIntake(
 
 async function downloadInvoice(
   input: InvoiceIntakeInput,
+  classification: InvoiceClassification,
   logger: WorkerLogger,
 ): Promise<DownloadedFile> {
   return withSpan(tracer, "invoice-worker.download", {
-    "download.strategy": input.classification?.download_strategy ?? "unknown",
+    "download.strategy": classification.download_strategy ?? "unknown",
     "email.source": input.email_source,
     "email.message_id": input.message_id,
   }, async (span) => {
     const { email_source, message_id } = input;
-    const strategy = input.classification?.download_strategy ?? null;
+    const strategy = classification.download_strategy;
     const mcpUrl = email_source === "gmail" ? GMAIL_MCP_URL : OUTLOOK_MCP_URL;
 
     let file: DownloadedFile;
@@ -494,7 +485,7 @@ async function downloadInvoice(
 
       case "known_link":
       case "direct_url":
-        file = await downloadViaLink(input, mcpUrl, logger);
+        file = await downloadViaLink(input, classification, mcpUrl, logger);
         break;
 
       default:
@@ -628,10 +619,13 @@ async function downloadAttachment(
 
 async function downloadViaLink(
   input: InvoiceIntakeInput,
+  classification: InvoiceClassification,
   mcpUrl: string,
   logger: WorkerLogger,
 ): Promise<DownloadedFile> {
-  const { email_source: source, message_id: messageId, sender, subject } = input;
+  const { email_source: source, message_id: messageId } = input;
+  const sender = classification.sender ?? "";
+  const subject = classification.subject ?? "";
   logger.log(`Downloading via link extraction from ${source} message ${messageId}`);
 
   // 1. Extract invoice links from email HTML
@@ -774,7 +768,7 @@ interface DedupeResult {
 }
 
 async function checkDuplicate(
-  classification: InvoiceIntakeInput["classification"],
+  classification: { order_id: string | null; total_amount: number | null },
   correspondent: CorrespondentInfo,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
@@ -1145,7 +1139,7 @@ export async function executeScanIntake(
       // Step 3: Deduplicate (only if order_id exists)
       addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
       const dedupeResult = await checkDuplicate(
-        classification as unknown as InvoiceIntakeInput["classification"],
+        classification,
         correspondent,
         logger,
         registry,

@@ -11,10 +11,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { executeInvoiceIntake, executeScanIntake, type InvoiceIntakeInput, type ScanIntakeInput } from "./invoice-worker";
+import { executeInvoiceIntake, executeScanIntake, type InvoiceIntakeInput, type InvoiceClassification, type ScanIntakeInput } from "./invoice-worker";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 import {
+  addJobEvent,
   createJob,
   getJob,
   getJobEvents,
@@ -32,45 +33,78 @@ const logger = { log(_msg: string) {} };
 let notifyCalls: string[];
 const notify: NotifyFn = async (msg) => { notifyCalls.push(msg); };
 
-/** Build a minimal valid InvoiceIntakeInput */
+/** Build a minimal valid InvoiceIntakeInput (V2: only source + message_id) */
 function makeInput(overrides: Partial<InvoiceIntakeInput> = {}): InvoiceIntakeInput {
   return {
     email_source: "outlook",
     message_id: "msg-123",
-    classification: {
-      is_invoice: true,
-      confidence: "high",
-      vendor: "Alza",
-      doc_type: "invoice",
-      is_fuel: false,
-      owner: "techlab",
-      action: "download_and_upload",
-      download_strategy: "attachment",
-      strategy_confidence: "high",
-      requires_review: false,
-      order_id: "FA2026030001",
-      total_amount: 59.99,
-      currency: "EUR",
-    },
+    ...overrides,
+  };
+}
+
+/** Default email classification result (what Claude returns via submit_classification) */
+function defaultEmailClassification(overrides: Partial<InvoiceClassification> = {}): InvoiceClassification {
+  return {
+    is_invoice: true,
+    confidence: "high",
+    vendor: "Alza",
+    doc_type: "invoice",
+    is_fuel: false,
+    owner: "techlab",
+    action: "download_and_upload",
+    download_strategy: "attachment",
+    strategy_confidence: "high",
+    requires_review: false,
+    order_id: "FA2026030001",
+    subtitle: null,
+    total_amount: 59.99,
+    currency: "EUR",
+    sender: "noreply@alza.sk",
     subject: "Your invoice FA2026030001",
-    sender: "invoices@alza.sk",
     received_at: "2026-03-27T10:00:00Z",
     ...overrides,
   };
 }
 
-/** Create a job with the given input and claim it (set state=running) */
-function createRunningJob(input: InvoiceIntakeInput): JobRow {
+/** Default doc classification result (what Claude returns via submit_classification) */
+function defaultDocClassification(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    vendor: "Alza",
+    total_amount: 59.99,
+    owner: "techlab",
+    doc_type: "invoice",
+    doc_date: "2026-03-25",
+    ...overrides,
+  };
+}
+
+/** Create a job with the given input and claim it (set state=running).
+ *  Seeds classify_email and classify_document step_completed events to simulate
+ *  the channel roundtrip that happens in production. */
+function createRunningJob(
+  input: InvoiceIntakeInput,
+  emailClass?: InvoiceClassification,
+  docClass?: Record<string, unknown>,
+): JobRow {
   const job = createJob(db, {
     workflowType: "invoice_intake",
     inputJson: JSON.stringify(input),
     sourceRef: `${input.email_source}:${input.message_id}`,
     idempotencyKey: `${input.email_source}:${input.message_id}`,
   });
-  // Simulate claim (worker normally does this via claimNextQueuedJob)
+  // Simulate claim
   db.prepare("UPDATE jobs SET state = 'running', started_at = datetime('now') WHERE id = ?").run(
     job.id,
   );
+  // Seed classification steps (production path: channel roundtrip completed)
+  addJobEvent(db, job.id, "step_completed", {
+    step: "classify_email",
+    result: emailClass ?? defaultEmailClassification(),
+  });
+  addJobEvent(db, job.id, "step_completed", {
+    step: "classify_document",
+    result: docClass ?? defaultDocClassification(),
+  });
   return getJob(db, job.id)!;
 }
 
@@ -182,13 +216,12 @@ afterEach(() => {
 
 describe("invoice-worker approval gates (removed)", () => {
   test("unknown vendor proceeds without pausing", async () => {
-    const input = makeInput({
-      classification: {
-        ...makeInput().classification,
-        vendor: "unknown",
-      },
-    });
-    const job = createRunningJob(input);
+    const input = makeInput();
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ vendor: "unknown" }),
+      defaultDocClassification({ vendor: "unknown" }),
+    );
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: "att-1", name: "invoice.pdf", content_type: "application/pdf", size: 1024 }])),
@@ -212,13 +245,8 @@ describe("invoice-worker approval gates (removed)", () => {
   });
 
   test("low confidence proceeds without pausing", async () => {
-    const input = makeInput({
-      classification: {
-        ...makeInput().classification,
-        confidence: "low",
-      },
-    });
-    const job = createRunningJob(input);
+    const input = makeInput();
+    const job = createRunningJob(input, defaultEmailClassification({ confidence: "low" }));
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 100 }])),
@@ -289,9 +317,9 @@ describe("invoice-worker attachment download + upload", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // 4. dedup check (direct Paperless API)
       () => jsonResponse({ results: [] }),
-      // 5. list_tags (now derived: ["techlab", "accounting"])
+      // 5. list_tags (derived: ["techlab", "accounting", "2026-03"])
       () =>
-        jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }])),
+        jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
       // 6. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       // 7. resolveStoragePath: GET /api/storage_paths/
@@ -313,7 +341,7 @@ describe("invoice-worker attachment download + upload", () => {
     // not a document ID. The doc ID is resolved later by setDocumentCustomFields.
     expect(output.paperless_document_id).toBeUndefined();
     expect(output.correspondent).toBe("Alza");
-    expect(output.tags).toEqual(["techlab", "accounting"]);
+    expect(output.tags).toEqual(["techlab", "accounting", "2026-03"]);
 
     // Verify events were recorded
     const events = getJobEvents(db, job.id);
@@ -389,14 +417,12 @@ describe("invoice-worker attachment download + upload", () => {
   });
 
   test("creates new correspondent when not found", async () => {
-    const input = makeInput({
-      classification: {
-        ...makeInput().classification,
-        vendor: "NewVendor",
-        order_id: null, // skip dedup
-      },
-    });
-    const job = createRunningJob(input);
+    const input = makeInput();
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ vendor: "NewVendor", order_id: null }),
+      defaultDocClassification({ vendor: "NewVendor" }),
+    );
 
     mockFetch(
       // 1. get_attachments
@@ -438,13 +464,8 @@ describe("invoice-worker attachment download + upload", () => {
   });
 
   test("skips dedup when no order_id", async () => {
-    const input = makeInput({
-      classification: {
-        ...makeInput().classification,
-        order_id: null,
-      },
-    });
-    const job = createRunningJob(input);
+    const input = makeInput();
+    const job = createRunningJob(input, defaultEmailClassification({ order_id: null }));
 
     mockFetch(
       // 1. get_attachments
@@ -487,14 +508,8 @@ describe("invoice-worker attachment download + upload", () => {
 
 describe("invoice-worker link download", () => {
   test("downloads via get_email HTML extraction + direct fetch for outlook", async () => {
-    const input = makeInput({
-      classification: {
-        ...makeInput().classification,
-        download_strategy: "known_link",
-        order_id: null,
-      },
-    });
-    const job = createRunningJob(input);
+    const input = makeInput();
+    const job = createRunningJob(input, defaultEmailClassification({ download_strategy: "known_link", order_id: null }));
 
     mockFetch(
       // 1. get_email → returns HTML body with extractable invoice link
@@ -539,14 +554,8 @@ describe("invoice-worker link download", () => {
   });
 
   test("fails when link download returns 403 (expired)", async () => {
-    const input = makeInput({
-      classification: {
-        ...makeInput().classification,
-        download_strategy: "known_link",
-        order_id: null,
-      },
-    });
-    const job = createRunningJob(input);
+    const input = makeInput();
+    const job = createRunningJob(input, defaultEmailClassification({ download_strategy: "known_link", order_id: null }));
 
     mockFetch(
       // 1. get_email → HTML with extractable link
@@ -619,13 +628,8 @@ describe("invoice-worker error handling", () => {
   });
 
   test("fails for unsupported download strategy", async () => {
-    const input = makeInput({
-      classification: {
-        ...makeInput().classification,
-        download_strategy: "browser_required" as any,
-      },
-    });
-    const job = createRunningJob(input);
+    const input = makeInput();
+    const job = createRunningJob(input, defaultEmailClassification({ download_strategy: "browser_required" as any }));
 
     await executeInvoiceIntake(db, job, logger, registry, notify);
 
@@ -664,11 +668,8 @@ describe("invoice-worker title building", () => {
   });
 
   test("uses vendor + subject when no order_id", async () => {
-    const input = makeInput({
-      classification: { ...makeInput().classification, order_id: null },
-      subject: "Fwd: Monthly billing statement",
-    });
-    const job = createRunningJob(input);
+    const input = makeInput();
+    const job = createRunningJob(input, defaultEmailClassification({ order_id: null, subject: "Fwd: Monthly billing statement" }));
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: "a1", name: "bill.pdf", content_type: "application/pdf", size: 100 }])),
@@ -773,17 +774,14 @@ describe("invoice-worker file_path from disk", () => {
 
 describe("invoice-worker unified tag derivation", () => {
   test("derives tags deterministically from classification fields", async () => {
-    const input = makeInput({
-      month_tag: "2026-02",
-      file_path: join(tmpDir, "tagged.pdf"),
-      classification: {
-        ...makeInput().classification,
-        is_fuel: true,
-        doc_type: "receipt",
-      },
-    });
-    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
-    const job = createRunningJob(input);
+    const filePath = join(tmpDir, "tagged.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ is_fuel: true, doc_type: "receipt" }),
+      defaultDocClassification({ doc_type: "receipt", doc_date: "2026-02-15" }),
+    );
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
@@ -809,19 +807,14 @@ describe("invoice-worker unified tag derivation", () => {
   });
 
   test("techlab document gets accounting tag, not invoicing or documents", async () => {
-    const input = makeInput({
-      month_tag: "2026-03",
-      file_path: join(tmpDir, "worklog.pdf"),
-      classification: {
-        ...makeInput().classification,
-        doc_type: "document",
-        is_fuel: false,
-        order_id: null,
-        total_amount: null,
-      },
-    });
-    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
-    const job = createRunningJob(input);
+    const filePath = join(tmpDir, "worklog.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ doc_type: "document", is_fuel: false, order_id: null, total_amount: null }),
+      defaultDocClassification({ doc_type: "document", total_amount: null }),
+    );
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
@@ -841,17 +834,9 @@ describe("invoice-worker unified tag derivation", () => {
   });
 
   test("owner techlab: invoice gets techlab + accounting + month tag", async () => {
-    const input = makeInput({
-      month_tag: "2026-03",
-      file_path: join(tmpDir, "biz-invoice.pdf"),
-      classification: {
-        ...makeInput().classification,
-        doc_type: "invoice",
-        is_fuel: false,
-        owner: "techlab",
-      },
-    });
-    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
+    const filePath = join(tmpDir, "biz-invoice.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
     const job = createRunningJob(input);
 
     mockFetch(
@@ -879,18 +864,14 @@ describe("invoice-worker unified tag derivation", () => {
   });
 
   test("owner personal: invoice gets personal + month tag, no invoicing", async () => {
-    const input = makeInput({
-      month_tag: "2026-03",
-      file_path: join(tmpDir, "personal-invoice.pdf"),
-      classification: {
-        ...makeInput().classification,
-        doc_type: "invoice",
-        is_fuel: false,
-        owner: "personal",
-      },
-    });
-    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
-    const job = createRunningJob(input);
+    const filePath = join(tmpDir, "personal-invoice.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ owner: "personal" }),
+      defaultDocClassification({ owner: "personal" }),
+    );
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
@@ -915,18 +896,14 @@ describe("invoice-worker unified tag derivation", () => {
   });
 
   test("owner personal + fuel: gets personal + fuel + month tag, no invoicing", async () => {
-    const input = makeInput({
-      month_tag: "2026-03",
-      file_path: join(tmpDir, "personal-fuel.pdf"),
-      classification: {
-        ...makeInput().classification,
-        doc_type: "receipt",
-        is_fuel: true,
-        owner: "personal",
-      },
-    });
-    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
-    const job = createRunningJob(input);
+    const filePath = join(tmpDir, "personal-fuel.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ doc_type: "receipt", is_fuel: true, owner: "personal" }),
+      defaultDocClassification({ doc_type: "receipt", owner: "personal" }),
+    );
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
@@ -953,15 +930,14 @@ describe("invoice-worker unified tag derivation", () => {
   });
 
   test("missing owner fails job with missing_owner error", async () => {
-    const input = makeInput({
-      file_path: join(tmpDir, "no-owner.pdf"),
-      classification: {
-        ...makeInput().classification,
-        owner: undefined as any,
-      },
-    });
-    writeFileSync(input.file_path!, Buffer.from("fake pdf"));
-    const job = createRunningJob(input);
+    const filePath = join(tmpDir, "no-owner.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ owner: undefined as any }),
+      defaultDocClassification({ owner: undefined as any }),
+    );
 
     mockFetch(
       // 1. list_correspondents
