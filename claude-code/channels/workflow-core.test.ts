@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { executeNextJob } from "./workflow-core";
+import { executeNextJob, reclaimStaleJobs } from "./workflow-core";
 import { approveJob, createJob, getJob, openWorkflowDb } from "./workflow-db";
 
 let tmpDir: string;
@@ -73,5 +73,74 @@ describe("workflow-core", () => {
     expect(updated?.state).toBe("completed");
     expect(updated?.approved_by).toBe("tester");
     expect(updated?.output_json).toContain("approved-result");
+  });
+});
+
+describe("stale job reclamation", () => {
+  const originalEnv = process.env.STALE_JOB_MINUTES;
+
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.STALE_JOB_MINUTES;
+    else process.env.STALE_JOB_MINUTES = originalEnv;
+  });
+
+  test("reclaims running job stale for over threshold", () => {
+    process.env.STALE_JOB_MINUTES = "0"; // 0 minutes = everything is stale
+    const job = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
+    db.prepare("UPDATE jobs SET state = 'running', updated_at = datetime('now', '-10 minutes') WHERE id = ?").run(job.id);
+
+    reclaimStaleJobs(db, logger);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("retryable");
+    expect(updated.retry_count).toBe(1);
+  });
+
+  test("reclaims awaiting_classification job stale for over threshold", () => {
+    process.env.STALE_JOB_MINUTES = "0";
+    const job = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
+    db.prepare("UPDATE jobs SET state = 'awaiting_classification', updated_at = datetime('now', '-10 minutes') WHERE id = ?").run(job.id);
+
+    reclaimStaleJobs(db, logger);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("retryable");
+  });
+
+  test("fails stale job after max retries exhausted", () => {
+    process.env.STALE_JOB_MINUTES = "0";
+    const job = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
+    db.prepare("UPDATE jobs SET state = 'running', retry_count = 3, updated_at = datetime('now', '-10 minutes') WHERE id = ?").run(job.id);
+
+    reclaimStaleJobs(db, logger);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("failed");
+    expect(JSON.parse(updated.error_json!).code).toBe("stale_timeout");
+  });
+
+  test("does not touch fresh running jobs", () => {
+    process.env.STALE_JOB_MINUTES = "5";
+    const job = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
+    db.prepare("UPDATE jobs SET state = 'running', updated_at = datetime('now') WHERE id = ?").run(job.id);
+
+    reclaimStaleJobs(db, logger);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("running");
+  });
+
+  test("does not touch queued or completed jobs", () => {
+    process.env.STALE_JOB_MINUTES = "0";
+    const queuedJob = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
+    db.prepare("UPDATE jobs SET updated_at = datetime('now', '-10 minutes') WHERE id = ?").run(queuedJob.id);
+
+    const completedJob = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
+    db.prepare("UPDATE jobs SET state = 'completed', updated_at = datetime('now', '-10 minutes') WHERE id = ?").run(completedJob.id);
+
+    reclaimStaleJobs(db, logger);
+
+    expect(getJob(db, queuedJob.id)!.state).toBe("queued");
+    expect(getJob(db, completedJob.id)!.state).toBe("completed");
   });
 });
