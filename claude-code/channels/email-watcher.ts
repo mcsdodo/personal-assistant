@@ -3,9 +3,9 @@
 // email-watcher channel
 //
 // MCP Server (stdio) that polls gmail-mcp and outlook-mcp over Streamable HTTP,
-// persists discovered emails in SQLite, and pushes channel notifications for
-// new emails. Also exposes update_email_status, get_recent_emails, and
-// get_email_stats tools so Claude can write back results.
+// persists discovered emails in SQLite, and creates invoice_intake jobs directly
+// in workflow.db for new emails. Also exposes update_email_status, get_recent_emails,
+// and get_email_stats tools so Claude can write back results.
 // ---------------------------------------------------------------------------
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -32,6 +32,7 @@ import {
 } from "./db";
 
 import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId, remoteParentContext, SpanStatusCode } from "./tracing";
+import { openWorkflowDb, createJob } from "./workflow-db";
 
 
 // Pure functions live in email-watcher-utils.ts (no side effects, safe to import from tests).
@@ -47,6 +48,7 @@ import { buildGmailQuery as _buildGmailQuery, parseDuration, esc, metricLine, em
 
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS ?? "30000", 10);
 const DB_PATH = process.env.DB_PATH ?? "/data/email-watcher/emails.db";
+const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
 const STARTUP_DELAY_MS = parseInt(process.env.STARTUP_DELAY_MS ?? "15000", 10);
 const MAX_NEW_PER_CYCLE = parseInt(process.env.MAX_NEW_PER_CYCLE ?? "5", 10);
 const METRICS_PORT = parseInt(process.env.EMAIL_WATCHER_METRICS_PORT ?? "9465", 10);
@@ -518,20 +520,20 @@ export async function pollOutlook(db: Database, receivedAfter: string | null): P
 }
 
 // ---------------------------------------------------------------------------
-// Process new emails (insert + push channel notifications)
+// Process new emails (insert + create workflow jobs directly)
 // ---------------------------------------------------------------------------
 
-export async function processNewEmails(db: Database, channel: Server, emails: EmailInfo[]): Promise<void> {
+export async function processNewEmails(db: Database, channel: Server, emails: EmailInfo[], wfDb?: Database): Promise<void> {
   if (emails.length === 0) return;
 
-  // Cap to avoid flooding
   const capped = emails.slice(0, MAX_NEW_PER_CYCLE);
   if (emails.length > MAX_NEW_PER_CYCLE) {
     log(`Capped new emails from ${emails.length} to ${MAX_NEW_PER_CYCLE}`);
   }
 
+  const jobDb = wfDb ?? workflowDb;
+
   for (const email of capped) {
-    // Insert as 'new'
     insertEmail(db, {
       id: email.id,
       source: email.source,
@@ -545,37 +547,36 @@ export async function processNewEmails(db: Database, channel: Server, emails: Em
       invoiceLinks: email.invoiceLinks?.length ? JSON.stringify(email.invoiceLinks) : null,
     });
 
-    // Push channel notification
-    const contentLines = [
-      "New email detected:",
-      `Source: ${email.source}`,
-    ];
-    if (email.sender) contentLines.push(`From: ${email.sender}`);
-    if (email.subject) contentLines.push(`Subject: ${email.subject}`);
-    contentLines.push(`Has attachments: ${email.hasAttachments ? "yes" : "no"}`);
-    if (email.preview) contentLines.push(`Preview: ${email.preview}`);
-    contentLines.push(`Message ID: ${email.id}`);
-
-    const meta: Record<string, string> = {
-      email_source: email.source,
-      sender: email.sender ?? "",
-      subject: email.subject ?? "",
-      has_attachments: String(email.hasAttachments ?? false),
-      message_id: email.id,
-      received_at: email.receivedAt ?? "",
-      timestamp: new Date().toISOString(),
-    };
-
-    await channel.notification({
-      method: "notifications/claude/channel",
-      params: {
-        content: contentLines.join("\n"),
-        meta,
-      },
+    // Create workflow job directly (no channel notification to Claude)
+    const job = createJob(jobDb, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify({ email_source: email.source, message_id: email.id }),
+      sourceRef: `${email.source}:${email.id}`,
+      idempotencyKey: `${email.source}:${email.id}`,
+      requiresApproval: false,
     });
+
+    // OTel span — links job creation to the poll cycle trace
+    try {
+      const tracer = getTracer("email-watcher");
+      tracer.startActiveSpan("email-watcher.job_created", {
+        attributes: {
+          "job.id": job.id,
+          "job.type": "invoice_intake",
+          "job.state": job.state,
+          "email.source": email.source,
+          "email.message_id": email.id,
+        },
+      }, (span) => {
+        span.setStatus({ code: SpanStatusCode.OK });
+        span.end();
+      });
+    } catch { /* tracing unavailable */ }
+
+    log(`Created job ${job.id} for ${email.source}:${email.id} (state: ${job.state})`);
   }
 
-  log(`Pushed ${capped.length} new email(s)`);
+  log(`Processed ${capped.length} new email(s), created jobs directly`);
 }
 
 // ---------------------------------------------------------------------------
@@ -733,6 +734,7 @@ const mcp = new Server(
 // ---------------------------------------------------------------------------
 
 let db: Database;
+let workflowDb: Database;
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -1057,6 +1059,8 @@ async function main(): Promise<void> {
   // 1. Open SQLite DB
   log(`Opening database at ${DB_PATH}`);
   db = openDb(DB_PATH);
+  log(`Opening workflow database at ${WORKFLOW_DB_PATH}`);
+  workflowDb = openWorkflowDb(WORKFLOW_DB_PATH);
   startMetricsServer(db);
 
   // 2. Connect MCP server (stdio)
