@@ -120,6 +120,16 @@ function customFieldsMockHandlers(docId = 999): FetchHandler[] {
   ];
 }
 
+/** Mock handler for resolveStoragePath: GET /api/storage_paths/ */
+function storagePathsMockHandler(): FetchHandler {
+  return () => jsonResponse({ results: [
+    { id: 2, name: "Techlab Invoices" },
+    { id: 3, name: "Techlab Documents" },
+    { id: 4, name: "Personal Invoices" },
+    { id: 5, name: "Personal Documents" },
+  ]});
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -187,10 +197,11 @@ describe("invoice-worker approval gates (removed)", () => {
       () => jsonResponse(rpcResponse({ id: 99, name: "unknown" })),
       // dedup check (direct Paperless API)
       () => jsonResponse({ results: [] }),
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse({ id: 3 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid"', { status: 200 }),
       ...customFieldsMockHandlers(),
     );
@@ -215,10 +226,11 @@ describe("invoice-worker approval gates (removed)", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // dedup check (direct Paperless API)
       () => jsonResponse({ results: [] }),
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse({ id: 3 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid"', { status: 200 }),
       ...customFieldsMockHandlers(),
     );
@@ -277,13 +289,13 @@ describe("invoice-worker attachment download + upload", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // 4. dedup check (direct Paperless API)
       () => jsonResponse({ results: [] }),
-      // 5. list_tags (now derived: ["invoicing", "techlab"])
+      // 5. list_tags (now derived: ["techlab", "accounting"])
       () =>
-        jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
-      // 6. create_tag for "techlab"
-      () => jsonResponse(rpcResponse({ id: 2 })),
-      // 7. list_document_types
+        jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }])),
+      // 6. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      // 7. resolveStoragePath: GET /api/storage_paths/
+      storagePathsMockHandler(),
       // 8. post_document
       () => new Response('"task-uuid"', { status: 200 }),
       // 9-11. setDocumentCustomFields: task poll, PATCH, verify
@@ -301,7 +313,7 @@ describe("invoice-worker attachment download + upload", () => {
     // not a document ID. The doc ID is resolved later by setDocumentCustomFields.
     expect(output.paperless_document_id).toBeUndefined();
     expect(output.correspondent).toBe("Alza");
-    expect(output.tags).toEqual(["techlab", "invoicing"]);
+    expect(output.tags).toEqual(["techlab", "accounting"]);
 
     // Verify events were recorded
     const events = getJobEvents(db, job.id);
@@ -402,15 +414,17 @@ describe("invoice-worker attachment download + upload", () => {
       // 4. create_correspondent
       () => jsonResponse(rpcResponse({ id: 50, name: "NewVendor" })),
       // NO dedup (order_id is null)
-      // 5. list_tags (derived: ["invoicing", "techlab"])
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      // 5. list_tags (derived: ["accounting", "techlab"])
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       // 6. create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 88 })),
       // 7. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
-      // 8. post_document
+      // 8. resolveStoragePath
+      storagePathsMockHandler(),
+      // 9. post_document
       () => new Response('"task-uuid"', { status: 200 }),
-      // 9-11. setDocumentCustomFields: task poll, PATCH, verify
+      // 10-12. setDocumentCustomFields: task poll, PATCH, verify
       ...customFieldsMockHandlers(),
     );
 
@@ -446,15 +460,17 @@ describe("invoice-worker attachment download + upload", () => {
       // 3. list_correspondents → match
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // NO dedup call — order_id is null
-      // 4. list_tags (derived: ["invoicing", "techlab"])
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      // 4. list_tags (derived: ["accounting", "techlab"])
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       // 5. create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 2 })),
       // 6. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
-      // 7. post_document
+      // 7. resolveStoragePath
+      storagePathsMockHandler(),
+      // 8. post_document
       () => new Response('"task-uuid"', { status: 200 }),
-      // 8-10. setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
+      // 9-11. setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
       ...customFieldsMockHandlers(),
     );
 
@@ -500,15 +516,17 @@ describe("invoice-worker link download", () => {
       // 3. list_correspondents
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // NO dedup (order_id is null)
-      // 4. list_tags (derived: ["techlab", "invoicing"])
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      // 4. list_tags (derived: ["techlab", "accounting"])
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       // 5. create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 2 })),
       // 6. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
-      // 7. post_document
+      // 7. resolveStoragePath
+      storagePathsMockHandler(),
+      // 8. post_document
       () => new Response('"task-uuid"', { status: 200 }),
-      // 8-10. setDocumentCustomFields: task poll, PATCH, verify
+      // 9-11. setDocumentCustomFields: task poll, PATCH, verify
       ...customFieldsMockHandlers(),
     );
 
@@ -628,11 +646,12 @@ describe("invoice-worker title building", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // dedup check (direct Paperless API)
       () => jsonResponse({ results: [] }),
-      // list_tags (derived: ["invoicing", "techlab"])
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      // list_tags (derived: ["accounting", "techlab"])
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       // create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid"', { status: 200 }),
       // setDocumentCustomFields: task poll, PATCH, verify
       ...customFieldsMockHandlers(),
@@ -656,11 +675,12 @@ describe("invoice-worker title building", () => {
       () => jsonResponse(rpcResponse({ name: "bill.pdf", content_type: "application/pdf", size: 100, content_base64: "X" })),
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // no dedup (no order_id)
-      // list_tags (derived: ["invoicing", "techlab"])
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      // list_tags (derived: ["accounting", "techlab"])
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       // create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid"', { status: 200 }),
       // setDocumentCustomFields: task poll, PATCH, verify (total_amount is set)
       ...customFieldsMockHandlers(),
@@ -686,10 +706,11 @@ describe("invoice-worker file_path from disk", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // dedup check (direct Paperless API)
       () => jsonResponse({ results: [] }),
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse({ id: 3 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid-123"', { status: 200 }),
       ...customFieldsMockHandlers(),
     );
@@ -711,10 +732,11 @@ describe("invoice-worker file_path from disk", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // dedup check (direct Paperless API)
       () => jsonResponse({ results: [] }),
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse({ id: 3 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid-456"', { status: 200 }),
       ...customFieldsMockHandlers(),
     );
@@ -734,10 +756,11 @@ describe("invoice-worker file_path from disk", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // dedup check (direct Paperless API)
       () => jsonResponse({ results: [] }),
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       () => jsonResponse(rpcResponse({ id: 2 })),
       () => jsonResponse(rpcResponse({ id: 3 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid-789"', { status: 200 }),
       ...customFieldsMockHandlers(),
     );
@@ -766,10 +789,11 @@ describe("invoice-worker unified tag derivation", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // dedup check (direct Paperless API)
       () => jsonResponse({ results: [] }),
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }, { id: 3, name: "techlab" }])),
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }, { id: 3, name: "techlab" }])),
       () => jsonResponse(rpcResponse({ id: 10 })),
       () => jsonResponse(rpcResponse({ id: 11 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid"', { status: 200 }),
       ...customFieldsMockHandlers(),
     );
@@ -777,14 +801,14 @@ describe("invoice-worker unified tag derivation", () => {
     await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
-    expect(output.tags).toContain("invoicing");
+    expect(output.tags).toContain("accounting");
     expect(output.tags).toContain("techlab");
     expect(output.tags).toContain("fuel");
     expect(output.tags).toContain("2026-02");
-    expect(output.tags).not.toContain("wrong-tag-1");
+    expect(output.tags).not.toContain("invoicing");
   });
 
-  test("document doc_type produces documents tag, not invoicing", async () => {
+  test("techlab document gets accounting tag, not invoicing or documents", async () => {
     const input = makeInput({
       month_tag: "2026-03",
       file_path: join(tmpDir, "worklog.pdf"),
@@ -801,19 +825,22 @@ describe("invoice-worker unified tag derivation", () => {
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      () => jsonResponse(rpcResponse([{ id: 2, name: "documents" }, { id: 3, name: "techlab" }, { id: 7, name: "2026-03" }])),
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }, { id: 3, name: "techlab" }, { id: 7, name: "2026-03" }])),
       () => jsonResponse(rpcResponse([])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid"', { status: 200 }),
     );
 
     await executeInvoiceIntake(db, job, logger, registry, notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
-    expect(output.tags).toContain("documents");
+    expect(output.tags).toContain("accounting");
+    expect(output.tags).toContain("techlab");
     expect(output.tags).not.toContain("invoicing");
+    expect(output.tags).not.toContain("documents");
   });
 
-  test("owner techlab: invoice gets techlab + invoicing + month tag", async () => {
+  test("owner techlab: invoice gets techlab + accounting + month tag", async () => {
     const input = makeInput({
       month_tag: "2026-03",
       file_path: join(tmpDir, "biz-invoice.pdf"),
@@ -831,11 +858,12 @@ describe("invoice-worker unified tag derivation", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       () => jsonResponse({ results: [] }),
       () => jsonResponse(rpcResponse([
-        { id: 1, name: "invoicing" },
+        { id: 11, name: "accounting" },
         { id: 3, name: "techlab" },
         { id: 7, name: "2026-03" },
       ])),
-      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid"', { status: 200 }),
       ...customFieldsMockHandlers(),
     );
@@ -844,8 +872,9 @@ describe("invoice-worker unified tag derivation", () => {
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("techlab");
-    expect(output.tags).toContain("invoicing");
+    expect(output.tags).toContain("accounting");
     expect(output.tags).toContain("2026-03");
+    expect(output.tags).not.toContain("invoicing");
     expect(output.tags).not.toContain("personal");
   });
 
@@ -871,6 +900,7 @@ describe("invoice-worker unified tag derivation", () => {
         { id: 7, name: "2026-03" },
       ])),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid"', { status: 200 }),
       ...customFieldsMockHandlers(),
     );
@@ -907,6 +937,7 @@ describe("invoice-worker unified tag derivation", () => {
         { id: 7, name: "2026-03" },
       ])),
       () => jsonResponse(rpcResponse([{ id: 5, name: "receipt" }])),
+      storagePathsMockHandler(),
       () => new Response('"task-uuid"', { status: 200 }),
       ...customFieldsMockHandlers(),
     );
@@ -992,7 +1023,7 @@ function createRunningScanJob(input: ScanIntakeInput): JobRow {
 function moveGdriveMockHandlers(): FetchHandler[] {
   return [
     // search_drive_files → watch folder ID
-    () => jsonResponse(rpcResponse([{ id: "watch-folder-id", name: "invoicing" }])),
+    () => jsonResponse(rpcResponse([{ id: "watch-folder-id", name: "accounting" }])),
     // search_drive_files → target subfolder ("processed") ID
     () => jsonResponse(rpcResponse([{ id: "processed-folder-id", name: "processed" }])),
     // update_drive_file → move file
@@ -1015,20 +1046,22 @@ describe("executeScanIntake", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // 2. dedup check (direct Paperless API) → no duplicate
       () => jsonResponse({ results: [] }),
-      // 3. list_tags → "techlab" exists, "invoicing" exists
+      // 3. list_tags → "techlab" exists, "accounting" exists
       () => jsonResponse(rpcResponse([
-        { id: 1, name: "invoicing" },
+        { id: 11, name: "accounting" },
         { id: 3, name: "techlab" },
       ])),
       // 4. create_tag for "2026-03" (month tag not in existing tags)
       () => jsonResponse(rpcResponse({ id: 20 })),
       // 5. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
-      // 6. post_document → task UUID
+      // 6. resolveStoragePath
+      storagePathsMockHandler(),
+      // 7. post_document → task UUID
       () => new Response('"task-uuid-scan"', { status: 200 }),
-      // 7-9. setDocumentCustomFields: task poll, PATCH, verify
+      // 8-10. setDocumentCustomFields: task poll, PATCH, verify
       ...customFieldsMockHandlers(),
-      // 10-12. moveGdriveFile: search watch folder, search target folder, move file
+      // 11-13. moveGdriveFile: search watch folder, search target folder, move file
       ...moveGdriveMockHandlers(),
     );
 
@@ -1040,7 +1073,7 @@ describe("executeScanIntake", () => {
     expect(output.outcome).toBe("uploaded");
     expect(output.title).toBe("Alza - FA2026030001");
     expect(output.correspondent).toBe("Alza");
-    expect(output.tags).toEqual(["techlab", "invoicing", "2026-03"]);
+    expect(output.tags).toEqual(["techlab", "accounting", "2026-03"]);
     expect(output.total_amount).toBe(59.99);
 
     // Verify events were recorded
@@ -1130,20 +1163,22 @@ describe("executeScanIntake", () => {
       // 2. create_correspondent
       () => jsonResponse(rpcResponse({ id: 50, name: "NewCorp" })),
       // NO dedup (order_id is null)
-      // 3. list_tags → techlab exists, invoicing exists
+      // 3. list_tags → techlab exists, accounting exists
       () => jsonResponse(rpcResponse([
-        { id: 1, name: "invoicing" },
+        { id: 11, name: "accounting" },
         { id: 3, name: "techlab" },
       ])),
       // 4. create_tag for "2026-03"
       () => jsonResponse(rpcResponse({ id: 20 })),
       // 5. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
-      // 6. post_document
+      // 6. resolveStoragePath
+      storagePathsMockHandler(),
+      // 7. post_document
       () => new Response('"task-uuid-new"', { status: 200 }),
-      // 7-9. setDocumentCustomFields (total_amount is set)
+      // 8-10. setDocumentCustomFields (total_amount is set)
       ...customFieldsMockHandlers(),
-      // 10-12. moveGdriveFile
+      // 11-13. moveGdriveFile
       ...moveGdriveMockHandlers(),
     );
 
@@ -1176,16 +1211,18 @@ describe("executeScanIntake", () => {
       // NO dedup (order_id is null)
       // 2. list_tags
       () => jsonResponse(rpcResponse([
-        { id: 1, name: "invoicing" },
+        { id: 11, name: "accounting" },
         { id: 3, name: "techlab" },
       ])),
       // 3. create_tag for "2026-03"
       () => jsonResponse(rpcResponse({ id: 20 })),
       // 4. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
-      // 5. post_document → 500 error
+      // 5. resolveStoragePath
+      storagePathsMockHandler(),
+      // 6. post_document → 500 error
       () => jsonResponse({ error: "Internal server error" }, 500),
-      // 6-8. moveGdriveFile to errors/
+      // 7-9. moveGdriveFile to errors/
       ...moveGdriveMockHandlers(),
     );
 
@@ -1216,16 +1253,18 @@ describe("executeScanIntake", () => {
       // NO dedup (order_id is null)
       // 2. list_tags
       () => jsonResponse(rpcResponse([
-        { id: 1, name: "invoicing" },
+        { id: 11, name: "accounting" },
         { id: 3, name: "techlab" },
       ])),
       // 3. create_tag for "2026-03"
       () => jsonResponse(rpcResponse({ id: 20 })),
       // 4. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
-      // 5. post_document → OK (no custom fields step follows)
+      // 5. resolveStoragePath
+      storagePathsMockHandler(),
+      // 6. post_document → OK (no custom fields step follows)
       () => new Response('"task-uuid-nf"', { status: 200 }),
-      // 6-8. moveGdriveFile (no custom fields mock handlers needed)
+      // 7-9. moveGdriveFile (no custom fields mock handlers needed)
       ...moveGdriveMockHandlers(),
     );
 
@@ -1237,7 +1276,7 @@ describe("executeScanIntake", () => {
     expect(output.outcome).toBe("uploaded");
   });
 
-  test("tags derived from watch_folder path segments", async () => {
+  test("tags derived from watch_folder owner only, not LEVEL2", async () => {
     const filePath = join(tmpDir, "custom_folder_scan.pdf");
     writeFileSync(filePath, Buffer.from("fake-pdf"));
 
@@ -1258,16 +1297,16 @@ describe("executeScanIntake", () => {
       // 1. list_correspondents
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // NO dedup (order_id is null)
-      // 2. list_tags → "personal" exists, others need creating
+      // 2. list_tags → "personal" exists, fuel + month need creating
       () => jsonResponse(rpcResponse([{ id: 8, name: "personal" }])),
-      // 3. create_tag for "receipts"
-      () => jsonResponse(rpcResponse({ id: 30 })),
-      // 4. create_tag for "fuel"
+      // 3. create_tag for "fuel"
       () => jsonResponse(rpcResponse({ id: 31 })),
-      // 5. create_tag for "2026-01"
+      // 4. create_tag for "2026-01"
       () => jsonResponse(rpcResponse({ id: 32 })),
-      // 6. list_document_types
+      // 5. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 6. resolveStoragePath
+      storagePathsMockHandler(),
       // 7. post_document
       () => new Response('"task-uuid-tags"', { status: 200 }),
       // 8-10. moveGdriveFile
@@ -1279,7 +1318,8 @@ describe("executeScanIntake", () => {
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
     const output = JSON.parse(updated.output_json!);
-    expect(output.tags).toEqual(["personal", "receipts", "fuel", "2026-01"]);
+    // Only owner tag from LEVEL1 + fuel + month — no "receipts" from LEVEL2
+    expect(output.tags).toEqual(["personal", "fuel", "2026-01"]);
   });
 
   test("title uses subtitle when no order_id", async () => {
@@ -1303,15 +1343,17 @@ describe("executeScanIntake", () => {
       // NO dedup
       // 2. list_tags
       () => jsonResponse(rpcResponse([
-        { id: 1, name: "invoicing" },
+        { id: 11, name: "accounting" },
         { id: 3, name: "techlab" },
         { id: 7, name: "2026-03" },
       ])),
       // 3. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
-      // 4. post_document
+      // 4. resolveStoragePath
+      storagePathsMockHandler(),
+      // 5. post_document
       () => new Response('"task-uuid-sub"', { status: 200 }),
-      // 5-7. moveGdriveFile
+      // 6-8. moveGdriveFile
       ...moveGdriveMockHandlers(),
     );
 
@@ -1343,15 +1385,17 @@ describe("executeScanIntake", () => {
       // NO dedup
       // 2. list_tags
       () => jsonResponse(rpcResponse([
-        { id: 1, name: "invoicing" },
+        { id: 11, name: "accounting" },
         { id: 3, name: "techlab" },
         { id: 7, name: "2026-03" },
       ])),
       // 3. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
-      // 4. post_document
+      // 4. resolveStoragePath
+      storagePathsMockHandler(),
+      // 5. post_document
       () => new Response('"task-uuid-fn"', { status: 200 }),
-      // 5-7. moveGdriveFile
+      // 6-8. moveGdriveFile
       ...moveGdriveMockHandlers(),
     );
 

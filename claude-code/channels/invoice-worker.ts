@@ -271,15 +271,18 @@ export async function executeInvoiceIntake(
         return;
       }
 
+      allTagNames.push(owner === "techlab" ? "techlab" : "personal");
+
+      // All techlab docs go to accountant by default (rare exceptions curated manually)
       if (owner === "techlab") {
-        allTagNames.push("techlab");
-        if (docType === "receipt" || docType === "invoice" || docType === "credit_note" || docType === "account_statement") {
-          allTagNames.push("invoicing");
-        } else if (docType === "document") {
-          allTagNames.push("documents");
-        }
-      } else {
-        allTagNames.push("personal");
+        allTagNames.push("accounting");
+      }
+
+      if (docType === "credit_note") {
+        allTagNames.push("credit-note");
+      }
+      if (docType === "account_statement") {
+        allTagNames.push("account-statement");
       }
 
       if (classification.is_fuel) {
@@ -294,6 +297,9 @@ export async function executeInvoiceIntake(
       // Step 5: Resolve document type
       const documentTypeId = await resolveDocumentType(classification.doc_type, logger);
 
+      // Step 5b: Resolve storage path
+      const storagePathId = await resolveStoragePath(owner, classification.doc_type, logger);
+
       // Step 6: Upload to Paperless
       addJobEvent(db, job.id, "step_started", { step: "upload" });
       const title = buildTitle(classification.vendor, classification.order_id, classification.subtitle, input.subject);
@@ -303,6 +309,7 @@ export async function executeInvoiceIntake(
         correspondentId: correspondent.id,
         tagIds,
         documentTypeId,
+        storagePathId,
         totalAmount: classification.total_amount,
         orderId: classification.order_id,
       }, logger);
@@ -807,19 +814,7 @@ async function resolveDocumentType(
   docType: string,
   logger: WorkerLogger,
 ): Promise<number | undefined> {
-  // Map classifier doc_type to Paperless document type name
-  const typeMap: Record<string, string> = {
-    invoice: "Invoice",
-    receipt: "Receipt",
-    credit_note: "Credit Note",
-    account_statement: "Account Statement",
-    document: "Document",
-    // email-classifier aliases (fallback if document-classifier doesn't override)
-    statement: "Account Statement",
-    other: "Document",
-  };
-
-  const paperlessTypeName = typeMap[docType];
+  const paperlessTypeName = DOC_TYPE_TO_PAPERLESS[docType];
   if (!paperlessTypeName) return undefined;
 
   try {
@@ -838,12 +833,77 @@ async function resolveDocumentType(
   }
 }
 
+// Storage path name mapping: owner → bucket → Paperless storage path name
+const STORAGE_PATH_NAMES: Record<string, Record<string, string>> = {
+  techlab: {
+    invoices: "Techlab Invoices",
+    documents: "Techlab Documents",
+  },
+  personal: {
+    invoices: "Personal Invoices",
+    documents: "Personal Documents",
+  },
+};
+
+// Reuse the typeMap for bucket resolution (Invoice → invoices, Document → documents)
+const DOC_TYPE_TO_PAPERLESS: Record<string, string> = {
+  invoice: "Invoice",
+  receipt: "Invoice",
+  credit_note: "Invoice",
+  account_statement: "Document",
+  document: "Document",
+  statement: "Document",
+  other: "Document",
+};
+
+async function resolveStoragePath(
+  owner: string,
+  docType: string,
+  logger: WorkerLogger,
+): Promise<number | undefined> {
+  const paperlessType = DOC_TYPE_TO_PAPERLESS[docType] ?? "Document";
+  const bucket = paperlessType === "Invoice" ? "invoices" : "documents";
+  const pathName = STORAGE_PATH_NAMES[owner]?.[bucket];
+  if (!pathName) {
+    logger.log(`No storage path mapping for owner=${owner}, docType=${docType}`);
+    return undefined;
+  }
+
+  const paperlessUrl = process.env.PAPERLESS_URL;
+  if (!paperlessUrl) return undefined;
+  const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
+
+  try {
+    const response = await fetch(`${paperlessUrl}/api/storage_paths/`, {
+      headers: { Authorization: `Token ${paperlessToken}` },
+    });
+    if (!response.ok) {
+      logger.log(`Failed to fetch storage paths: ${response.status}`);
+      return undefined;
+    }
+
+    const data = (await response.json()) as { results: Array<{ id: number; name: string }> };
+    const paths = data.results ?? [];
+    const match = paths.find((p) => p.name.toLowerCase() === pathName.toLowerCase());
+    if (!match) {
+      logger.log(`Storage path not found: ${pathName}`);
+      return undefined;
+    }
+
+    return match.id;
+  } catch (err) {
+    logger.log(`Error resolving storage path: ${err}`);
+    return undefined;
+  }
+}
+
 interface UploadParams {
   title: string;
   file: DownloadedFile;
   correspondentId: number;
   tagIds: number[];
   documentTypeId?: number;
+  storagePathId?: number;
   totalAmount?: number | null;
   orderId?: string | null;
 }
@@ -905,6 +965,13 @@ async function uploadToPaperless(
     for (const tagId of params.tagIds) {
       parts.push(Buffer.from(
         `--${boundary}\r\nContent-Disposition: form-data; name="tags"\r\n\r\n${tagId}\r\n`
+      ));
+    }
+
+    // Storage path
+    if (params.storagePathId) {
+      parts.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="storage_path"\r\n\r\n${params.storagePathId}\r\n`
       ));
     }
 
@@ -1068,11 +1135,23 @@ export async function executeScanIntake(
         });
       }
 
-      // Step 4: Resolve tags — from watch folder path segments (e.g. techlab/invoicing → [techlab, invoicing])
+      // Step 4: Resolve tags — owner from watch folder LEVEL1 (e.g. techlab/accounting → techlab)
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-      const allTagNames: string[] = (input.watch_folder ?? "techlab/invoicing")
-        .split("/")
-        .filter(Boolean);
+      const segments = (input.watch_folder ?? "techlab/accounting").split("/").filter(Boolean);
+      const scanTagOwner = segments[0]; // "techlab" or "personal"
+      const allTagNames: string[] = [scanTagOwner];
+
+      // All techlab docs get accounting tag by default
+      if (scanTagOwner === "techlab") {
+        allTagNames.push("accounting");
+      }
+
+      if (classification.doc_type === "credit_note") {
+        allTagNames.push("credit-note");
+      }
+      if (classification.doc_type === "account_statement") {
+        allTagNames.push("account-statement");
+      }
 
       if (classification.is_fuel) {
         allTagNames.push("fuel");
@@ -1085,6 +1164,10 @@ export async function executeScanIntake(
 
       // Step 5: Resolve document type
       const documentTypeId = await resolveDocumentType(classification.doc_type, logger);
+
+      // Step 5b: Resolve storage path
+      const scanOwner = (input.watch_folder ?? "techlab/accounting").split("/")[0];
+      const storagePathId = await resolveStoragePath(scanOwner, classification.doc_type, logger);
 
       // Step 6: Upload to Paperless
       addJobEvent(db, job.id, "step_started", { step: "upload" });
@@ -1100,6 +1183,7 @@ export async function executeScanIntake(
         correspondentId: correspondent.id,
         tagIds,
         documentTypeId,
+        storagePathId,
         totalAmount: classification.total_amount,
         orderId: classification.order_id,
       }, logger);

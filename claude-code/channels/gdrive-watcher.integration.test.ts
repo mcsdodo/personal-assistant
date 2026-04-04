@@ -61,7 +61,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const LEVEL1 = (process.env.GDRIVE_LEVEL1 ?? "techlab").split(",").map(s => s.trim()).filter(Boolean);
-const LEVEL2 = (process.env.GDRIVE_LEVEL2 ?? "invoicing").split(",").map(s => s.trim()).filter(Boolean);
+const LEVEL2 = (process.env.GDRIVE_LEVEL2 ?? "accounting").split(",").map(s => s.trim()).filter(Boolean);
 // Use first resolved level2 as the "primary" for assertions
 const PRIMARY_L1 = LEVEL1[0];
 const PRIMARY_L2 = LEVEL2[0];

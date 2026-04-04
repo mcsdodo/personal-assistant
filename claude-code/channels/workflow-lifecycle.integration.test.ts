@@ -67,7 +67,7 @@ function makeScanInput(overrides: Partial<ScanIntakeInput> = {}): ScanIntakeInpu
     file_id: "gdrive-file-lifecycle",
     filename: "scan_lifecycle.pdf",
     month_tag: "2026-03",
-    watch_folder: "techlab/invoicing",
+    watch_folder: "techlab/accounting",
     classification: {
       doc_type: "invoice",
       vendor: "Orange",
@@ -139,7 +139,7 @@ function customFieldsMockHandlers(docId = 999): FetchHandler[] {
 function moveGdriveMockHandlers(): FetchHandler[] {
   return [
     // search_drive_files → watch folder ID
-    () => jsonResponse(rpcResponse([{ id: "watch-folder-id", name: "invoicing" }])),
+    () => jsonResponse(rpcResponse([{ id: "watch-folder-id", name: "accounting" }])),
     // search_drive_files → target subfolder ("processed") ID
     () => jsonResponse(rpcResponse([{ id: "processed-folder-id", name: "processed" }])),
     // update_drive_file → move file
@@ -211,11 +211,16 @@ describe("workflow lifecycle: invoice_intake", () => {
       // 2. dedup check (direct Paperless API) → no duplicate
       () => jsonResponse({ results: [] }),
       // 3. list_tags
-      () => jsonResponse(rpcResponse([{ id: 1, name: "invoicing" }])),
-      // 4. create_tag for "techlab"
-      () => jsonResponse(rpcResponse({ id: 2 })),
-      // 5. list_document_types
-      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }])),
+      // 4. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 5. resolveStoragePath
+      () => jsonResponse({ results: [
+        { id: 2, name: "Techlab Invoices" },
+        { id: 3, name: "Techlab Documents" },
+        { id: 4, name: "Personal Invoices" },
+        { id: 5, name: "Personal Documents" },
+      ]}),
       // 6. post_document → task UUID
       () => new Response('"task-uuid-lifecycle"', { status: 200 }),
       // 7-9. setDocumentCustomFields
@@ -235,7 +240,7 @@ describe("workflow lifecycle: invoice_intake", () => {
     expect(output.outcome).toBe("uploaded");
     expect(output.title).toBe("Alza - FA2026040001");
     expect(output.correspondent).toBe("Alza");
-    expect(output.tags).toEqual(["techlab", "invoicing"]);
+    expect(output.tags).toEqual(["techlab", "accounting"]);
 
     // Verify events include job lifecycle steps
     const events = getJobEvents(db, job.id);
@@ -309,7 +314,7 @@ describe("workflow lifecycle: scan_intake", () => {
       () =>
         jsonResponse(
           rpcResponse([
-            { id: 1, name: "invoicing" },
+            { id: 11, name: "accounting" },
             { id: 3, name: "techlab" },
           ]),
         ),
@@ -317,11 +322,18 @@ describe("workflow lifecycle: scan_intake", () => {
       () => jsonResponse(rpcResponse({ id: 20 })),
       // 5. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
-      // 6. post_document → task UUID
+      // 6. resolveStoragePath
+      () => jsonResponse({ results: [
+        { id: 2, name: "Techlab Invoices" },
+        { id: 3, name: "Techlab Documents" },
+        { id: 4, name: "Personal Invoices" },
+        { id: 5, name: "Personal Documents" },
+      ]}),
+      // 7. post_document → task UUID
       () => new Response('"task-uuid-scan-lifecycle"', { status: 200 }),
-      // 7-9. setDocumentCustomFields
+      // 8-10. setDocumentCustomFields
       ...customFieldsMockHandlers(),
-      // 10-12. moveGdriveFile to processed/
+      // 11-13. moveGdriveFile to processed/
       ...moveGdriveMockHandlers(),
     );
 
@@ -336,7 +348,7 @@ describe("workflow lifecycle: scan_intake", () => {
     expect(output.outcome).toBe("uploaded");
     expect(output.title).toBe("Orange - OR2026040001");
     expect(output.correspondent).toBe("Orange");
-    expect(output.tags).toEqual(["techlab", "invoicing", "2026-03"]);
+    expect(output.tags).toEqual(["techlab", "accounting", "2026-03"]);
   });
 });
 

@@ -58,7 +58,7 @@ const GDRIVE_LEVEL1 = (process.env.GDRIVE_LEVEL1 ?? "techlab")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
-const GDRIVE_LEVEL2 = (process.env.GDRIVE_LEVEL2 ?? "invoicing")
+const GDRIVE_LEVEL2 = (process.env.GDRIVE_LEVEL2 ?? "accounting")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
