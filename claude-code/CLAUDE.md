@@ -58,7 +58,7 @@ Tools:
 ### workflow (durable job tools)
 
 The workflow MCP adds durable background-job primitives:
-- `create_invoice_intake_job(email_source, message_id, classification, subject?, sender?, received_at?, file_path?, month_tag?, force?, invoice_links?)` — create an invoice processing job. Set `force=true` to reprocess. Pass `invoice_links` (pre-extracted download URLs) so the worker doesn't need to re-fetch email HTML.
+- `create_invoice_intake_job(email_source, message_id, force?)` — create an invoice processing job. The worker handles the full pipeline (classification, download, upload). Set `force=true` to reprocess.
 - `create_scan_intake_job(file_id, classification, filename?, month_tag?, watch_folder?, file_path?, force?)` — create a scan processing job. Set `force=true` to reprocess.
 - `get_job(job_id)` — fetch job by ID
 - `list_jobs(state?, workflow_type?, limit?)` — list recent jobs
@@ -66,10 +66,14 @@ The workflow MCP adds durable background-job primitives:
 - `approve_job(job_id, approved_by?, note?)` — approve a paused job
 - `cancel_job(job_id, reason?)` — cancel a queued, running, or awaiting_approval job (cannot cancel failed/completed)
 
-The workflow worker handles invoice processing deterministically:
-- Downloads attachments or links from email
+The workflow worker drives the full invoice pipeline deterministically:
+- Requests email classification via channel (you run the haiku subagent)
+- Downloads attachments or extracts invoice links from email HTML
+- Requests document classification via channel (you run the haiku subagent)
+- Merges classifications, resolves tags and month_tag
 - Checks for duplicates in Paperless
 - Uploads to Paperless with correct metadata
+- Sends Telegram notification on completion/failure
 - Pauses automatically for unknown vendors, low confidence, or browser-required cases
 
 Use `create_invoice_intake_job` for email invoices. Use `create_scan_intake_job` for scanned documents from Google Drive.

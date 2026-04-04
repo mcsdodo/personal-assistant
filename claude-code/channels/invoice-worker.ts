@@ -51,8 +51,8 @@ export interface InvoiceIntakeInput {
   email_source: string;
   /** Email message ID from the email provider */
   message_id: string;
-  /** Merged classification (email-classifier + document-classifier override).
-   *  Optional in V2: if absent, worker requests classification via channel. */
+  /** Classification data. In production, the worker derives this via channel
+   *  classification steps. Provided directly only in unit tests. */
   classification?: {
     is_invoice: boolean;
     confidence: "high" | "medium" | "low";
@@ -77,10 +77,8 @@ export interface InvoiceIntakeInput {
   received_at?: string;
   /** Path to pre-downloaded file on disk (set by Claude, worker reads instead of downloading) */
   file_path?: string;
-  /** YYYY-MM tag for Paperless (Claude infers from email context) */
+  /** YYYY-MM tag for Paperless (derived by worker via resolveMonthTag, or provided in tests) */
   month_tag?: string;
-  /** Pre-extracted invoice links from email-watcher (Gmail) or Claude */
-  invoice_links?: InvoiceLink[];
 }
 
 export interface ScanIntakeInput {
@@ -480,12 +478,12 @@ async function downloadInvoice(
   logger: WorkerLogger,
 ): Promise<DownloadedFile> {
   return withSpan(tracer, "invoice-worker.download", {
-    "download.strategy": input.classification.download_strategy ?? "unknown",
+    "download.strategy": input.classification?.download_strategy ?? "unknown",
     "email.source": input.email_source,
     "email.message_id": input.message_id,
   }, async (span) => {
-    const { email_source, message_id, classification } = input;
-    const strategy = classification.download_strategy;
+    const { email_source, message_id } = input;
+    const strategy = input.classification?.download_strategy ?? null;
     const mcpUrl = email_source === "gmail" ? GMAIL_MCP_URL : OUTLOOK_MCP_URL;
 
     let file: DownloadedFile;
@@ -636,8 +634,8 @@ async function downloadViaLink(
   const { email_source: source, message_id: messageId, sender, subject } = input;
   logger.log(`Downloading via link extraction from ${source} message ${messageId}`);
 
-  // 1. Get invoice links — prefer pre-extracted, otherwise extract from HTML
-  let links: InvoiceLink[] = input.invoice_links ?? [];
+  // 1. Extract invoice links from email HTML
+  let links: InvoiceLink[] = [];
 
   if (links.length === 0) {
     let html: string | undefined;
