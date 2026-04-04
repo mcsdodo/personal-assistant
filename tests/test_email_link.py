@@ -29,16 +29,7 @@ from .helpers import (
     paperless_find_by_title,
 )
 
-pytestmark = [
-    pytest.mark.link,
-    pytest.mark.slow,
-    pytest.mark.skip(reason=(
-        "Link extraction requires sender to match vendor rules (e.g. alza.sk). "
-        "Test emails sent via Gmail API have the test account as sender, so "
-        "extractInvoiceLinks never matches. Needs a mock SMTP server or "
-        "sender-independent link extraction to work in E2E."
-    )),
-]
+pytestmark = [pytest.mark.link, pytest.mark.slow]
 
 PDF_SERVER_CONTAINER = "test-pdf-server"
 PDF_SERVER_PORT = 80
@@ -158,8 +149,9 @@ class TestDownloadLink:
         assert result.output.get("outcome") in ("uploaded", "duplicate")
 
         if result.output["outcome"] == "uploaded":
-            doc = paperless_find_by_title(LINK_ORDER_ID)
-            assert doc is not None, f"Document {LINK_ORDER_ID} not found in Paperless"
+            title = result.output.get("title", "")
+            doc = paperless_find_by_title(title.split(" - ")[-1])
+            assert doc is not None, f"Document '{title}' not found in Paperless"
 
 
 class TestGmailDownloadLink:
@@ -181,5 +173,6 @@ class TestGmailDownloadLink:
         assert result.output.get("outcome") in ("uploaded", "duplicate")
 
         if result.output["outcome"] == "uploaded":
-            doc = paperless_find_by_title(GMAIL_LINK_ORDER_ID)
-            assert doc is not None, f"Document {GMAIL_LINK_ORDER_ID} not found in Paperless"
+            title = result.output.get("title", "")
+            doc = paperless_find_by_title(title.split(" - ")[-1])
+            assert doc is not None, f"Document '{title}' not found in Paperless"
