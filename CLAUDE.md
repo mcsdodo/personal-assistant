@@ -96,7 +96,7 @@ All services have `com.centurylinklabs.watchtower.enable: "false"` — no mid-se
 | Image | Pin strategy |
 |-------|-------------|
 | `checker-mcp`, `outlook-mcp`, `claude-code` | Local builds, tagged by git commit |
-| `gmail-mcp` | Pinned to `1.16.2` (semver available on GHCR) |
+| `gmail-mcp` | Pinned to `1.16.2` (semver available on GHCR). HTML body truncation patched from 20k→100k via sed in compose entrypoint |
 | `paperless-mcp` | `:latest` (no semver tags; Watchtower excluded, `auto_pull=false`) |
 
 ## Key Files
@@ -112,7 +112,7 @@ All services have `com.centurylinklabs.watchtower.enable: "false"` — no mid-se
 | `claude-code/entrypoint.sh` | tmux wrapper, prompt detection, health monitor |
 | `claude-code/channels/email-watcher.ts` | Email-watcher channel (polls Gmail+Outlook, SQLite audit) |
 | `claude-code/channels/email-watcher-utils.ts` | Pure functions extracted from email-watcher (parsing, metrics, duration) |
-| `claude-code/channels/db.ts` | Email-watcher SQLite module (emails + source_state tables) |
+| `claude-code/channels/db.ts` | Email-watcher SQLite module (emails + source_state tables, invoice_links persistence) |
 | `claude-code/channels/gdrive-watcher.ts` | GDrive-watcher channel (polls Google Drive, SQLite audit) |
 | `claude-code/channels/gdrive-db.ts` | GDrive-watcher SQLite module |
 | `claude-code/channels/file-ops.ts` | File-ops MCP tool server (download, delete, list, decrypt, base64, env) |
@@ -174,7 +174,7 @@ Polls Google Drive folders (`LEVEL1`/`LEVEL2`) every 30s. SQLite audit trail (`g
 
 ### claude-code/channels/workflow-mcp.ts (~410 lines)
 
-Durable job queue backed by SQLite (`workflow.db`). Job states: created → processing → awaiting_approval → completed/failed. Tools: `create_invoice_intake_job()`, `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`. Both create tools accept `force: true` for reprocessing.
+Durable job queue backed by SQLite (`workflow.db`). Job states: created → processing → awaiting_approval → completed/failed. Tools: `create_invoice_intake_job()`, `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`. Both create tools accept `force: true` for reprocessing. `create_invoice_intake_job` also accepts `invoice_links` to pass pre-extracted download URLs to the worker.
 
 ### claude-code/agents/
 
@@ -382,7 +382,7 @@ python -m pytest tests/ -v -m gmail --timeout=300
 
 ### Unit & Integration Tests
 
-~300 tests across 15 test files covering all channels, workers, and DB modules. Run with Bun:
+~340 tests across 17 test files covering all channels, workers, and DB modules. Run with Bun:
 ```bash
 cd claude-code/channels
 bun test

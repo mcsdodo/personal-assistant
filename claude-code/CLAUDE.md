@@ -58,7 +58,7 @@ Tools:
 ### workflow (durable job tools)
 
 The workflow MCP adds durable background-job primitives:
-- `create_invoice_intake_job(email_source, message_id, classification, subject?, sender?, received_at?, file_path?, month_tag?, force?)` — create an invoice processing job. Set `force=true` to reprocess an email that already has a completed job.
+- `create_invoice_intake_job(email_source, message_id, classification, subject?, sender?, received_at?, file_path?, month_tag?, force?, invoice_links?)` — create an invoice processing job. Set `force=true` to reprocess. Pass `invoice_links` (pre-extracted download URLs) so the worker doesn't need to re-fetch email HTML.
 - `create_scan_intake_job(file_id, classification, filename?, month_tag?, watch_folder?, file_path?, force?)` — create a scan processing job. Set `force=true` to reprocess.
 - `get_job(job_id)` — fetch job by ID
 - `list_jobs(state?, workflow_type?, limit?)` — list recent jobs
