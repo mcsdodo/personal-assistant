@@ -460,7 +460,9 @@ export async function executeInvoiceIntake(
           doc_type: merged.doc_type,
           owner: merged.owner ?? null,
         });
-        if (msg) await notify(msg).catch(() => {});
+        if (msg) await notify(msg).catch((e) => {
+          span.addEvent("notification_failed", { error: e instanceof Error ? e.message : String(e) });
+        });
       }
       outcome = "uploaded";
       span.setAttribute("invoice.outcome", "uploaded");
@@ -487,7 +489,9 @@ export async function executeInvoiceIntake(
             owner: null,
             error: message,
           });
-          if (msg) await notify(msg).catch(() => {});
+          if (msg) await notify(msg).catch((e) => {
+            span.addEvent("notification_failed", { error: e instanceof Error ? e.message : String(e) });
+          });
         }
         outcome = "failed";
         span.setAttribute("invoice.outcome", "failed");
@@ -1325,7 +1329,9 @@ export async function executeScanIntake(
           doc_type: classification.doc_type,
           owner: classification.owner ?? null,
         });
-        if (msg) await notify(msg).catch(() => {});
+        if (msg) await notify(msg).catch((e) => {
+          span.addEvent("notification_failed", { error: e instanceof Error ? e.message : String(e) });
+        });
       }
       outcome = "uploaded";
       span.setAttribute("invoice.outcome", "uploaded");
@@ -1350,7 +1356,9 @@ export async function executeScanIntake(
             outcome: "failed", vendor: vendorForSpan,
             total_amount: null, currency: null, doc_type: null, owner: null, error: message,
           });
-          if (msg) await notify(msg).catch(() => {});
+          if (msg) await notify(msg).catch((e) => {
+            span.addEvent("notification_failed", { error: e instanceof Error ? e.message : String(e) });
+          });
         }
         outcome = "failed";
         span.setAttribute("invoice.outcome", "failed");
@@ -1419,25 +1427,22 @@ async function downloadFromGdrive(
 
   // Step 2: Download the actual file binary
   const resolvedFilename = filename ?? `gdrive-${fileId}`;
-  const localPath = `/workspace/downloads/${resolvedFilename}`;
 
-  const { execSync } = await import("child_process");
-  execSync(`curl -sL -o "${localPath}" "${downloadUrl}"`, { timeout: 30000 });
+  const response = await fetch(downloadUrl, { redirect: "follow" });
+  if (!response.ok) throw new Error(`GDrive download failed: ${response.status} ${response.statusText}`);
 
-  // Step 3: Read file and base64 encode
-  const fs = await import("fs");
-  const fileBuffer = fs.readFileSync(localPath);
-  const contentBase64 = fileBuffer.toString("base64");
+  const arrayBuffer = await response.arrayBuffer();
+  const contentBase64 = Buffer.from(arrayBuffer).toString("base64");
 
-  // Determine content type from filename
-  let contentType = "application/pdf";
+  // Determine content type from response or filename
+  let contentType = response.headers.get("content-type") ?? "application/pdf";
   const ext = resolvedFilename.toLowerCase().split(".").pop();
-  if (ext === "jpg" || ext === "jpeg") contentType = "image/jpeg";
-  else if (ext === "png") contentType = "image/png";
-  else if (ext === "heic") contentType = "image/heic";
-
-  // Clean up local file
-  try { fs.unlinkSync(localPath); } catch { /* ignore */ }
+  if (contentType === "application/octet-stream") {
+    if (ext === "jpg" || ext === "jpeg") contentType = "image/jpeg";
+    else if (ext === "png") contentType = "image/png";
+    else if (ext === "heic") contentType = "image/heic";
+    else contentType = "application/pdf";
+  }
 
   return {
     filename: resolvedFilename,

@@ -497,55 +497,7 @@ export async function pollCycle(db: Database, channel: Server, wfDb?: Database):
 // Retry stuck files from previous session
 // ---------------------------------------------------------------------------
 
-/**
- * Re-push files stuck in non-terminal states ('new') as channel
- * notifications. These got stuck because Claude restarted mid-processing.
- * The DB is the source of truth — if status isn't terminal, re-push it.
- */
-async function retryStuck(db: Database, channel: Server): Promise<void> {
-  const stuck = db
-    .prepare(
-      "SELECT * FROM gdrive_files WHERE status IN ('new') ORDER BY discovered_at ASC"
-    )
-    .all() as import("./gdrive-db").FileRow[];
-
-  if (stuck.length === 0) return;
-
-  log(`Retrying ${stuck.length} stuck file(s)`);
-  const capped = stuck.slice(0, MAX_NEW_PER_CYCLE);
-
-  for (const file of capped) {
-    const scanDate = new Date(file.created_at ?? new Date().toISOString());
-    const monthTag = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, "0")}`;
-    const watchFolder = file.watch_folder ?? `${GDRIVE_LEVEL1[0]}/${GDRIVE_LEVEL2[0]}`;
-
-    await channel.notification({
-      method: "notifications/claude/channel",
-      params: {
-        content: [
-          "Retry: scanned document stuck from previous session:",
-          `Name: ${file.filename ?? "(unknown)"}`,
-          `File ID: ${file.id}`,
-          `Month tag: ${monthTag}`,
-          `Folder: ${watchFolder}`,
-          `Status: ${file.status}`,
-        ].join("\n"),
-        meta: {
-          source: "gdrive",
-          file_id: file.id,
-          name: file.filename ?? "",
-          created_time: file.created_at ?? "",
-          month_tag: monthTag,
-          watch_folder: watchFolder,
-          timestamp: new Date().toISOString(),
-          retry: "true",
-        },
-      },
-    });
-  }
-
-  log(`Re-pushed ${capped.length} stuck file(s)`);
-}
+// retryStuck removed — workflow jobs already exist for stuck files, worker handles them.
 
 // ---------------------------------------------------------------------------
 // MCP Server setup
@@ -735,14 +687,7 @@ async function main(): Promise<void> {
     log(`First poll cycle error: ${e.message}`);
   }
 
-  // 7. Retry files stuck from previous session
-  try {
-    await retryStuck(db, mcp);
-  } catch (e: any) {
-    log(`Retry stuck error: ${e.message}`);
-  }
-
-  // 8. Start interval timer
+  // 7. Start interval timer
   setInterval(async () => {
     try {
       await pollCycle(db, mcp);
