@@ -4,6 +4,7 @@ Auth: MSAL device code flow. On startup, if no cached token, prints URL + code
 in container logs. User enters the code at the URL, server continues automatically.
 """
 
+import json
 import os
 import threading
 from pathlib import Path
@@ -133,8 +134,8 @@ def list_emails(
     sender: str | None = None,
     folder: str | None = None,
     received_after: str | None = None,
-) -> list[dict]:
-    """List recent emails from Outlook.
+) -> str:
+    """List recent emails from Outlook. Returns a JSON array.
 
     Args:
         top: Number of emails to fetch (default 20).
@@ -146,7 +147,7 @@ def list_emails(
     if folder:
         folder_id = _find_folder(s, folder)
         if not folder_id:
-            return [{"error": f"Folder '{folder}' not found"}]
+            return json.dumps([{"error": f"Folder '{folder}' not found"}])
         url = f"{GRAPH_BASE}/me/mailFolders/{folder_id}/messages"
     else:
         url = f"{GRAPH_BASE}/me/messages"
@@ -167,7 +168,7 @@ def list_emails(
     resp = s.get(url, params=params)
     resp.raise_for_status()
 
-    return [
+    return json.dumps([
         {
             "id": m["id"],
             "sender": m.get("from", {}).get("emailAddress", {}).get("address", ""),
@@ -182,7 +183,7 @@ def list_emails(
             "preview": m.get("bodyPreview", "")[:200],
         }
         for m in resp.json().get("value", [])
-    ]
+    ])
 
 
 @mcp_server.tool()
@@ -210,8 +211,8 @@ def get_email(message_id: str) -> dict:
 
 
 @mcp_server.tool()
-def get_attachments(message_id: str) -> list[dict]:
-    """List attachments on an email.
+def get_attachments(message_id: str) -> str:
+    """List attachments on an email. Returns a JSON array.
 
     Args:
         message_id: Outlook message ID.
@@ -219,7 +220,7 @@ def get_attachments(message_id: str) -> list[dict]:
     s = _session()
     resp = s.get(f"{GRAPH_BASE}/me/messages/{message_id}/attachments")
     resp.raise_for_status()
-    return [
+    return json.dumps([
         {
             "id": a["id"],
             "name": a.get("name", ""),
@@ -227,7 +228,7 @@ def get_attachments(message_id: str) -> list[dict]:
             "size": a.get("size", 0),
         }
         for a in resp.json().get("value", [])
-    ]
+    ])
 
 
 @mcp_server.tool()
