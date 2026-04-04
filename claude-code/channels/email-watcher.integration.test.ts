@@ -365,10 +365,10 @@ describe("pollGmail integration", () => {
     expect(result[0].id).toBe("msg-gmail-004");
   });
 
-  test("handles MCP error gracefully", async () => {
+  test("returns null on MCP error (not empty array)", async () => {
     setGmailCallTool(async () => { throw new Error("Connection refused"); });
     const result = await pollGmail(db, "after:1234567890");
-    expect(result).toEqual([]);
+    expect(result).toBeNull();
   });
 
   test("returns empty when search has no data", async () => {
@@ -423,10 +423,10 @@ describe("pollOutlook integration", () => {
     expect(result[0].source).toBe("outlook");
   });
 
-  test("handles MCP error gracefully", async () => {
+  test("returns null on MCP error (not empty array)", async () => {
     setOutlookCallTool(async () => { throw new Error("Auth expired"); });
     const result = await pollOutlook(db, "2026-03-20T00:00:00Z");
-    expect(result).toEqual([]);
+    expect(result).toBeNull();
   });
 
   test("returns empty when no data", async () => {

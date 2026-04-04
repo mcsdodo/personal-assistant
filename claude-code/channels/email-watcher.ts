@@ -466,7 +466,7 @@ export async function pollGmail(db: Database, query: string): Promise<EmailInfo[
   } catch (e: any) {
     log(`Gmail poll error: ${e.message}`);
     resetGmailClient();
-    return [];
+    return null;
   }
 }
 
@@ -513,7 +513,7 @@ export async function pollOutlook(db: Database, receivedAfter: string | null): P
   } catch (e: any) {
     log(`Outlook poll error: ${e.message}`);
     resetOutlookClient();
-    return [];
+    return null;
   }
 }
 
@@ -617,7 +617,7 @@ export async function processNewEmails(db: Database, channel: Server, emails: Em
 
 async function pollCycle(db: Database, channel: Server): Promise<void> {
   return withSpan(tracer, "email-watcher.poll", {}, async (span) => {
-    const sources: Array<{ name: string; poll: () => Promise<EmailInfo[]> }> = [];
+    const sources: Array<{ name: string; poll: () => Promise<EmailInfo[] | null> }> = [];
 
     if (gmailEnabled && !catchupQueue.has("gmail")) {
       const lastChecked = getLastChecked(db, "gmail");
@@ -678,9 +678,18 @@ async function pollCycle(db: Database, channel: Server): Promise<void> {
 
     for (let i = 0; i < sources.length; i++) {
       const source = sources[i].name;
-      let emails = results[i];
+      const pollResult = results[i];
 
-      totalFound += results[i].length;
+      // null = poll error (auth expired, connection refused, etc.)
+      // Skip this source entirely — do NOT advance last_checked cursor.
+      if (pollResult === null) {
+        log(`${source}: poll returned error, skipping cursor advance`);
+        continue;
+      }
+
+      let emails = pollResult;
+
+      totalFound += pollResult.length;
 
       // Filter to emails not already in DB
       emails = emails.filter((e) => !emailExists(db, e.id));
