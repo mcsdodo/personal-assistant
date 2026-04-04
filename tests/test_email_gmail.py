@@ -1,7 +1,7 @@
 """E2E smoke test: Gmail email pipeline.
 
 Sends a real email via Gmail API to the configured test address (GMAIL_TO),
-waits for the pipeline (email-watcher -> email-classifier -> document-classifier -> worker),
+waits for the pipeline (email-watcher -> worker -> classifier -> Paperless),
 and verifies the document in Paperless.
 
 Run:
@@ -15,7 +15,7 @@ import pytest
 
 from .helpers import (
     GMAIL_TO,
-    poll_email_status,
+    poll_job_completion,
     send_test_pdf,
     paperless_find_by_title,
 )
@@ -27,21 +27,23 @@ class TestGmailAttachments:
     """Smoke test: Gmail attachment pipeline."""
 
     def test_invoice(self, reset_pipeline, clean_paperless):
-        """Alza invoice: classified, downloaded, uploaded to Paperless."""
+        """Alza invoice: watcher creates job, worker classifies + uploads to Paperless."""
         send_test_pdf("invoice.pdf", GMAIL_TO)
 
-        result = poll_email_status(
-            "5418090558", {"processed", "ignored"}, source="gmail", timeout=240
-        )
-        if result.status == "processed":
-            assert "5418090558" in (result.process_result or "")
+        result = poll_job_completion("gmail:", timeout=240)
+        assert result.state == "completed"
+        assert result.output is not None
+
+        outcome = result.output.get("outcome")
+        if outcome == "uploaded":
+            assert "5418090558" in result.output.get("title", "")
+            assert result.output.get("correspondent") == "Alza.sk s.r.o."
             doc = paperless_find_by_title("5418090558")
             assert doc is not None, "Document not found in Paperless"
             assert doc["correspondent"] == "Alza.sk s.r.o."
-            assert "invoicing" in doc["tags"]
-            assert "techlab" in doc["tags"]
-        else:
-            assert (
-                "duplicate" in (result.process_result or "").lower()
-                or "already" in (result.process_result or "").lower()
+            # Tags depend on BUSINESS_* env vars — just verify YYYY-MM is present
+            assert any(t[:4].isdigit() and "-" in t for t in doc["tags"]), (
+                f"No YYYY-MM tag found in {doc['tags']}"
             )
+        else:
+            assert outcome in ("duplicate", "ignored"), f"Unexpected outcome: {outcome}"

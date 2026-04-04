@@ -68,6 +68,11 @@ if not PAPERLESS_TOKEN:
 CONTAINER = "personal-assistant-claude"
 COMPOSE_CMD = "docker compose --profile local --env-file .env"
 
+# Business identity — used by document classifier to determine owner tag.
+# Tests should assert against these rather than hardcoding "techlab"/"personal".
+BUSINESS_COMPANY_NAME = _env("BUSINESS_COMPANY_NAME", "")
+BUSINESS_CRN = _env("BUSINESS_CRN", "")
+
 # Subject templates matching what the email-classifier expects
 SUBJECT_MAP = {
     "invoice.pdf": "Faktúra 1000000001 - Alza.sk",
@@ -366,6 +371,65 @@ def poll_email_status(
     raise TimeoutError(
         f"Email matching '{subject_contains}' did not reach {target_statuses} "
         f"within {timeout}s. Last rows: {rows if 'rows' in locals() else 'none'}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Workflow DB polling (jobs created directly by watchers)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class JobResult:
+    id: str
+    state: str
+    workflow_type: str
+    source_ref: str | None
+    output: dict | None
+
+
+def poll_job_completion(
+    source_ref_contains: str,
+    timeout: int = 240,
+    poll_interval: int = 10,
+) -> JobResult:
+    """Poll workflow DB until a job matching source_ref reaches a terminal state.
+
+    Terminal states: completed, failed, cancelled.
+    Raises TimeoutError if not reached within timeout seconds.
+    """
+    import json
+
+    terminal = {"completed", "failed", "cancelled"}
+    deadline = time.time() + timeout
+    rows: list[dict] = []
+
+    while time.time() < deadline:
+        rows = workflow_db_query(
+            f"SELECT id,state,workflow_type,source_ref,output_json "
+            f'FROM jobs WHERE source_ref LIKE \\"%{source_ref_contains}%\\" '
+            f"ORDER BY created_at DESC LIMIT 1"
+        )
+        if rows and rows[0].get("state") in terminal:
+            r = rows[0]
+            output = None
+            if r.get("output_json"):
+                try:
+                    output = json.loads(r["output_json"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return JobResult(
+                id=r["id"],
+                state=r["state"],
+                workflow_type=r["workflow_type"],
+                source_ref=r.get("source_ref"),
+                output=output,
+            )
+        time.sleep(poll_interval)
+
+    raise TimeoutError(
+        f"Job matching source_ref '{source_ref_contains}' did not reach terminal state "
+        f"within {timeout}s. Last rows: {rows}"
     )
 
 

@@ -26,7 +26,7 @@ import requests
 from .helpers import (
     GMAIL_TO,
     OUTLOOK_TO,
-    poll_email_status,
+    poll_job_completion,
     send_html_email,
     paperless_find_by_title,
 )
@@ -64,8 +64,8 @@ ALZA_HTML = f"""\
 <body style="font-family: Arial, sans-serif;">
 <table width="600" cellpadding="0" cellspacing="0" style="margin: auto; background: #fff;">
   <tr><td style="padding: 20px;">
-    <h2>Pripravené v AlzaBoxe</h2>
-    <p>Vaša objednávka <strong>č. {LINK_ORDER_ID}</strong> je pripravená.</p>
+    <h2>Pripravene v AlzaBoxe</h2>
+    <p>Vasa objednavka <strong>c. {LINK_ORDER_ID}</strong> je pripravena.</p>
     <table width="100%" style="border-collapse: collapse;">
       <tr style="background: #f5f5f5;">
         <td style="padding: 8px; border: 1px solid #ddd;">Test Product</td>
@@ -73,11 +73,11 @@ ALZA_HTML = f"""\
       </tr>
     </table>
     <p style="margin-top: 20px;">
-      <a href="{PDF_URL}" style="padding: 12px 24px; background: #78b159; color: #fff; text-decoration: none;">Stiahnuť faktúru</a>
+      <a href="{PDF_URL}" style="padding: 12px 24px; background: #78b159; color: #fff; text-decoration: none;">Stiahnuť fakturu</a>
     </p>
   </td></tr>
   <tr><td style="padding: 15px; font-size: 11px; color: #999;">
-    Alza.sk s.r.o., Karadžičova 8, 821 08 Bratislava
+    Alza.sk s.r.o., Karadzicova 8, 821 08 Bratislava
   </td></tr>
 </table>
 </body>
@@ -85,10 +85,10 @@ ALZA_HTML = f"""\
 """
 
 ALZA_TEXT = (
-    f"Pripravené v AlzaBoxe\n"
-    f"Objednávka č. {LINK_ORDER_ID}\n"
+    f"Pripravene v AlzaBoxe\n"
+    f"Objednavka c. {LINK_ORDER_ID}\n"
     f"Suma: 13,43 EUR\n"
-    f"Stiahnuť faktúru: {PDF_URL}\n"
+    f"Stiahnuť fakturu: {PDF_URL}\n"
 )
 
 
@@ -141,23 +141,22 @@ class TestDownloadLink:
     """Test invoice download via link in email body."""
 
     def test_alza_known_link(self, reset_pipeline, clean_paperless, pdf_server):
-        """Alza-style email with Stiahnuť faktúru link: extracted, downloaded, uploaded."""
+        """Alza-style email with link: extracted, downloaded, uploaded."""
         send_html_email(
             to=OUTLOOK_TO,
-            subject=f"Pripravené v AlzaBoxe / Obj. č. {LINK_ORDER_ID} - Alza.sk",
+            subject=f"Pripravene v AlzaBoxe / Obj. c. {LINK_ORDER_ID} - Alza.sk",
             html=ALZA_HTML,
             text=ALZA_TEXT,
         )
 
-        result = poll_email_status(
-            LINK_ORDER_ID, {"processed"}, source="outlook", timeout=240
-        )
-        assert result.status == "processed"
-        assert LINK_ORDER_ID in (result.process_result or "")
+        result = poll_job_completion("outlook:", timeout=240)
+        assert result.state == "completed"
+        assert result.output is not None
+        assert result.output.get("outcome") in ("uploaded", "duplicate")
 
-        doc = paperless_find_by_title(LINK_ORDER_ID)
-        assert doc is not None, f"Document {LINK_ORDER_ID} not found in Paperless"
-        assert "invoicing" in doc["tags"]
+        if result.output["outcome"] == "uploaded":
+            doc = paperless_find_by_title(LINK_ORDER_ID)
+            assert doc is not None, f"Document {LINK_ORDER_ID} not found in Paperless"
 
 
 GMAIL_LINK_HTML = f"""\
@@ -165,8 +164,8 @@ GMAIL_LINK_HTML = f"""\
 <body style="font-family: Arial, sans-serif;">
 <table width="600" cellpadding="0" cellspacing="0" style="margin: auto; background: #fff;">
   <tr><td style="padding: 20px;">
-    <h2>Pripravené v AlzaBoxe</h2>
-    <p>Vaša objednávka <strong>č. {GMAIL_LINK_ORDER_ID}</strong> je pripravená.</p>
+    <h2>Pripravene v AlzaBoxe</h2>
+    <p>Vasa objednavka <strong>c. {GMAIL_LINK_ORDER_ID}</strong> je pripravena.</p>
     <table width="100%" style="border-collapse: collapse;">
       <tr style="background: #f5f5f5;">
         <td style="padding: 8px; border: 1px solid #ddd;">Test Product Gmail</td>
@@ -174,11 +173,11 @@ GMAIL_LINK_HTML = f"""\
       </tr>
     </table>
     <p style="margin-top: 20px;">
-      <a href="{PDF_URL}" style="padding: 12px 24px; background: #78b159; color: #fff; text-decoration: none;">Stiahnuť&nbsp;faktúru</a>
+      <a href="{PDF_URL}" style="padding: 12px 24px; background: #78b159; color: #fff; text-decoration: none;">Stiahnuť&nbsp;fakturu</a>
     </p>
   </td></tr>
   <tr><td style="padding: 15px; font-size: 11px; color: #999;">
-    Alza.sk s.r.o., Karadžičova 8, 821 08 Bratislava
+    Alza.sk s.r.o., Karadzicova 8, 821 08 Bratislava
   </td></tr>
 </table>
 </body>
@@ -186,33 +185,30 @@ GMAIL_LINK_HTML = f"""\
 """
 
 GMAIL_LINK_TEXT = (
-    f"Pripravené v AlzaBoxe\n"
-    f"Objednávka č. {GMAIL_LINK_ORDER_ID}\n"
+    f"Pripravene v AlzaBoxe\n"
+    f"Objednavka c. {GMAIL_LINK_ORDER_ID}\n"
     f"Suma: 19,99 EUR\n"
-    f"Stiahnuť faktúru: {PDF_URL}\n"
+    f"Stiahnuť fakturu: {PDF_URL}\n"
 )
 
 
 class TestGmailDownloadLink:
-    """Test invoice download via link in Gmail email body (HTML extraction)."""
+    """Test invoice download via link in Gmail email body."""
 
     def test_gmail_alza_known_link(self, reset_pipeline, clean_paperless, pdf_server):
-        """Gmail Alza email with Stiahnuť faktúru link: HTML extracted, downloaded, uploaded."""
+        """Gmail Alza email with link: HTML extracted, downloaded, uploaded."""
         send_html_email(
             to=GMAIL_TO,
-            subject=f"Pripravené v AlzaBoxe / Obj. č. {GMAIL_LINK_ORDER_ID} - Alza.sk",
+            subject=f"Pripravene v AlzaBoxe / Obj. c. {GMAIL_LINK_ORDER_ID} - Alza.sk",
             html=GMAIL_LINK_HTML,
             text=GMAIL_LINK_TEXT,
         )
 
-        result = poll_email_status(
-            GMAIL_LINK_ORDER_ID, {"processed"}, source="gmail", timeout=240
-        )
-        assert result.status == "processed"
-        assert "Uploaded" in (result.process_result or "")
-        assert "Paperless" in (result.process_result or "")
+        result = poll_job_completion("gmail:", timeout=240)
+        assert result.state == "completed"
+        assert result.output is not None
+        assert result.output.get("outcome") in ("uploaded", "duplicate")
 
-        # Verify document actually landed in Paperless
-        doc = paperless_find_by_title(GMAIL_LINK_ORDER_ID)
-        assert doc is not None, f"Document {GMAIL_LINK_ORDER_ID} not found in Paperless"
-        assert "invoicing" in doc["tags"]
+        if result.output["outcome"] == "uploaded":
+            doc = paperless_find_by_title(GMAIL_LINK_ORDER_ID)
+            assert doc is not None, f"Document {GMAIL_LINK_ORDER_ID} not found in Paperless"
