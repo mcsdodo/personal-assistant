@@ -559,19 +559,11 @@ const mcp = new Server(
       tools: {},
     },
     instructions: [
-      'Events from gdrive-watcher arrive as <channel source="gdrive-watcher" ...>.',
-      "Each event is a NEW scanned document detected in a Google Drive folder.",
+      "The gdrive-watcher creates workflow jobs directly when it detects new files.",
+      "You do NOT receive channel events for normal file detection.",
+      "The only events you may receive are stuck-file retries at startup — jobs already exist for these.",
       "",
-      "When you receive a gdrive-watcher event:",
-      "1. Download the file using the gmail MCP's get_drive_file_content or get_drive_file_download_url tool (use the file_id from meta)",
-      "2. Classify using the scan-classifier subagent (pass the file content for vision-based analysis)",
-      "3. Create a workflow job via create_scan_intake_job with the classification result and watch_folder from meta",
-      "4. After the job completes, call update_gdrive_scan_status to record the outcome",
-      "",
-      "The month_tag meta field contains the YYYY-MM tag derived from scan date. Use this as-is for tagging.",
-      "The watch_folder meta field identifies which folder the file came from (e.g. techlab/invoicing). Pass it to create_scan_intake_job.",
-      "",
-      "IMPORTANT: After processing, call update_gdrive_scan_status to record the result.",
+      "Tools: update_gdrive_scan_status, get_gdrive_scan_status, get_gdrive_scan_stats.",
     ].join("\n"),
   }
 );

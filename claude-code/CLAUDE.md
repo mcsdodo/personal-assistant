@@ -94,7 +94,7 @@ The email-watcher tracks a `last_checked` timestamp per source. On startup:
 
 The gdrive-watcher creates workflow jobs directly when it detects new files — you do NOT receive channel events for normal file detection. The gdrive-watcher polls multiple Google Drive folders every 30 seconds (configured via `GDRIVE_LEVEL1` × `GDRIVE_LEVEL2`).
 
-After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure (permanent), it moves to `errors/`. The `month_tag` is a hard rule — always the scan date, not document content date.
+After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure (permanent), it moves to `errors/`. The `month_tag` defaults to the scan date (GDrive file creation time) but the worker overrides it with `doc_date` from the document classifier when present.
 
 ## Email/Scan Processing Pipeline
 

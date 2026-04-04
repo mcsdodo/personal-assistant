@@ -1,12 +1,22 @@
 /**
- * Invoice intake workflow worker.
+ * Invoice/scan intake pipeline orchestrator.
  *
- * Executes deterministic invoice processing steps:
- * 1. Download invoice (attachment or known link)
- * 2. Deduplicate against Paperless
- * 3. Upload to Paperless with metadata
+ * Drives the full processing pipeline deterministically:
  *
- * Calls gmail/outlook/paperless MCP servers directly via HTTP.
+ * invoice_intake (email):
+ *   classify_email (park→channel) → action gate → download → classify_document
+ *   (park→channel) → merge → month_tag → correspondent → dedup → tags →
+ *   doc type → storage path → upload → custom fields → notify
+ *
+ * scan_intake (GDrive):
+ *   download → classify_document (park→channel) → month_tag → correspondent →
+ *   dedup → tags → doc type → storage path → upload → custom fields →
+ *   move file → notify
+ *
+ * Classification steps park the job (awaiting_classification) and push a
+ * channel notification to Claude. Claude runs a haiku subagent and calls
+ * submit_classification() to resume. Step results are cached in job_events
+ * for resume on retry.
  */
 
 import type { Database } from "bun:sqlite";
