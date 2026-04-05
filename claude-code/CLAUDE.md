@@ -40,20 +40,18 @@ Outlook email access via Microsoft Graph:
 ### email-watcher (channel + tools)
 
 The email-watcher is both a channel (pushes events) and a tool server:
-- `update_email_status(id, status, source?, classification?, action?, vendor?, confidence?, process_result?)` — record classification/processing results. Provide `source` (gmail/outlook) when the email wasn't detected by the watcher to auto-create the DB record (upsert).
-- `get_recent_emails(limit?, status?, source?)` — query the email audit trail
-- `get_email_stats()` — processing statistics (counts by status, last 24h)
+- `get_recent_emails(limit?, source?)` — query the email audit trail
+- `get_email_stats()` — email counts and last-24h breakdown
 
-Use these for debugging ("show me recent emails"), status checks ("how many processed today?"), and always after processing an email event.
+Use these for debugging (“show me recent emails”) and status checks (“how many discovered today?”).
 
 ### gdrive-watcher (channel + tools)
 
 The gdrive-watcher polls a Google Drive folder (`techlab/invoicing/`) every 30 seconds for new scanned documents and pushes events here.
 
 Tools:
-- `update_gdrive_scan_status(id, status, classification?, action?, job_id?, process_result?, error?)` — record processing results
-- `get_gdrive_scan_status(limit?, status?)` — query the file audit trail
-- `get_gdrive_scan_stats()` — processing statistics (counts by status)
+- `get_gdrive_scan_status(limit?)` — query the file audit trail
+- `get_gdrive_scan_stats()` — total file count
 
 ### workflow (durable job tools)
 
@@ -112,10 +110,6 @@ After classification submissions, poll with `get_job(job_id)`:
 - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response, then call `approve_job` or `cancel_job`
 - `state: retryable` → transient failure, worker retries automatically. No action needed.
 - `state: failed` → permanent failure, worker sends Telegram notification automatically. Create a fresh job with `force: true`.
-5. **Record** — call `update_email_status` on the email-watcher after the job completes. Always pass `source`:
-   - After job completion: `update_email_status(id, status="processed", source=<email_source>, process_result="Uploaded X to Paperless")`
-   - On job failure: `update_email_status(id, status="failed", source=<email_source>, process_result="error details")`
-   - On ignore: `update_email_status(id, status="ignored", source=<email_source>)`
 
 Do NOT manually inspect emails, download PDFs, or run classifiers outside of channel requests. The worker orchestrates.
 
@@ -166,15 +160,3 @@ The worker sends Telegram notifications automatically for uploaded and failed jo
 - Respond concisely
 - When processing events, explain what you found and what action you took
 - Use Slovak if the user writes in Slovak
-
-## Recording email status (ALWAYS do this)
-
-**Every email you process must be recorded in the audit trail** — whether it came from an email-watcher channel event or the user asked you to process it manually.
-
-Call `update_email_status` after classification and after processing:
-- After classification: `update_email_status(id, status="classified", source="gmail", classification=<json>, action=..., vendor=..., confidence=...)`
-- After successful processing: `update_email_status(id, status="processed", source="gmail", process_result="Uploaded X to Paperless")`
-- On failure: `update_email_status(id, status="failed", source="gmail", process_result="error details")`
-- On ignore: `update_email_status(id, status="ignored", source="gmail")`
-
-**Always pass `source`** (`gmail` or `outlook`). When the email was detected by the watcher, the DB row already exists and `source` is optional. When processing manually (user asks you to check a specific email), the row likely doesn't exist — `source` enables auto-creation. Without it, the call fails with "not found".

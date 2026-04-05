@@ -163,7 +163,7 @@ MSAL device code auth with singleton caching (`_msal_lock`). `get_access_token()
 
 ### claude-code/channels/email-watcher.ts (~1100 lines)
 
-Polls Gmail + Outlook every 30s. Creates `invoice_intake` jobs directly in `workflow.db` (no channel notification to Claude for new emails). SQLite audit trail (`emails.db`). Metrics endpoint `:9465` (Prometheus format). Health endpoint `/health` with staleness detection. Tools: `update_email_status()`, `get_recent_emails()`, `get_email_stats()`. Startup events (`first_start`, `catchup_required`) still use channel notifications.
+Polls Gmail + Outlook every 30s. Creates `invoice_intake` jobs directly in `workflow.db` (no channel notification to Claude for new emails). SQLite audit trail (`emails.db`). Metrics endpoint `:9465` (Prometheus format). Health endpoint `/health` with staleness detection. Tools: `get_recent_emails()`, `get_email_stats()`. Startup events (`first_start`, `catchup_required`) still use channel notifications.
 
 ### claude-code/channels/invoice-worker.ts (~1580 lines)
 
@@ -489,15 +489,11 @@ No Grafana restart needed — the file provisioner detects changes and reloads.
 
 | Metric | Meaning |
 |--------|---------|
-| `email_watcher_emails_total` | Total tracked emails by `source` and `status` |
-| `email_watcher_backlog_total` | Emails still waiting for processing (`status="new"`) by `source` |
-| `email_watcher_attachments_total` | Emails with attachments by `source` and `status` |
-| `email_watcher_recent_discovered_total` | Emails discovered in the last 24h by `source` and `status` |
-| `email_watcher_actions_total` | Classified actions such as `download_and_upload`, `notify_user`, `ignore` |
-| `email_watcher_confidence_total` | Classified emails grouped by confidence (`high`, `medium`, `low`) |
-| `email_watcher_vendors_total` | Raw vendor names from email classifier (legacy, still scraped) |
-| `email_watcher_processed_results_total` | Processed email counts grouped by final `status` |
-| `email_watcher_latency_seconds` | Average workflow latency from discovery to classification / processing |
+| `email_watcher_emails_total` | Total tracked emails by `source` |
+| `email_watcher_backlog_total` | Non-terminal jobs (queued/running/awaiting) by `type` |
+| `email_watcher_attachments_total` | Emails with attachments by `source` |
+| `email_watcher_recent_discovered_total` | Emails discovered in the last 24h by `source` |
+| `email_watcher_jobs_total` | Jobs by `type` (workflow_type) and `state` |
 
 ### Invoice Worker Metrics (OTLP push from `workflow-mcp` on :8003)
 
