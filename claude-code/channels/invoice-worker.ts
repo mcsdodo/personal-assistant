@@ -499,7 +499,8 @@ export async function executeInvoiceIntake(
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       span.recordException(error instanceof Error ? error : new Error(message));
     } finally {
-      span.updateName(`invoice-worker.execute ${vendorForSpan} → ${outcome}`);
+      span.setAttribute("invoice.vendor", vendorForSpan ?? "unknown");
+      span.setAttribute("invoice.outcome", outcome);
       span.end();
     }
   });
@@ -1364,7 +1365,8 @@ export async function executeScanIntake(
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       span.recordException(error instanceof Error ? error : new Error(message));
     } finally {
-      span.updateName(`scan-worker.execute ${vendorForSpan} → ${outcome}`);
+      span.setAttribute("invoice.vendor", vendorForSpan ?? "unknown");
+      span.setAttribute("invoice.outcome", outcome);
       span.end();
     }
   });

@@ -105,8 +105,7 @@ export async function executeNextJob(
   const job = claimNextQueuedJob(db);
   if (!job) return null;
 
-  // Span name — vendor comes from classification (scan intake input or invoice completed steps)
-  const spanName = `workflow.execute_job ${job.workflow_type}`;
+  const spanName = `workflow.execute_job`;
   const spanOpts = { attributes: { "job.id": job.id, "job.type": job.workflow_type, "job.retry_attempt": job.retry_count } };
 
   // Try to link to the watcher trace via job.trace_id (or email DB fallback)

@@ -252,7 +252,7 @@
               "id": "span-name",
               "tag": "name",
               "operator": "=~",
-              "value": ["workflow.execute_job", "invoice-worker.execute", "workflow.job_created"],
+              "value": ["workflow.execute_job", "invoice-worker.execute", "scan-worker.execute", "email-watcher.job_created", "gdrive-watcher.job_created", "workflow.job_created"],
               "valueType": "string",
               "scope": "span"
             },
