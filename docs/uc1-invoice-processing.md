@@ -298,6 +298,57 @@ Scanned documents dropped into Google Drive are automatically classified and upl
 
 **Pipeline:** gdrive-watcher polls multiple level2 folders under a level1 parent → creates `scan_intake` job directly in workflow.db with `file_id`, `month_tag`, and `watch_folder` → worker downloads from GDrive, requests document classification via channel → uploads to Paperless with tags derived from the folder path, moves file to `processed/`.
 
+### Scan Pipeline Flow
+
+```mermaid
+sequenceDiagram
+    participant GD as Google Drive
+    participant GW as gdrive-watcher<br/>(channel)
+    participant DB as SQLite
+    participant IW as invoice-worker
+    participant C as Claude (Sonnet)
+    participant DC as document-classifier<br/>(Haiku)
+    participant P as Paperless MCP
+    participant TG as Telegram
+
+    rect rgb(40, 40, 60)
+    note over GD,TG: File detection
+    loop Every 30s
+        GW->>GD: list_drive_items (per watch folder)
+        GD-->>GW: files[]
+    end
+    GW->>DB: fileExists(id)?
+    DB-->>GW: false
+    GW->>DB: INSERT file (status="new")
+    GW->>DB: createJob(workflow.db)<br/>scan_intake job<br/>{file_id, watch_folder, month_tag}
+    note over GW: month_tag = file created_time<br/>(default, overridden by doc_date later)
+    end
+
+    rect rgb(50, 40, 40)
+    note over IW,TG: Worker-driven pipeline (2 ticks)
+
+    note over IW,C: Tick 1 — Download + document classification
+    IW->>IW: claimNextQueuedJob
+    IW->>GD: download file (via gmail MCP)
+    IW->>IW: save to /workspace/downloads/
+    IW--)C: channel event (classify_document)
+    C->>DC: dispatch document-classifier (Haiku)
+    DC-->>C: JSON {vendor, total_amount, doc_type, owner, doc_date, ...}
+    C->>IW: submit_classification(job_id, "classify_document", result)
+
+    note over IW,P: Tick 2 — Upload + move
+    IW->>IW: resume job, read classification
+    IW->>IW: resolveMonthTag:<br/>doc_date overrides scan date
+    IW->>P: resolve correspondent, tags, dedup
+    IW->>P: post_document + custom fields
+    IW->>GD: move file → processed/
+    IW-->>DB: completed (outcome: uploaded)
+    IW->>TG: notification
+    end
+```
+
+Unlike the email path (3 ticks), scans need only 2 ticks — there is no email classification step. On failure, the worker moves the file to `errors/` instead of `processed/`.
+
 **Multi-folder config:**
 ```env
 GDRIVE_LEVEL1=techlab              # parent folder(s), comma-separated
@@ -337,10 +388,39 @@ The classifier assigns a `download_strategy` that determines how the worker gets
 
 Jobs survive container restarts. The workflow layer provides:
 
-- **SQLite-backed job queue** with states: `queued → running → completed/failed/awaiting_approval`
-- **Event log** per job tracking every step (download, dedup, upload)
+- **SQLite-backed job queue** with durable state transitions
+- **Event ledger** per job tracking every step (classification, download, dedup, upload)
 - **Idempotency keys** to prevent duplicate job creation
 - **Worker polling** every 2s for queued jobs
+- **Stale job reclamation** on every tick (5-minute timeout)
+
+### Job State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued : createJob
+
+    queued --> running : claimNextQueuedJob
+
+    running --> awaiting_classification : requestClassification
+    awaiting_classification --> queued : submitClassification
+
+    running --> awaiting_approval : requestJobApproval\n(duplicate_likely)
+    awaiting_approval --> queued : approveJob
+
+    running --> completed : completeJob
+    running --> retryable : error\n(retries remaining)
+    running --> failed : error\n(max retries)
+
+    awaiting_classification --> retryable : stale\n(5 min timeout)
+
+    retryable --> queued : scheduled_at\nexpires
+
+    completed --> [*]
+    failed --> [*]
+```
+
+The worker processes jobs in ticks. When it needs Claude's classification, it parks the job in `awaiting_classification` and moves to the next job. Claude's `submit_classification` call moves the job back to `queued`, where the worker picks it up on the next tick and resumes from the last completed step.
 
 **Code:**
 - [`workflow-db.ts:46-78`](../claude-code/channels/workflow-db.ts#L46) — schema: `jobs` + `job_events` tables
@@ -349,6 +429,85 @@ Jobs survive container restarts. The workflow layer provides:
 - [`workflow-mcp.ts:64-213`](../claude-code/channels/workflow-mcp.ts#L64) — 7 MCP tools exposed to Claude
 - [`mcp-client.ts:68-109`](../claude-code/channels/mcp-client.ts#L68) — HTTP MCP client for worker → MCP server calls (with retry for transient errors)
 - [`mcp-client.ts:170-272`](../claude-code/channels/mcp-client.ts#L170) — stateful MCP client with initialize handshake (for paperless-mcp, gmail-mcp)
+
+## Data Contracts
+
+### classify_email result
+
+When Claude calls `submit_classification(job_id, "classify_email", result)`, the result must include all email-classifier fields **plus** email metadata that Claude fetches from the MCP:
+
+| Field | Type | Source |
+|-------|------|--------|
+| `is_invoice` | boolean | email-classifier |
+| `confidence` | "high" / "medium" / "low" | email-classifier |
+| `vendor` | string | email-classifier |
+| `doc_type` | string | email-classifier |
+| `is_fuel` | boolean | email-classifier |
+| `action` | string | email-classifier |
+| `download_strategy` | string / null | email-classifier |
+| `strategy_confidence` | string | email-classifier |
+| `requires_review` | boolean | email-classifier |
+| `order_id` | string / null | email-classifier |
+| `total_amount` | number / null | email-classifier |
+| `currency` | string / null | email-classifier |
+| `subject` | string | email metadata (Claude fetches) |
+| `received_at` | string | email metadata (Claude fetches) |
+| `sender` | string | email metadata (Claude fetches) |
+
+The last three fields are **not** from the classifier. Claude must fetch the email via MCP and include these. The worker uses `subject` for month_tag resolution (billing period regex) and `received_at` as a fallback date.
+
+### classify_document result
+
+| Field | Type | Source |
+|-------|------|--------|
+| `doc_type` | string | document-classifier |
+| `vendor` | string | document-classifier |
+| `total_amount` | number / null | document-classifier |
+| `currency` | string / null | document-classifier |
+| `is_fuel` | boolean | document-classifier |
+| `confidence` | string | document-classifier |
+| `order_id` | string / null | document-classifier |
+| `subtitle` | string / null | document-classifier |
+| `owner` | "techlab" / "personal" | document-classifier |
+| `doc_date` | string / null (YYYY-MM-DD) | document-classifier |
+
+Non-null values from the document classifier override the corresponding email classifier values when merged (`mergeClassifications`). `doc_type`, `subtitle`, `owner`, and `doc_date` come exclusively from this classifier. The same classifier handles both email PDFs and GDrive scans.
+
+### Job input schemas
+
+**invoice_intake** (email-watcher → workflow.db):
+
+| Field | Type |
+|-------|------|
+| `email_source` | "gmail" / "outlook" |
+| `message_id` | string |
+
+Idempotency key: `{email_source}:{message_id}`
+
+**scan_intake** (gdrive-watcher → workflow.db):
+
+| Field | Type |
+|-------|------|
+| `source` | "gdrive" |
+| `file_id` | string |
+| `watch_folder` | string (e.g. "techlab/invoicing") |
+| `month_tag` | string (e.g. "2026-03") |
+| `filename` | string (optional) |
+
+Idempotency key: `gdrive:{file_id}`
+
+### month_tag resolution
+
+The worker resolves `month_tag` after merging classifications. Priority differs by source:
+
+**Email path** (`resolveMonthTag` in `invoice-pipeline.ts`):
+1. Subject regex — billing period like "03/2026" or "2026-03" in the email subject
+2. `doc_date` from the document classifier (YYYY-MM-DD → YYYY-MM)
+3. `received_at` fallback (email received timestamp)
+
+**GDrive path:**
+1. `doc_date` from the document classifier (when present)
+2. `month_tag` from job input (file's `created_time` in Google Drive, set by gdrive-watcher)
 
 ## Email Audit Trail
 

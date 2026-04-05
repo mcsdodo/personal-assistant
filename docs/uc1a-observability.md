@@ -27,6 +27,49 @@ flowchart TB
 
 **Production:** Use your shared monitoring stack to scrape email-watcher on port 9465 and receive OTLP on port 4317, or point `OTEL_ENDPOINT` at your own receiver.
 
+## Distributed Traces
+
+The pipeline produces end-to-end distributed traces from watcher poll to final upload. Traces are exported via OTLP alongside metrics.
+
+### Span hierarchy
+
+```
+email-watcher.poll
+└── email-watcher.job_created (per email)
+
+gdrive-watcher.poll
+└── gdrive-watcher.job_created (per file)
+
+workflow.execute_job invoice_intake
+└── invoice-worker.execute {vendor} → {outcome}
+    ├── invoice-worker.download
+    ├── invoice-worker.resolve_correspondent
+    ├── invoice-worker.dedup
+    ├── invoice-worker.resolve_tags
+    ├── invoice-worker.upload
+    └── invoice-worker.set_fields
+
+workflow.execute_job scan_intake
+└── scan-worker.execute {vendor} → {outcome}
+    ├── invoice-worker.resolve_correspondent
+    ├── invoice-worker.dedup
+    ├── invoice-worker.resolve_tags
+    ├── invoice-worker.upload
+    ├── invoice-worker.set_fields
+    └── invoice-worker.move_file
+```
+
+### Trace propagation
+
+1. **Watcher** creates a span for each poll cycle and captures the active trace ID.
+2. **Job creation** stores the trace ID in the `jobs.trace_id` column.
+3. **Worker** reads `job.trace_id` and creates its execution span as a child of the watcher's trace context.
+4. All spans in a job's lifecycle connect back to the watcher poll that discovered the email or file.
+
+### Classification gap
+
+When the worker parks a job for classification (`awaiting_classification`), the execution span ends. Claude's classification work (fetch email, run Haiku subagent, submit result) happens in a separate Claude Code session span tree. The resumed worker execution creates a new span. Both spans share the same job trace, but there is no explicit span link between the parking span and Claude's classification work.
+
 ## UC-1A.1: Inbox Backlog
 
 Emails waiting for processing, broken down by source (gmail/outlook).

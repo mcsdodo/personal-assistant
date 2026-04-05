@@ -74,6 +74,62 @@ Provides read-only Outlook mail access with device-code authentication.
 - stateless HTTP mode for custom MCP servers where possible
 - restart-safe job execution and email auditing
 
+## Design decisions
+
+### Worker as orchestrator, Claude as tool
+
+The invoice-worker is deterministic code that drives the full pipeline. Claude is called only for classification (via channel events) and is not in the decision loop for downloading, deduplication, tagging, or uploading. This keeps the pipeline predictable and testable — all branching logic lives in TypeScript, not in LLM prompts.
+
+### Files saved to disk before classification
+
+The worker downloads PDFs to `/workspace/downloads/` before requesting document classification. The document-classifier Haiku subagent needs visual access to the file via Claude's `Read` tool, which reads from the local filesystem. Passing base64 content through the channel would exceed practical message sizes.
+
+### Classification re-queues jobs (not resumes them)
+
+`submitClassification` sets the job state back to `queued`, not `running`. This lets `claimNextQueuedJob` pick it up naturally on the next worker tick (≤2s). The alternative — resuming in the same execution context — would require holding the worker thread open during classification, blocking all other jobs.
+
+### Stale job detection
+
+Every worker tick scans for jobs stuck in `running` or `awaiting_classification` for over 5 minutes. Stuck jobs are either retried (if retry budget remains) or failed. This handles cases where Claude's classification response is lost or the worker crashes mid-execution.
+
+### Three-layer idempotency
+
+Each input path has three dedup layers:
+
+1. **Source DB** — `emailExists()` / `fileExists()` prevents duplicate audit rows
+2. **Workflow DB** — `idempotency_key` UNIQUE constraint prevents duplicate jobs
+3. **Classification** — `submitClassification` deduplicates `step_completed` events
+
+A container restart mid-pipeline creates no duplicates. The worker resumes from the last completed step.
+
+### Step-level resume
+
+`getCompletedSteps` reads all `step_completed` events from the job ledger and builds a Map. On retry, the worker skips completed steps. Downloaded files are saved to disk and the path recorded in the step event — no re-download on retry.
+
+### Deduplication requires order_id
+
+`checkDuplicate` only runs when `order_id` is present (from the classifier). Documents without order_id (utility bills, generic receipts) rely on Paperless's built-in content-hash deduplication. This is a deliberate tradeoff — fuzzy dedup without order_id would produce too many false positives.
+
+### Notification errors are non-fatal
+
+Telegram notification calls use `.catch(() => {})`. A successful upload is never rolled back because of a notification failure. The tradeoff is that Telegram outages are currently silent — no OTel span or metric tracks notification failures.
+
+### Single-worker model
+
+A `workerBusy` flag ensures only one job executes at a time. This avoids concurrent Paperless API calls and keeps the implementation simple. At current volume (10–50 emails/day), the worst-case added latency from queuing is ~5s per classification roundtrip. Parallel workers would require proper locking on `claimNextQueuedJob`.
+
+### Retry backoff
+
+Failed jobs use exponential backoff: `attempt⁴ × (0.9 + random × 0.2)` seconds. Default 3 retries. The jitter prevents thundering herd on transient failures.
+
+### curl for GDrive downloads
+
+`downloadFromGdrive` uses `execSync("curl ...")` instead of `fetch()`. The Gmail MCP returns download URLs with `localhost:8000` which needs Docker hostname rewriting. A `fetch()` approach would be cleaner but would require URL rewriting logic that curl handles implicitly through the Docker network.
+
+### Watchers create jobs directly
+
+Email-watcher and gdrive-watcher import `createJob` from `workflow-db.ts` and insert jobs into SQLite directly — Claude is not in the job creation path. MCP tools (`create_invoice_intake_job`, `create_scan_intake_job`) remain available for manual reprocessing and `force=true` retry.
+
 ## Deep dives
 
 - `docs/uc1-invoice-processing.md`
