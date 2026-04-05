@@ -5,8 +5,8 @@
 // MCP Server (stdio) that polls a Google Drive folder for new scanned
 // documents via gmail-mcp's Drive tools (Streamable HTTP), persists
 // discovered files in SQLite, and creates scan_intake jobs directly in
-// workflow.db. Also exposes update_gdrive_scan_status, get_gdrive_scan_status,
-// and get_gdrive_scan_stats tools so Claude can write back results.
+// workflow.db. Exposes get_gdrive_scan_status and get_gdrive_scan_stats
+// tools for querying the audit trail.
 // ---------------------------------------------------------------------------
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -22,9 +22,7 @@ import {
   openDb,
   insertFile,
   fileExists,
-  updateFile,
   getRecentFiles,
-  getFileStats,
 } from "./gdrive-db";
 
 import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId, SpanStatusCode } from "./tracing";
@@ -89,23 +87,15 @@ let lastSuccessfulPollAt: number = Date.now();
 export function renderMetrics(db: Database): string {
   const lines: string[] = [];
 
-  const stats = getFileStats(db);
-  lines.push(
-    "# HELP gdrive_watcher_files_total Total files tracked by status"
-  );
+  const total = db.prepare("SELECT COUNT(*) as count FROM gdrive_files").get() as { count: number };
+  lines.push("# HELP gdrive_watcher_files_total Total files tracked");
   lines.push("# TYPE gdrive_watcher_files_total gauge");
-  for (const [status, count] of Object.entries(stats)) {
-    lines.push(`gdrive_watcher_files_total{status="${status}"} ${count}`);
-  }
+  lines.push(`gdrive_watcher_files_total ${total.count}`);
 
   const staleMs = Date.now() - lastSuccessfulPollAt;
-  lines.push(
-    "# HELP gdrive_watcher_last_poll_seconds_ago Seconds since last successful poll"
-  );
+  lines.push("# HELP gdrive_watcher_last_poll_seconds_ago Seconds since last successful poll");
   lines.push("# TYPE gdrive_watcher_last_poll_seconds_ago gauge");
-  lines.push(
-    `gdrive_watcher_last_poll_seconds_ago ${Math.round(staleMs / 1000)}`
-  );
+  lines.push(`gdrive_watcher_last_poll_seconds_ago ${Math.round(staleMs / 1000)}`);
 
   lines.push("");
   return lines.join("\n");
@@ -445,7 +435,6 @@ export async function pollCycle(db: Database, channel: Server, wfDb?: Database):
         mime_type: file.mimeType,
         created_at: file.createdTime,
         watch_folder: file.watchFolder,
-        status: "new",
       });
 
       // Derive month_tag from file creation date
@@ -515,7 +504,7 @@ const mcp = new Server(
       "You do NOT receive channel events for normal file detection.",
       "The only events you may receive are stuck-file retries at startup — jobs already exist for these.",
       "",
-      "Tools: update_gdrive_scan_status, get_gdrive_scan_status, get_gdrive_scan_stats.",
+      "Tools: get_gdrive_scan_status, get_gdrive_scan_stats.",
     ].join("\n"),
   }
 );
@@ -530,41 +519,9 @@ let workflowDb: Database;
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: "update_gdrive_scan_status",
-      description:
-        "Update the status and processing details of a tracked GDrive scan. " +
-        "Call this after classifying or processing a scan to record the result.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          id: {
-            type: "string",
-            description: "File ID (file_id from the channel event)",
-          },
-          status: {
-            type: "string",
-            enum: ["processing", "completed", "failed", "ignored"],
-            description: "New status",
-          },
-          classification: {
-            type: "string",
-            description: "Classification result JSON",
-          },
-          action: { type: "string", description: "Action taken" },
-          job_id: { type: "string", description: "Workflow job ID" },
-          process_result: {
-            type: "string",
-            description: "Result of processing",
-          },
-          error: { type: "string", description: "Error message if failed" },
-        },
-        required: ["id", "status"],
-      },
-    },
-    {
       name: "get_gdrive_scan_status",
       description:
-        "Get recently discovered scanned files from the audit log, with optional filtering by status.",
+        "Get recently discovered scanned files from the audit log.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -572,13 +529,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "number",
             description: "Max files to return (default: 20)",
           },
-          status: { type: "string", description: "Filter by status" },
         },
       },
     },
     {
       name: "get_gdrive_scan_stats",
-      description: "Get scan processing statistics (counts by status).",
+      description: "Get total file count.",
       inputSchema: {
         type: "object" as const,
         properties: {},
@@ -592,49 +548,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
-      case "update_gdrive_scan_status": {
-        const id = args?.id as string;
-        const status = args?.status as string;
-        if (!id || !status) {
-          return {
-            content: [{ type: "text", text: "Error: id and status are required" }],
-            isError: true,
-          };
-        }
-        const fields: Record<string, string | null> = { status };
-        if (args?.classification)
-          fields.classification = args.classification as string;
-        if (args?.action) fields.action = args.action as string;
-        if (args?.job_id) fields.job_id = args.job_id as string;
-        if (args?.process_result)
-          fields.process_result = args.process_result as string;
-        if (args?.error) fields.error = args.error as string;
-
-        const found = updateFile(db, id, fields);
-        if (!found) {
-          return {
-            content: [{ type: "text", text: `File ${id} not found in database` }],
-            isError: true,
-          };
-        }
-        return {
-          content: [{ type: "text", text: `Updated file ${id}: status=${status}` }],
-        };
-      }
-
       case "get_gdrive_scan_status": {
         const limit = (args?.limit as number) ?? 20;
-        const status = args?.status as string | undefined;
-        const rows = getRecentFiles(db, { limit, status });
+        const rows = getRecentFiles(db, { limit });
         return {
           content: [{ type: "text", text: JSON.stringify(rows, null, 2) }],
         };
       }
 
       case "get_gdrive_scan_stats": {
-        const stats = getFileStats(db);
+        const total = db.prepare("SELECT COUNT(*) as count FROM gdrive_files").get() as { count: number };
         return {
-          content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ total: total.count }) }],
         };
       }
 

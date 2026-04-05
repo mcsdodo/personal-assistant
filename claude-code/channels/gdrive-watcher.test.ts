@@ -338,21 +338,19 @@ describe("renderMetrics", () => {
     const output = renderMetrics(db);
     expect(output).toContain("# HELP gdrive_watcher_files_total");
     expect(output).toContain("# TYPE gdrive_watcher_files_total gauge");
+    expect(output).toContain("gdrive_watcher_files_total 0");
     expect(output).toContain("# HELP gdrive_watcher_last_poll_seconds_ago");
     expect(output).toContain("# TYPE gdrive_watcher_last_poll_seconds_ago gauge");
     expect(output).toContain("gdrive_watcher_last_poll_seconds_ago ");
-    // No status lines when empty
-    expect(output).not.toContain('gdrive_watcher_files_total{status=');
   });
 
-  test("includes file counts by status", () => {
+  test("includes total file count", () => {
     insertFile(db, {
       id: "f1",
       filename: "a.pdf",
       mime_type: "application/pdf",
       created_at: "2026-03-20T10:00:00Z",
       watch_folder: "techlab/invoicing",
-      status: "new",
     });
     insertFile(db, {
       id: "f2",
@@ -360,7 +358,6 @@ describe("renderMetrics", () => {
       mime_type: "application/pdf",
       created_at: "2026-03-20T11:00:00Z",
       watch_folder: "techlab/invoicing",
-      status: "new",
     });
     insertFile(db, {
       id: "f3",
@@ -368,12 +365,10 @@ describe("renderMetrics", () => {
       mime_type: "application/pdf",
       created_at: "2026-03-20T12:00:00Z",
       watch_folder: "techlab/invoicing",
-      status: "completed",
     });
 
     const output = renderMetrics(db);
-    expect(output).toContain('gdrive_watcher_files_total{status="new"} 2');
-    expect(output).toContain('gdrive_watcher_files_total{status="completed"} 1');
+    expect(output).toContain("gdrive_watcher_files_total 3");
   });
 
   test("includes poll staleness metric", () => {
@@ -400,7 +395,6 @@ describe("renderMetrics", () => {
       mime_type: "application/pdf",
       created_at: "2026-03-20T10:00:00Z",
       watch_folder: "techlab/invoicing",
-      status: "processing",
     });
 
     const output = renderMetrics(db);

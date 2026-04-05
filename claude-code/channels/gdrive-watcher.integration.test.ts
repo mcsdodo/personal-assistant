@@ -214,7 +214,6 @@ describe("gdrive-watcher integration", () => {
       mime_type: "application/pdf",
       created_at: "2026-03-20T10:00:00Z",
       watch_folder: PRIMARY_WATCH,
-      status: "completed",
     });
 
     const driveFile = {
@@ -340,7 +339,6 @@ describe("gdrive-watcher integration", () => {
       mime_type: "application/pdf",
       created_at: "2026-03-01T08:00:00Z",
       watch_folder: PRIMARY_WATCH,
-      status: "new",
     });
 
     const driveFiles = [
@@ -534,7 +532,6 @@ describe("gdrive-watcher integration", () => {
     expect(row.mime_type).toBe("application/pdf");
     expect(row.created_at).toBe("2026-04-10T12:00:00Z");
     expect(row.watch_folder).toBe(PRIMARY_WATCH);
-    expect(row.status).toBe("new");
   });
 
   // -------------------------------------------------------------------------
