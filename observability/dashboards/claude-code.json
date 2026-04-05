@@ -46,7 +46,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
       "id": 1,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "max(email_watcher_emails_total)", "legendFormat": "emails", "refId": "A" }],
+      "targets": [{ "expr": "sum(email_watcher_emails_total)", "legendFormat": "emails", "refId": "A" }],
       "title": "Tracked Emails",
       "type": "stat"
     },
@@ -66,7 +66,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
       "id": 2,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "max(email_watcher_backlog_total)", "legendFormat": "new", "refId": "A" }],
+      "targets": [{ "expr": "sum(email_watcher_backlog_total)", "legendFormat": "new", "refId": "A" }],
       "title": "Waiting To Process",
       "type": "stat"
     },
@@ -79,7 +79,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
       "id": 3,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "max(email_watcher_attachments_total)", "legendFormat": "with attachments", "refId": "A" }],
+      "targets": [{ "expr": "sum(email_watcher_attachments_total)", "legendFormat": "with attachments", "refId": "A" }],
       "title": "With Attachments",
       "type": "stat"
     },
@@ -92,7 +92,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
       "id": 4,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "max(email_watcher_recent_discovered_total)", "legendFormat": "last 24h", "refId": "A" }],
+      "targets": [{ "expr": "sum(email_watcher_recent_discovered_total)", "legendFormat": "last 24h", "refId": "A" }],
       "title": "Discovered Last 24h",
       "type": "stat"
     },
@@ -109,8 +109,8 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
       "id": 10,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{ "expr": "max by (source) (email_watcher_backlog_total)", "legendFormat": "{{ source }}", "refId": "A" }],
-      "title": "Backlog by Source",
+      "targets": [{ "expr": "max by (type) (email_watcher_backlog_total)", "legendFormat": "{{ type }}", "refId": "A" }],
+      "title": "Backlog by Type",
       "type": "timeseries"
     },
     {
@@ -119,8 +119,8 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "id": 11,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{ "expr": "max by (source,status) (email_watcher_emails_total)", "legendFormat": "{{ source }} / {{ status }}", "refId": "A" }],
-      "title": "Inbox State by Source and Status",
+      "targets": [{ "expr": "max by (type, state) (email_watcher_jobs_total)", "legendFormat": "{{ type }} / {{ state }}", "refId": "A" }],
+      "title": "Jobs by Type and State",
       "type": "timeseries"
     },
     {
@@ -139,8 +139,8 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
       "id": 13,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
-      "targets": [{ "expr": "max by (status) (email_watcher_emails_total)", "legendFormat": "{{ status }}", "refId": "A" }],
-      "title": "Emails by Status",
+      "targets": [{ "expr": "sum by (state) (email_watcher_jobs_total)", "legendFormat": "{{ state }}", "refId": "A" }],
+      "title": "Jobs by State",
       "type": "bargauge"
     },
     {
@@ -156,7 +156,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
       "id": 20,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{ "expr": "sum by (source,status) (email_watcher_attachments_total)", "legendFormat": "{{ source }} / {{ status }}", "refId": "A" }],
+      "targets": [{ "expr": "sum by (source) (email_watcher_attachments_total)", "legendFormat": "{{ source }}", "refId": "A" }],
       "title": "Attachment-bearing Emails",
       "type": "timeseries"
     },
@@ -166,24 +166,14 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
       "id": 21,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{ "expr": "sum by (source,status) (email_watcher_recent_discovered_total)", "legendFormat": "{{ source }} / {{ status }}", "refId": "A" }],
+      "targets": [{ "expr": "sum by (source) (email_watcher_recent_discovered_total)", "legendFormat": "{{ source }}", "refId": "A" }],
       "title": "Recent Email Discovery (24h)",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
-      "id": 22,
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
-      "targets": [{ "expr": "sum by (action) (email_watcher_actions_total)", "legendFormat": "{{ action }}", "refId": "A" }],
-      "title": "Workflow Actions",
-      "type": "bargauge"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
-      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 31 },
       "id": 23,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
       "targets": [{ "expr": "topk(10, invoice_worker_correspondents_total)", "legendFormat": "{{ correspondent }}", "refId": "A" }],
@@ -191,18 +181,8 @@
       "type": "bargauge"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
-      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 39 },
-      "id": 24,
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "pieType": "donut", "legend": { "displayMode": "table", "placement": "right", "calcs": ["value"] }, "tooltip": { "mode": "single" } },
-      "targets": [{ "expr": "sum by (confidence) (email_watcher_confidence_total)", "legendFormat": "{{ confidence }}", "refId": "A" }],
-      "title": "Classification Confidence",
-      "type": "piechart"
-    },
-    {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 47 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
       "id": 103,
       "title": "Claude Cost",
       "type": "row"
@@ -210,7 +190,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "unit": "short" } },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
       "id": 30,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
       "targets": [{ "expr": "sum by (type,model) (increase(claude_code_token_usage_tokens_total[$__rate_interval]))", "legendFormat": "{{ type }} / {{ model }}", "refId": "A" }],
@@ -220,7 +200,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "unit": "currencyUSD" } },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 48 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
       "id": 31,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
       "targets": [{ "expr": "sum by (model) (increase(claude_code_cost_usage_USD_total[$__rate_interval]))", "legendFormat": "{{ model }}", "refId": "A" }],
@@ -229,7 +209,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 56 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 48 },
       "id": 104,
       "title": "Traces",
       "type": "row"
@@ -238,7 +218,7 @@
       "title": "Processing Traces",
       "description": "All traces containing actual processing work (polling-only traces excluded). Click a Trace ID to view the full span timeline.",
       "type": "table",
-      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 57 },
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 49 },
       "id": 40,
       "datasource": { "type": "tempo", "uid": "P214B5B846CF3925F" },
       "targets": [
