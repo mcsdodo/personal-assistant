@@ -1448,7 +1448,7 @@ async function downloadFromGdrive(
     filename: resolvedFilename,
     content_base64: contentBase64,
     content_type: contentType,
-    size: fileBuffer.length,
+    size: arrayBuffer.byteLength,
   };
 }
 
