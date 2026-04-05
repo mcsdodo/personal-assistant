@@ -171,7 +171,7 @@ describe("pollGmail integration", () => {
 
   test("deduplicates against existing emails in DB", async () => {
     // Pre-insert an email
-    db.prepare("INSERT INTO emails (id, source, status) VALUES (?, ?, ?)").run("msg-gmail-dup", "gmail", "processed");
+    db.prepare("INSERT INTO emails (id, source) VALUES (?, ?)").run("msg-gmail-dup", "gmail");
 
     // Use sparse format (IDs only) — rich format takes a shortcut that skips DB dedup
     const searchResponse = { messages: [{ id: "msg-gmail-dup" }, { id: "msg-gmail-new" }] };

@@ -4,8 +4,8 @@
 //
 // MCP Server (stdio) that polls gmail-mcp and outlook-mcp over Streamable HTTP,
 // persists discovered emails in SQLite, and creates invoice_intake jobs directly
-// in workflow.db for new emails. Also exposes update_email_status, get_recent_emails,
-// and get_email_stats tools so Claude can write back results.
+// in workflow.db for new emails. Exposes get_recent_emails and get_email_stats
+// tools for querying the audit trail.
 // ---------------------------------------------------------------------------
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -24,14 +24,11 @@ import {
   emailExists,
   getLastChecked,
   setLastChecked,
-  updateEmail,
   getRecentEmails,
-  getEmailStats,
   type InsertEmail,
-  getEmailTraceId,
 } from "./db";
 
-import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId, remoteParentContext, SpanStatusCode } from "./tracing";
+import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId, SpanStatusCode } from "./tracing";
 import { openWorkflowDb, createJob } from "./workflow-db";
 
 
@@ -724,7 +721,6 @@ const mcp = new Server(
       "Special events: first_start (ask user how far back to check), catchup_required (too many emails, ask to approve).\n" +
       "Classify using the email-classifier subagent, then act on the result.\n" +
       "The email_source and message_id fields tell you which MCP tools to use.\n\n" +
-      "IMPORTANT: After classifying and/or processing an email, call update_email_status to record the result.\n" +
       "For first_start events: ask user via Telegram, then call init_source or skip_catchup.\n" +
       "For catchup_required events: ask user via Telegram, then call approve_catchup or skip_catchup.",
   }
@@ -740,49 +736,19 @@ let workflowDb: Database;
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: "update_email_status",
-      description:
-        "Update the status and classification details of a tracked email. " +
-        "Call this after classifying or processing an email to record the result. " +
-        "If the email wasn't detected by the watcher, provide 'source' to auto-create the record.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          id: { type: "string", description: "Email ID (message_id from the channel event)" },
-          status: {
-            type: "string",
-            enum: ["classified", "processed", "failed", "ignored"],
-            description: "New status for the email",
-          },
-          source: {
-            type: "string",
-            enum: ["gmail", "outlook"],
-            description: "Email source. Required when the email wasn't detected by email-watcher (enables auto-creation of the DB record).",
-          },
-          classification: { type: "string", description: "Classification JSON from email-classifier" },
-          action: { type: "string", description: "Action taken (download_and_upload, notify_user, ignore)" },
-          vendor: { type: "string", description: "Detected vendor name" },
-          confidence: { type: "string", description: "Classification confidence (high, medium, low)" },
-          process_result: { type: "string", description: "Result of processing (e.g. Paperless upload result)" },
-        },
-        required: ["id", "status"],
-      },
-    },
-    {
       name: "get_recent_emails",
-      description: "Get recently discovered emails from the audit log, with optional filtering by status and source.",
+      description: "Get recently discovered emails from the audit log, with optional filtering by source.",
       inputSchema: {
         type: "object" as const,
         properties: {
           limit: { type: "number", description: "Max emails to return (default: 20)" },
-          status: { type: "string", description: "Filter by status (new, classified, processed, failed, ignored)" },
           source: { type: "string", description: "Filter by source (gmail, outlook)" },
         },
       },
     },
     {
       name: "get_email_stats",
-      description: "Get email counts grouped by status, including a last-24-hour breakdown.",
+      description: "Get total email count and last-24-hour count.",
       inputSchema: {
         type: "object" as const,
         properties: {},
@@ -836,76 +802,23 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
-      case "update_email_status": {
-        const id = args?.id as string;
-        const status = args?.status as string;
-        if (!id || !status) {
-          return {
-            content: [{ type: "text", text: "Error: id and status are required" }],
-            isError: true,
-          };
-        }
-
-        const source = args?.source as string | undefined;
-        const fields: Record<string, string | null> = { status };
-        if (args?.classification) fields.classification = args.classification as string;
-        if (args?.action) fields.action = args.action as string;
-        if (args?.vendor) fields.vendor = args.vendor as string;
-        if (args?.confidence) fields.confidence = args.confidence as string;
-        if (args?.process_result) fields.process_result = args.process_result as string;
-
-        const result = updateEmail(db, id, fields, source);
-        if (result === "not_found") {
-          return {
-            content: [{ type: "text", text: `Email ${id} not found in database. Provide 'source' (gmail/outlook) to auto-create the record.` }],
-            isError: true,
-          };
-        }
-
-        // Emit OTel span for classification steps (links to email's trace)
-        if (status === "classified" || status === "processed" || status === "failed") {
-          const traceId = getEmailTraceId(db, id);
-          if (traceId) {
-            const tracer = getTracer("email-watcher");
-            const parentCtx = remoteParentContext(traceId);
-            tracer.startActiveSpan(`email-watcher.${status}`, {
-              attributes: {
-                "email.id": id,
-                "email.source": source ?? "unknown",
-                "email.status": status,
-                ...(args?.vendor ? { "classification.vendor": args.vendor as string } : {}),
-                ...(args?.action ? { "classification.action": args.action as string } : {}),
-                ...(args?.confidence ? { "classification.confidence": args.confidence as string } : {}),
-                ...(args?.process_result ? { "process.result": (args.process_result as string).slice(0, 200) } : {}),
-              },
-            }, parentCtx, (span) => {
-              span.setStatus({ code: SpanStatusCode.OK });
-              span.end();
-            });
-          }
-        }
-
-        const verb = result === "inserted" ? "Created and updated" : "Updated";
-        return {
-          content: [{ type: "text", text: `${verb} email ${id}: status=${status}` }],
-        };
-      }
-
       case "get_recent_emails": {
         const limit = (args?.limit as number) ?? 20;
-        const status = args?.status as string | undefined;
         const source = args?.source as string | undefined;
 
-        const rows = getRecentEmails(db, { limit, status, source });
+        const rows = getRecentEmails(db, { limit, source });
         return {
           content: [{ type: "text", text: JSON.stringify(rows, null, 2) }],
         };
       }
 
       case "get_email_stats": {
-        const stats = getEmailStats(db);
+        const total = db.prepare("SELECT COUNT(*) as count FROM emails").get() as { count: number };
+        const last24h = db.prepare(
+          "SELECT COUNT(*) as count FROM emails WHERE discovered_at >= datetime('now', '-1 day')"
+        ).get() as { count: number };
         return {
-          content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ total: total.count, last_24h: last24h.count }) }],
         };
       }
 
