@@ -46,7 +46,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
       "id": 1,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "max(email_watcher_emails_total)", "legendFormat": "emails", "refId": "A" }],
+      "targets": [{ "expr": "sum(email_watcher_emails)", "legendFormat": "emails", "refId": "A" }],
       "title": "Tracked Emails",
       "type": "stat"
     },
@@ -66,7 +66,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
       "id": 2,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "max(email_watcher_backlog_total)", "legendFormat": "new", "refId": "A" }],
+      "targets": [{ "expr": "sum(email_watcher_backlog)", "legendFormat": "new", "refId": "A" }],
       "title": "Waiting To Process",
       "type": "stat"
     },
@@ -79,7 +79,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
       "id": 3,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "max(email_watcher_attachments_total)", "legendFormat": "with attachments", "refId": "A" }],
+      "targets": [{ "expr": "sum(email_watcher_attachments)", "legendFormat": "with attachments", "refId": "A" }],
       "title": "With Attachments",
       "type": "stat"
     },
@@ -92,7 +92,7 @@
       "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
       "id": 4,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto" },
-      "targets": [{ "expr": "max(email_watcher_recent_discovered_total)", "legendFormat": "last 24h", "refId": "A" }],
+      "targets": [{ "expr": "sum(email_watcher_recent_discovered)", "legendFormat": "last 24h", "refId": "A" }],
       "title": "Discovered Last 24h",
       "type": "stat"
     },
@@ -109,7 +109,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
       "id": 10,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{ "expr": "max by (type) (email_watcher_backlog_total)", "legendFormat": "{{ type }}", "refId": "A" }],
+      "targets": [{ "expr": "sum by (type) (email_watcher_backlog)", "legendFormat": "{{ type }}", "refId": "A" }],
       "title": "Backlog by Type",
       "type": "timeseries"
     },
@@ -119,7 +119,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "id": 11,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{ "expr": "max by (type, state) (email_watcher_jobs_total)", "legendFormat": "{{ type }} / {{ state }}", "refId": "A" }],
+      "targets": [{ "expr": "sum by (type, state) (email_watcher_jobs)", "legendFormat": "{{ type }} / {{ state }}", "refId": "A" }],
       "title": "Jobs by Type and State",
       "type": "timeseries"
     },
@@ -129,7 +129,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "id": 12,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
-      "targets": [{ "expr": "max by (source) (email_watcher_emails_total)", "legendFormat": "{{ source }}", "refId": "A" }],
+      "targets": [{ "expr": "sum by (source) (email_watcher_emails)", "legendFormat": "{{ source }}", "refId": "A" }],
       "title": "Emails by Source",
       "type": "bargauge"
     },
@@ -139,7 +139,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
       "id": 13,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "gradient", "valueMode": "color" },
-      "targets": [{ "expr": "max by (state) (email_watcher_jobs_total)", "legendFormat": "{{ state }}", "refId": "A" }],
+      "targets": [{ "expr": "sum by (state) (email_watcher_jobs)", "legendFormat": "{{ state }}", "refId": "A" }],
       "title": "Jobs by State",
       "type": "bargauge"
     },
@@ -156,7 +156,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
       "id": 20,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{ "expr": "max by (source) (email_watcher_attachments_total)", "legendFormat": "{{ source }}", "refId": "A" }],
+      "targets": [{ "expr": "sum by (source) (email_watcher_attachments)", "legendFormat": "{{ source }}", "refId": "A" }],
       "title": "Attachment-bearing Emails",
       "type": "timeseries"
     },
@@ -166,7 +166,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
       "id": 21,
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{ "expr": "max by (source) (email_watcher_recent_discovered_total)", "legendFormat": "{{ source }}", "refId": "A" }],
+      "targets": [{ "expr": "sum by (source) (email_watcher_recent_discovered)", "legendFormat": "{{ source }}", "refId": "A" }],
       "title": "Recent Email Discovery (24h)",
       "type": "timeseries"
     },

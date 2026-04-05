@@ -432,7 +432,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push to main when relevant p
 
 Claude Code exports native OpenTelemetry metrics and events via OTLP to an Alloy instance, which forwards to Prometheus (metrics) and Loki (logs/events).
 
-The local observability stack also scrapes an `email-watcher` Prometheus endpoint from inside the `claude-code` container. This provides workflow metrics that are more useful for this project than generic Claude activity counters.
+The email-watcher and gdrive-watcher channels also push custom workflow metrics via OTLP (same pipeline as traces). These provide workflow-level visibility beyond generic Claude activity counters.
 
 ### Local Dev
 
@@ -485,15 +485,15 @@ No Grafana restart needed — the file provisioner detects changes and reloads.
 | `claude_code_pull_request_count_total` | count | — |
 | `claude_code_code_edit_tool_decision_count_total` | count | `tool_name`, `decision`, `source` |
 
-### Email Workflow Metrics (Prometheus scrape from `claude-code:9465`)
+### Email Workflow Metrics (OTLP push from `email-watcher` channel)
 
 | Metric | Meaning |
 |--------|---------|
-| `email_watcher_emails_total` | Total tracked emails by `source` |
-| `email_watcher_backlog_total` | Non-terminal jobs (queued/running/awaiting) by `type` |
-| `email_watcher_attachments_total` | Emails with attachments by `source` |
-| `email_watcher_recent_discovered_total` | Emails discovered in the last 24h by `source` |
-| `email_watcher_jobs_total` | Jobs by `type` (workflow_type) and `state` |
+| `email_watcher_emails` | Total tracked emails by `source` |
+| `email_watcher_backlog` | Non-terminal jobs (queued/running/awaiting) by `type` |
+| `email_watcher_attachments` | Emails with attachments by `source` |
+| `email_watcher_recent_discovered` | Emails discovered in the last 24h by `source` |
+| `email_watcher_jobs` | Jobs by `type` (workflow_type) and `state` |
 
 ### Invoice Worker Metrics (OTLP push from `workflow-mcp` on :8003)
 
