@@ -41,17 +41,11 @@ mock.module("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
 // Now import test utilities and the functions under test
 // ---------------------------------------------------------------------------
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
-import type { Database } from "bun:sqlite";
-import { openDb, insertFile } from "./gdrive-db";
+import { describe, test, expect } from "bun:test";
 import {
   parseToolResult,
   extractFolderId,
   parseDriveTextOutput,
-  renderMetrics,
 } from "./gdrive-watcher";
 
 // ---------------------------------------------------------------------------
@@ -313,98 +307,3 @@ describe("parseDriveTextOutput", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// renderMetrics
-// ---------------------------------------------------------------------------
-describe("renderMetrics", () => {
-  let tmpDir: string;
-  let db: Database;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "gdrive-watcher-test-"));
-    db = openDb(join(tmpDir, "test.db"));
-  });
-
-  afterEach(() => {
-    db.close();
-    try {
-      rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // On Windows, WAL files may still be locked briefly after close
-    }
-  });
-
-  test("returns metrics for empty database", () => {
-    const output = renderMetrics(db);
-    expect(output).toContain("# HELP gdrive_watcher_files_total");
-    expect(output).toContain("# TYPE gdrive_watcher_files_total gauge");
-    expect(output).toContain("gdrive_watcher_files_total 0");
-    expect(output).toContain("# HELP gdrive_watcher_last_poll_seconds_ago");
-    expect(output).toContain("# TYPE gdrive_watcher_last_poll_seconds_ago gauge");
-    expect(output).toContain("gdrive_watcher_last_poll_seconds_ago ");
-  });
-
-  test("includes total file count", () => {
-    insertFile(db, {
-      id: "f1",
-      filename: "a.pdf",
-      mime_type: "application/pdf",
-      created_at: "2026-03-20T10:00:00Z",
-      watch_folder: "techlab/invoicing",
-    });
-    insertFile(db, {
-      id: "f2",
-      filename: "b.pdf",
-      mime_type: "application/pdf",
-      created_at: "2026-03-20T11:00:00Z",
-      watch_folder: "techlab/invoicing",
-    });
-    insertFile(db, {
-      id: "f3",
-      filename: "c.pdf",
-      mime_type: "application/pdf",
-      created_at: "2026-03-20T12:00:00Z",
-      watch_folder: "techlab/invoicing",
-    });
-
-    const output = renderMetrics(db);
-    expect(output).toContain("gdrive_watcher_files_total 3");
-  });
-
-  test("includes poll staleness metric", () => {
-    const output = renderMetrics(db);
-    // Should have the metric line with a numeric value
-    const match = output.match(
-      /gdrive_watcher_last_poll_seconds_ago (\d+)/
-    );
-    expect(match).toBeTruthy();
-    // Value should be small since lastSuccessfulPollAt is set to Date.now() at module load
-    const seconds = parseInt(match![1], 10);
-    expect(seconds).toBeLessThan(60);
-  });
-
-  test("output ends with a trailing newline", () => {
-    const output = renderMetrics(db);
-    expect(output.endsWith("\n")).toBe(true);
-  });
-
-  test("output is valid Prometheus exposition format", () => {
-    insertFile(db, {
-      id: "f1",
-      filename: "test.pdf",
-      mime_type: "application/pdf",
-      created_at: "2026-03-20T10:00:00Z",
-      watch_folder: "techlab/invoicing",
-    });
-
-    const output = renderMetrics(db);
-    const lines = output.split("\n").filter((l) => l.length > 0);
-
-    for (const line of lines) {
-      // Each line should be a comment (# HELP/TYPE) or a metric line
-      const isComment = line.startsWith("#");
-      const isMetric = /^[a-z_]+(\{[^}]*\})?\s+\d+/.test(line);
-      expect(isComment || isMetric).toBe(true);
-    }
-  });
-});

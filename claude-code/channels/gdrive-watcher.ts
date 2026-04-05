@@ -25,7 +25,7 @@ import {
   getRecentFiles,
 } from "./gdrive-db";
 
-import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId, SpanStatusCode } from "./tracing";
+import { initTracing, getTracer, getMeter, withSpan, createLogger, getActiveTraceId, SpanStatusCode } from "./tracing";
 import { openWorkflowDb, createJob } from "./workflow-db";
 
 // ---------------------------------------------------------------------------
@@ -71,6 +71,7 @@ const GOOGLE_EMAIL =
 
 initTracing("gdrive-watcher");
 const tracer = getTracer("gdrive-watcher");
+const meter = getMeter("gdrive-watcher");
 
 // ---------------------------------------------------------------------------
 // Logging — all to stderr (stdout reserved for MCP stdio transport)
@@ -84,24 +85,22 @@ const log = createLogger("gdrive-watcher");
 
 let lastSuccessfulPollAt: number = Date.now();
 
-export function renderMetrics(db: Database): string {
-  const lines: string[] = [];
+function registerMetrics(db: Database): void {
+  meter.createObservableGauge("gdrive_watcher.files", {
+    description: "Total files tracked",
+  }).addCallback((gauge) => {
+    const row = db.prepare("SELECT COUNT(*) as count FROM gdrive_files").get() as { count: number };
+    gauge.observe(row.count);
+  });
 
-  const total = db.prepare("SELECT COUNT(*) as count FROM gdrive_files").get() as { count: number };
-  lines.push("# HELP gdrive_watcher_files_total Total files tracked");
-  lines.push("# TYPE gdrive_watcher_files_total gauge");
-  lines.push(`gdrive_watcher_files_total ${total.count}`);
-
-  const staleMs = Date.now() - lastSuccessfulPollAt;
-  lines.push("# HELP gdrive_watcher_last_poll_seconds_ago Seconds since last successful poll");
-  lines.push("# TYPE gdrive_watcher_last_poll_seconds_ago gauge");
-  lines.push(`gdrive_watcher_last_poll_seconds_ago ${Math.round(staleMs / 1000)}`);
-
-  lines.push("");
-  return lines.join("\n");
+  meter.createObservableGauge("gdrive_watcher.last_poll_seconds_ago", {
+    description: "Seconds since last successful poll",
+  }).addCallback((gauge) => {
+    gauge.observe(Math.round((Date.now() - lastSuccessfulPollAt) / 1000));
+  });
 }
 
-function startMetricsServer(db: Database): void {
+function startHealthServer(db: Database): void {
   Bun.serve({
     port: METRICS_PORT,
     fetch(req) {
@@ -112,27 +111,17 @@ function startMetricsServer(db: Database): void {
           const staleMs = Date.now() - lastSuccessfulPollAt;
           const maxStaleMs = POLL_INTERVAL_MS * HEALTH_STALE_MULTIPLIER;
           if (staleMs > maxStaleMs) {
-            return new Response(
-              `stale: last poll ${Math.round(staleMs / 1000)}s ago`,
-              { status: 503 }
-            );
+            return new Response(`stale: last poll ${Math.round(staleMs / 1000)}s ago`, { status: 503 });
           }
           return new Response("ok", { status: 200 });
         } catch {
           return new Response("db error", { status: 503 });
         }
       }
-      if (url.pathname === "/metrics") {
-        return new Response(renderMetrics(db), {
-          headers: {
-            "content-type": "text/plain; version=0.0.4; charset=utf-8",
-          },
-        });
-      }
       return new Response("not found", { status: 404 });
     },
   });
-  log(`Metrics server listening on :${METRICS_PORT} (/health, /metrics)`);
+  log(`Health server listening on :${METRICS_PORT} (/health)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -587,7 +576,8 @@ async function main(): Promise<void> {
   db = openDb(DB_PATH);
   log(`Opening workflow database at ${WORKFLOW_DB_PATH}`);
   workflowDb = openWorkflowDb(WORKFLOW_DB_PATH);
-  startMetricsServer(db);
+  registerMetrics(db);
+  startHealthServer(db);
 
   // 2. Connect MCP server (stdio)
   await mcp.connect(new StdioServerTransport());
