@@ -91,210 +91,80 @@ const log = createLogger("email-watcher");
 
 // esc and metricLine imported from ./email-watcher-utils
 
-function renderMetrics(db: Database): string {
-  const lines: string[] = [
-    "# HELP email_watcher_emails_total Emails tracked by source and status.",
+function renderMetrics(emailDb: Database, wfDb: Database): string {
+  const lines: string[] = [];
+
+  // ── Email discovery metrics (from emails.db) ──────────────────────
+
+  lines.push(
+    "# HELP email_watcher_emails_total Total emails tracked by source.",
     "# TYPE email_watcher_emails_total gauge",
-  ];
-
-  const emailsBySourceStatus = db
-    .query(
-      `SELECT source, status, COUNT(*) AS count
-       FROM emails
-       GROUP BY source, status
-       ORDER BY source, status`
-    )
-    .all() as Array<{ source: string; status: string; count: number }>;
-
-  for (const row of emailsBySourceStatus) {
-    lines.push(
-      metricLine(
-        "email_watcher_emails_total",
-        { source: row.source, status: row.status },
-        row.count,
-      ),
-    );
-  }
-
-  lines.push(
-    "# HELP email_watcher_backlog_total Emails waiting for classification or processing.",
-    "# TYPE email_watcher_backlog_total gauge",
   );
-
-  const backlog = db
-    .query(
-      `SELECT source, COUNT(*) AS count
-       FROM emails
-       WHERE status = 'new'
-       GROUP BY source
-       ORDER BY source`
-    )
+  const emailsBySource = emailDb
+    .query("SELECT source, COUNT(*) AS count FROM emails GROUP BY source ORDER BY source")
     .all() as Array<{ source: string; count: number }>;
-
-  lines.push(...emitWithDefaults("email_watcher_backlog_total", backlog, { source: ["gmail", "outlook"] }));
+  lines.push(...emitWithDefaults("email_watcher_emails_total", emailsBySource, { source: ["gmail", "outlook"] }));
 
   lines.push(
-    "# HELP email_watcher_attachments_total Emails with attachments by source and status.",
+    "# HELP email_watcher_attachments_total Emails with attachments by source.",
     "# TYPE email_watcher_attachments_total gauge",
   );
-
-  const attachments = db
-    .query(
-      `SELECT source, status, COUNT(*) AS count
-       FROM emails
-       WHERE has_attachments = 1
-       GROUP BY source, status
-       ORDER BY source, status`
-    )
-    .all() as Array<{ source: string; status: string; count: number }>;
-
-  for (const row of attachments) {
-    lines.push(
-      metricLine(
-        "email_watcher_attachments_total",
-        { source: row.source, status: row.status },
-        row.count,
-      ),
-    );
-  }
+  const attachments = emailDb
+    .query("SELECT source, COUNT(*) AS count FROM emails WHERE has_attachments = 1 GROUP BY source ORDER BY source")
+    .all() as Array<{ source: string; count: number }>;
+  lines.push(...emitWithDefaults("email_watcher_attachments_total", attachments, { source: ["gmail", "outlook"] }));
 
   lines.push(
-    "# HELP email_watcher_recent_discovered_total Emails discovered in the last 24 hours by source and status.",
+    "# HELP email_watcher_recent_discovered_total Emails discovered in the last 24 hours by source.",
     "# TYPE email_watcher_recent_discovered_total gauge",
   );
-
-  const recent = db
+  const recent = emailDb
     .query(
-      `SELECT source, status, COUNT(*) AS count
-       FROM emails
-       WHERE discovered_at >= datetime('now', '-1 day')
-       GROUP BY source, status
-       ORDER BY source, status`
+      "SELECT source, COUNT(*) AS count FROM emails WHERE discovered_at >= datetime('now', '-1 day') GROUP BY source ORDER BY source"
     )
-    .all() as Array<{ source: string; status: string; count: number }>;
+    .all() as Array<{ source: string; count: number }>;
+  lines.push(...emitWithDefaults("email_watcher_recent_discovered_total", recent, { source: ["gmail", "outlook"] }));
 
-  lines.push(...emitWithDefaults("email_watcher_recent_discovered_total", recent, {
-    source: ["gmail", "outlook"],
-    status: ["ignored", "processed", "failed"],
-  }));
+  // ── Job processing metrics (from workflow.db) ─────────────────────
 
   lines.push(
-    "# HELP email_watcher_actions_total Classified actions recorded by the workflow.",
-    "# TYPE email_watcher_actions_total gauge",
+    "# HELP email_watcher_jobs_total Jobs by workflow type and state.",
+    "# TYPE email_watcher_jobs_total gauge",
   );
-
-  const actions = db
+  const jobsByState = wfDb
     .query(
-      `SELECT action, COUNT(*) AS count
-       FROM emails
-       WHERE action IS NOT NULL
-       GROUP BY action
-       ORDER BY action`
+      "SELECT workflow_type, state, COUNT(*) AS count FROM jobs GROUP BY workflow_type, state ORDER BY workflow_type, state"
     )
-    .all() as Array<{ action: string; count: number }>;
-
-  for (const row of actions) {
-    lines.push(metricLine("email_watcher_actions_total", { action: row.action }, row.count));
+    .all() as Array<{ workflow_type: string; state: string; count: number }>;
+  for (const row of jobsByState) {
+    lines.push(metricLine("email_watcher_jobs_total", { type: row.workflow_type, state: row.state }, row.count));
   }
 
   lines.push(
-    "# HELP email_watcher_confidence_total Classified emails by confidence level.",
-    "# TYPE email_watcher_confidence_total gauge",
+    "# HELP email_watcher_backlog_total Jobs not yet in a terminal state.",
+    "# TYPE email_watcher_backlog_total gauge",
   );
-
-  const confidences = db
+  const backlog = wfDb
     .query(
-      `SELECT confidence, COUNT(*) AS count
-       FROM emails
-       WHERE confidence IS NOT NULL
-       GROUP BY confidence
-       ORDER BY confidence`
+      "SELECT workflow_type, COUNT(*) AS count FROM jobs WHERE state NOT IN ('completed', 'failed') GROUP BY workflow_type"
     )
-    .all() as Array<{ confidence: string; count: number }>;
-
-  for (const row of confidences) {
-    lines.push(
-      metricLine("email_watcher_confidence_total", { confidence: row.confidence }, row.count),
-    );
+    .all() as Array<{ workflow_type: string; count: number }>;
+  for (const row of backlog) {
+    lines.push(metricLine("email_watcher_backlog_total", { type: row.workflow_type }, row.count));
   }
-
-  lines.push(
-    "# HELP email_watcher_vendors_total Classified vendors recorded by the workflow.",
-    "# TYPE email_watcher_vendors_total gauge",
-  );
-
-  const vendors = db
-    .query(
-      `SELECT vendor, COUNT(*) AS count
-       FROM emails
-       WHERE vendor IS NOT NULL
-       GROUP BY vendor
-       ORDER BY count DESC, vendor
-       LIMIT 20`
-    )
-    .all() as Array<{ vendor: string; count: number }>;
-
-  for (const row of vendors) {
-    lines.push(metricLine("email_watcher_vendors_total", { vendor: row.vendor }, row.count));
+  // Emit zeros if no backlog
+  if (!backlog.some(r => r.workflow_type === "invoice_intake")) {
+    lines.push(metricLine("email_watcher_backlog_total", { type: "invoice_intake" }, 0));
   }
-
-  lines.push(
-    "# HELP email_watcher_processed_results_total Processing outcomes by status.",
-    "# TYPE email_watcher_processed_results_total gauge",
-  );
-
-  const processed = db
-    .query(
-      `SELECT status, COUNT(*) AS count
-       FROM emails
-       WHERE processed_at IS NOT NULL
-       GROUP BY status
-       ORDER BY status`
-    )
-    .all() as Array<{ status: string; count: number }>;
-
-  for (const row of processed) {
-    lines.push(metricLine("email_watcher_processed_results_total", { status: row.status }, row.count));
-  }
-
-  lines.push(
-    "# HELP email_watcher_latency_seconds Workflow latency derived from the email audit trail.",
-    "# TYPE email_watcher_latency_seconds gauge",
-  );
-
-  const latencies = db
-    .query(
-      `SELECT
-         'classification' AS stage,
-         AVG((julianday(classified_at) - julianday(discovered_at)) * 86400.0) AS avg_seconds
-       FROM emails
-       WHERE classified_at IS NOT NULL
-       UNION ALL
-       SELECT
-         'processing' AS stage,
-         AVG((julianday(processed_at) - julianday(discovered_at)) * 86400.0) AS avg_seconds
-       FROM emails
-       WHERE processed_at IS NOT NULL`
-    )
-    .all() as Array<{ stage: string; avg_seconds: number | null }>;
-
-  for (const row of latencies) {
-    if (row.avg_seconds !== null) {
-      lines.push(
-        metricLine(
-          "email_watcher_latency_seconds",
-          { stage: row.stage },
-          row.avg_seconds,
-        ),
-      );
-    }
+  if (!backlog.some(r => r.workflow_type === "scan_intake")) {
+    lines.push(metricLine("email_watcher_backlog_total", { type: "scan_intake" }, 0));
   }
 
   lines.push("");
   return lines.join("\n");
 }
 
-function startMetricsServer(db: Database): void {
+function startMetricsServer(emailDb: Database, wfDb: Database): void {
   Bun.serve({
     port: METRICS_PORT,
     fetch(req) {
@@ -302,7 +172,7 @@ function startMetricsServer(db: Database): void {
       if (url.pathname === "/health") {
         // Check DB is accessible and polls aren't stale
         try {
-          db.query("SELECT 1").get();
+          emailDb.query("SELECT 1").get();
           const staleMs = Date.now() - lastSuccessfulPollAt;
           const maxStaleMs = POLL_INTERVAL_MS * HEALTH_STALE_MULTIPLIER;
           if (staleMs > maxStaleMs) {
@@ -314,7 +184,7 @@ function startMetricsServer(db: Database): void {
         }
       }
       if (url.pathname === "/metrics") {
-        return new Response(renderMetrics(db), {
+        return new Response(renderMetrics(emailDb, wfDb), {
           headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
         });
       }
@@ -901,7 +771,7 @@ async function main(): Promise<void> {
   db = openDb(DB_PATH);
   log(`Opening workflow database at ${WORKFLOW_DB_PATH}`);
   workflowDb = openWorkflowDb(WORKFLOW_DB_PATH);
-  startMetricsServer(db);
+  startMetricsServer(db, workflowDb);
 
   // 2. Connect MCP server (stdio)
   await mcp.connect(new StdioServerTransport());
