@@ -28,7 +28,7 @@ import {
   type InsertEmail,
 } from "./db";
 
-import { initTracing, getTracer, withSpan, createLogger, getActiveTraceId, SpanStatusCode } from "./tracing";
+import { initTracing, getTracer, getMeter, withSpan, createLogger, getActiveTraceId, SpanStatusCode } from "./tracing";
 import { openWorkflowDb, createJob } from "./workflow-db";
 
 
@@ -37,7 +37,7 @@ import { openWorkflowDb, createJob } from "./workflow-db";
 export type { EmailInfo } from "./email-watcher-utils";
 export { parseDuration, esc, metricLine, emitWithDefaults, parseToolResult, extractGmailIds, parseGmailEmails } from "./email-watcher-utils";
 import type { EmailInfo } from "./email-watcher-utils";
-import { buildGmailQuery as _buildGmailQuery, parseDuration, esc, metricLine, emitWithDefaults, parseToolResult, extractGmailIds, parseGmailEmails } from "./email-watcher-utils";
+import { buildGmailQuery as _buildGmailQuery, parseDuration, parseToolResult, extractGmailIds, parseGmailEmails } from "./email-watcher-utils";
 
 // ---------------------------------------------------------------------------
 // Config (env vars)
@@ -82,6 +82,7 @@ export { buildGmailQuery as _buildGmailQueryWithBase } from "./email-watcher-uti
 
 initTracing("email-watcher");
 const tracer = getTracer("email-watcher");
+const meter = getMeter("email-watcher");
 
 // ---------------------------------------------------------------------------
 // Logging — all to stderr (stdout reserved for MCP stdio transport)
@@ -89,88 +90,69 @@ const tracer = getTracer("email-watcher");
 
 const log = createLogger("email-watcher");
 
-// esc and metricLine imported from ./email-watcher-utils
+function registerMetrics(emailDb: Database, wfDb: Database): void {
+  meter.createObservableGauge("email_watcher.emails", {
+    description: "Total emails tracked by source",
+  }).addCallback((gauge) => {
+    const rows = emailDb
+      .query("SELECT source, COUNT(*) AS count FROM emails GROUP BY source")
+      .all() as Array<{ source: string; count: number }>;
+    for (const row of rows) {
+      gauge.observe(row.count, { source: row.source });
+    }
+  });
 
-function renderMetrics(emailDb: Database, wfDb: Database): string {
-  const lines: string[] = [];
+  meter.createObservableGauge("email_watcher.attachments", {
+    description: "Emails with attachments by source",
+  }).addCallback((gauge) => {
+    const rows = emailDb
+      .query("SELECT source, COUNT(*) AS count FROM emails WHERE has_attachments = 1 GROUP BY source")
+      .all() as Array<{ source: string; count: number }>;
+    for (const row of rows) {
+      gauge.observe(row.count, { source: row.source });
+    }
+  });
 
-  // ── Email discovery metrics (from emails.db) ──────────────────────
+  meter.createObservableGauge("email_watcher.recent_discovered", {
+    description: "Emails discovered in the last 24 hours by source",
+  }).addCallback((gauge) => {
+    const rows = emailDb
+      .query("SELECT source, COUNT(*) AS count FROM emails WHERE discovered_at >= datetime('now', '-1 day') GROUP BY source")
+      .all() as Array<{ source: string; count: number }>;
+    for (const row of rows) {
+      gauge.observe(row.count, { source: row.source });
+    }
+  });
 
-  lines.push(
-    "# HELP email_watcher_emails_total Total emails tracked by source.",
-    "# TYPE email_watcher_emails_total gauge",
-  );
-  const emailsBySource = emailDb
-    .query("SELECT source, COUNT(*) AS count FROM emails GROUP BY source ORDER BY source")
-    .all() as Array<{ source: string; count: number }>;
-  lines.push(...emitWithDefaults("email_watcher_emails_total", emailsBySource, { source: ["gmail", "outlook"] }));
+  meter.createObservableGauge("email_watcher.jobs", {
+    description: "Jobs by workflow type and state",
+  }).addCallback((gauge) => {
+    const rows = wfDb
+      .query("SELECT workflow_type, state, COUNT(*) AS count FROM jobs GROUP BY workflow_type, state")
+      .all() as Array<{ workflow_type: string; state: string; count: number }>;
+    for (const row of rows) {
+      gauge.observe(row.count, { type: row.workflow_type, state: row.state });
+    }
+  });
 
-  lines.push(
-    "# HELP email_watcher_attachments_total Emails with attachments by source.",
-    "# TYPE email_watcher_attachments_total gauge",
-  );
-  const attachments = emailDb
-    .query("SELECT source, COUNT(*) AS count FROM emails WHERE has_attachments = 1 GROUP BY source ORDER BY source")
-    .all() as Array<{ source: string; count: number }>;
-  lines.push(...emitWithDefaults("email_watcher_attachments_total", attachments, { source: ["gmail", "outlook"] }));
-
-  lines.push(
-    "# HELP email_watcher_recent_discovered_total Emails discovered in the last 24 hours by source.",
-    "# TYPE email_watcher_recent_discovered_total gauge",
-  );
-  const recent = emailDb
-    .query(
-      "SELECT source, COUNT(*) AS count FROM emails WHERE discovered_at >= datetime('now', '-1 day') GROUP BY source ORDER BY source"
-    )
-    .all() as Array<{ source: string; count: number }>;
-  lines.push(...emitWithDefaults("email_watcher_recent_discovered_total", recent, { source: ["gmail", "outlook"] }));
-
-  // ── Job processing metrics (from workflow.db) ─────────────────────
-
-  lines.push(
-    "# HELP email_watcher_jobs_total Jobs by workflow type and state.",
-    "# TYPE email_watcher_jobs_total gauge",
-  );
-  const jobsByState = wfDb
-    .query(
-      "SELECT workflow_type, state, COUNT(*) AS count FROM jobs GROUP BY workflow_type, state ORDER BY workflow_type, state"
-    )
-    .all() as Array<{ workflow_type: string; state: string; count: number }>;
-  for (const row of jobsByState) {
-    lines.push(metricLine("email_watcher_jobs_total", { type: row.workflow_type, state: row.state }, row.count));
-  }
-
-  lines.push(
-    "# HELP email_watcher_backlog_total Jobs not yet in a terminal state.",
-    "# TYPE email_watcher_backlog_total gauge",
-  );
-  const backlog = wfDb
-    .query(
-      "SELECT workflow_type, COUNT(*) AS count FROM jobs WHERE state NOT IN ('completed', 'failed') GROUP BY workflow_type"
-    )
-    .all() as Array<{ workflow_type: string; count: number }>;
-  for (const row of backlog) {
-    lines.push(metricLine("email_watcher_backlog_total", { type: row.workflow_type }, row.count));
-  }
-  // Emit zeros if no backlog
-  if (!backlog.some(r => r.workflow_type === "invoice_intake")) {
-    lines.push(metricLine("email_watcher_backlog_total", { type: "invoice_intake" }, 0));
-  }
-  if (!backlog.some(r => r.workflow_type === "scan_intake")) {
-    lines.push(metricLine("email_watcher_backlog_total", { type: "scan_intake" }, 0));
-  }
-
-  lines.push("");
-  return lines.join("\n");
+  meter.createObservableGauge("email_watcher.backlog", {
+    description: "Jobs not yet in a terminal state",
+  }).addCallback((gauge) => {
+    const rows = wfDb
+      .query("SELECT workflow_type, COUNT(*) AS count FROM jobs WHERE state NOT IN ('completed', 'failed') GROUP BY workflow_type")
+      .all() as Array<{ workflow_type: string; count: number }>;
+    for (const row of rows) {
+      gauge.observe(row.count, { type: row.workflow_type });
+    }
+  });
 }
 
-function startMetricsServer(emailDb: Database, wfDb: Database): void {
+function startHealthServer(emailDb: Database): void {
   Bun.serve({
     port: METRICS_PORT,
     fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === "/health") {
-        // Check DB is accessible and polls aren't stale
         try {
           emailDb.query("SELECT 1").get();
           const staleMs = Date.now() - lastSuccessfulPollAt;
@@ -183,15 +165,10 @@ function startMetricsServer(emailDb: Database, wfDb: Database): void {
           return new Response("db error", { status: 503 });
         }
       }
-      if (url.pathname === "/metrics") {
-        return new Response(renderMetrics(emailDb, wfDb), {
-          headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
-        });
-      }
       return new Response("not found", { status: 404 });
     },
   });
-  log(`Metrics server listening on :${METRICS_PORT} (/health, /metrics)`);
+  log(`Health server listening on :${METRICS_PORT} (/health)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -771,7 +748,8 @@ async function main(): Promise<void> {
   db = openDb(DB_PATH);
   log(`Opening workflow database at ${WORKFLOW_DB_PATH}`);
   workflowDb = openWorkflowDb(WORKFLOW_DB_PATH);
-  startMetricsServer(db, workflowDb);
+  registerMetrics(db, workflowDb);
+  startHealthServer(db);
 
   // 2. Connect MCP server (stdio)
   await mcp.connect(new StdioServerTransport());
