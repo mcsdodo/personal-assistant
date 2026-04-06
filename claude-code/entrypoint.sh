@@ -93,53 +93,147 @@ if [ "$CHANNELS_READY" = "false" ]; then
   exit 1
 fi
 
-# Reconnect HTTP MCPs. Claude Code v2.1.92 has a bug where interactive
-# sessions mark HTTP MCPs as "failed / not authenticated" at startup even
-# for servers that require no auth (checker, outlook, paperless). The /mcp
-# UI "Reconnect" action works around this. With ENABLE_CLAUDEAI_MCP_SERVERS=false
-# the menu layout is stable (9 items, alphabetical order).
+# Reconnect HTTP MCPs. Claude Code v2.1.92 has a bug (claude-code#34008)
+# where interactive sessions mark HTTP MCPs as "failed" at startup even when
+# the upstream server is healthy and unauthenticated. The /mcp UI "Reconnect"
+# action fixes them, but the detail menu layout varies per server state, so
+# this function discovers the layout dynamically rather than hardcoding key
+# offsets.
 #
-# Menu position (0-indexed):
-#   0: checker     (HTTP — reconnect needed)
-#   1: email-watcher
-#   2: file-ops
-#   3: gdrive-watcher
-#   4: gmail       (HTTP — reconnect needed)
-#   5: outlook     (HTTP — reconnect needed)
-#   6: paperless   (HTTP — reconnect needed)
-#   7: telegram
-#   8: workflow
-reconnect_mcp() {
-  local down_count=$1
+# Strategy:
+#   1. Open /mcp, parse the pane, find the target server's current state.
+#   2. Skip if already ✔ connected.
+#   3. If ◯ disabled → look for "Enable" option; otherwise look for "Reconnect".
+#   4. Compute Down/Up presses from cursor line to target server line.
+#   5. Open detail menu, parse for the target option's number, navigate, Enter.
+#   6. Verify success by re-reading the main menu state, not by chat grep.
+
+# Read the current state of an MCP server from a captured /mcp menu pane.
+# Returns the state word with status icon stripped: "connected", "failed",
+# "disabled", or "" if the server isn't in the pane. Matches ` $name · `
+# which works for both cursor and non-cursor lines (both have that pattern).
+mcp_parse_state() {
+  local pane=$1
   local name=$2
+  echo "$pane" \
+    | grep -E " ${name} ·" \
+    | head -1 \
+    | sed -E 's/.*· //' \
+    | tr -d '[:space:]'
+}
+
+# Open /mcp menu and capture pane content. Used by both navigation and
+# verification. Closes any open menus first to ensure clean state.
+mcp_open_menu() {
   tmux send-keys -t claude Escape
-  sleep 1
+  sleep 0.4
+  tmux send-keys -t claude Escape
+  sleep 0.4
   tmux send-keys -t claude '/mcp' Enter
   sleep 3
-  for i in $(seq 1 "$down_count"); do
-    tmux send-keys -t claude Down
-    sleep 0.2
-  done
-  tmux send-keys -t claude Enter    # open server detail menu
-  sleep 2
-  tmux send-keys -t claude Down     # select "Reconnect" (option 2)
-  sleep 0.5
-  tmux send-keys -t claude Enter    # execute reconnect
-  sleep 4
-  if tmux capture-pane -t claude -p -S -5 | grep -q "Reconnected to ${name}"; then
-    echo "  ✓ ${name}"
-    return 0
-  else
-    echo "  ✗ ${name}"
+  tmux capture-pane -t claude -p
+}
+
+reconnect_mcp() {
+  local name=$1
+  local pane state action target_action_num
+  local cursor_line target_line delta i
+
+  # 1. Open menu and check current state
+  pane=$(mcp_open_menu)
+  state=$(mcp_parse_state "$pane" "$name")
+
+  if [ -z "$state" ]; then
+    tmux send-keys -t claude Escape
+    echo "  ✗ ${name} (not found in /mcp menu)"
     return 1
   fi
+
+  case "$state" in
+    *connected*)
+      tmux send-keys -t claude Escape
+      echo "  ✓ ${name} (already connected)"
+      return 0
+      ;;
+    *disabled*)
+      action="Enable"
+      ;;
+    *)
+      action="Reconnect"
+      ;;
+  esac
+
+  # 2. Navigate cursor to the target server's line. Compute delta from the
+  #    current ❯ cursor line to the target server line in the captured pane.
+  cursor_line=$(echo "$pane" | grep -n "❯" | head -1 | cut -d: -f1)
+  target_line=$(echo "$pane" | grep -nE " ${name} ·" | head -1 | cut -d: -f1)
+  if [ -z "$cursor_line" ] || [ -z "$target_line" ]; then
+    tmux send-keys -t claude Escape
+    echo "  ✗ ${name} (couldn't locate cursor or target line)"
+    return 1
+  fi
+  delta=$((target_line - cursor_line))
+  if [ "$delta" -gt 0 ]; then
+    for i in $(seq 1 "$delta"); do
+      tmux send-keys -t claude Down
+      sleep 0.15
+    done
+  elif [ "$delta" -lt 0 ]; then
+    for i in $(seq 1 $((-delta))); do
+      tmux send-keys -t claude Up
+      sleep 0.15
+    done
+  fi
+
+  # 3. Open the server detail menu and parse it for the action's option number.
+  tmux send-keys -t claude Enter
+  sleep 2
+  pane=$(tmux capture-pane -t claude -p)
+  target_action_num=$(echo "$pane" | grep -oE "[1-9]\.[[:space:]]+${action}\b" | head -1 | grep -oE '^[1-9]')
+  if [ -z "$target_action_num" ]; then
+    tmux send-keys -t claude Escape
+    sleep 0.4
+    tmux send-keys -t claude Escape
+    echo "  ✗ ${name} (no '${action}' option in detail menu, state was ${state})"
+    return 1
+  fi
+
+  # 4. Cursor in detail menu starts at item 1; press Down to reach target.
+  for i in $(seq 1 $((target_action_num - 1))); do
+    tmux send-keys -t claude Down
+    sleep 0.15
+  done
+  tmux send-keys -t claude Enter
+
+  # 5. Verify by re-reading main menu state. HTTP MCPs need a few seconds to
+  #    handshake. Give the action time to process, then re-check up to 3 times.
+  for i in 1 2 3; do
+    sleep 3
+    tmux send-keys -t claude Escape
+    sleep 0.3
+    tmux send-keys -t claude '/mcp' Enter
+    sleep 1.5
+    pane=$(tmux capture-pane -t claude -p)
+    state=$(mcp_parse_state "$pane" "$name")
+    case "$state" in
+      *connected*)
+        tmux send-keys -t claude Escape
+        echo "  ✓ ${name}"
+        return 0
+        ;;
+    esac
+  done
+
+  tmux send-keys -t claude Escape
+  echo "  ✗ ${name} (still '${state}' after action)"
+  return 1
 }
 
 echo "Reconnecting HTTP MCP servers..."
-reconnect_mcp 0 checker   || true
-reconnect_mcp 4 gmail     || true
-reconnect_mcp 5 outlook   || true
-reconnect_mcp 6 paperless || true
+reconnect_mcp checker   || true
+reconnect_mcp gmail     || true
+reconnect_mcp outlook   || true
+reconnect_mcp paperless || true
 # Don't exit on reconnect failure — the session is still usable for stdio
 # channels, and gmail may legitimately need OAuth if the token expired.
 
