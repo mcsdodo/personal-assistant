@@ -216,26 +216,33 @@ reconnect_mcp() {
   done
   tmux send-keys -t claude Enter
 
-  # 5. Wait for the action to fully process, then verify state. Polling by
-  #    re-opening /mcp seems to interfere with the reconnect, so do a single
-  #    check after a generous wait. HTTP MCP reconnects typically complete
-  #    within 2–3s once Reconnect is triggered.
-  sleep 8
-  pane=$(mcp_open_menu)
-  state=$(mcp_parse_state "$pane" "$name")
-  tmux send-keys -t claude Escape
-
-  case "$state" in
-    *connected*)
+  # 5. Verify by polling the chat for the success message. After Reconnect
+  #    runs, the detail menu closes and Claude prints "Reconnected to <name>"
+  #    (or "Failed to reconnect to <name>") in the chat. Don't re-open the
+  #    /mcp menu — that seems to race with Claude's action processing.
+  for i in 1 2 3 4 5 6 7 8; do
+    sleep 1
+    if tmux capture-pane -t claude -p -S -8 | grep -q "Reconnected to ${name}"; then
       echo "  ✓ ${name}"
       return 0
-      ;;
-    *)
-      echo "  ✗ ${name} (still '${state}' after action)"
+    fi
+    if tmux capture-pane -t claude -p -S -8 | grep -q "Failed to reconnect to ${name}"; then
+      echo "  ✗ ${name} (Claude reported failure)"
       return 1
-      ;;
-  esac
+    fi
+  done
+
+  echo "  ✗ ${name} (no success/failure message after 8s)"
+  return 1
 }
+
+# Give Claude Code's HTTP MCP layer time to settle. Empirically, attempting
+# Reconnect immediately after startup races with Claude's own background
+# initialization and silently fails — the same key sequence works fine 30s
+# later. The 25s wait here is the difference between "script always fails"
+# and "script always succeeds".
+echo "Waiting for HTTP MCP layer to settle..."
+sleep 25
 
 echo "Reconnecting HTTP MCP servers..."
 reconnect_mcp checker   || true
