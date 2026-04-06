@@ -7,25 +7,31 @@ Run: python -m pytest test_matching.py -v
 import pytest
 from unittest.mock import MagicMock, patch
 
-from match_invoices import (
+from engine.collection import (
+    collect_month,
+    collect_pl,
+    filter_resolved_unmatched,
+)
+from engine.matching import (
     MONTH_WINDOW,
+    build_pair_index,
+    extract_prefix,
+    find_matching_invoice,
+    get_month_window,
+    month_offset,
+    skip_reason,
+)
+from engine.models import (
     PLCategory,
     SKIP_ACCOUNT_RULES,
     SkipReason,
     SkipRule,
-    build_pair_index,
-    collect_month,
-    collect_pl,
+)
+from engine.parsing import (
     extract_invoice_amounts,
-    extract_prefix,
-    filter_resolved_unmatched,
-    find_matching_invoice,
-    get_month_window,
-    month_offset,
     normalize_amount,
     parse_movements,
     parse_statement_amount,
-    skip_reason,
 )
 
 
@@ -449,7 +455,10 @@ class TestSkipReason:
         rules_with_acct = [
             SkipRule("1234567890", SkipReason.PAYROLL, PLCategory.EXPENSE),
         ] + SKIP_ACCOUNT_RULES
-        with patch("match_invoices.SKIP_ACCOUNT_RULES", rules_with_acct):
+        # skip_reason() reads SKIP_ACCOUNT_RULES from engine.matching's
+        # imported namespace, not engine.models. Patching engine.models has
+        # no effect because matching.py imported the symbol at module load.
+        with patch("engine.matching.SKIP_ACCOUNT_RULES", rules_with_acct):
             mov = {"raw_block": "Prevod na účet 1234567890"}
             result = skip_reason(mov)
             assert result is not None

@@ -9,19 +9,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 from flask import Flask, request as req
 
+from engine.client import PaperlessClient
+from engine.collection import collect_month, collect_pl, filter_resolved_unmatched
+from engine.matching import MONTH_WINDOW, month_offset
 from match_invoices import (
     ACCOUNTING_TAG_NAME,
     ACCOUNT_STATEMENT_TAG_NAME,
     INVOICE_TYPE_NAME,
-    MONTH_WINDOW,
     PAPERLESS_URL,
     TOTAL_AMOUNT_ALT_FIELD_NAME,
     TOTAL_AMOUNT_FIELD_NAME,
-    PaperlessClient,
-    collect_month,
-    collect_pl,
-    filter_resolved_unmatched,
-    month_offset,
 )
 
 app = Flask(__name__)

@@ -132,10 +132,11 @@ All services have `com.centurylinklabs.watchtower.enable: "false"` — no mid-se
 | `claude-code/channels/invoice/postprocess-service.ts` | resolveCorrespondent, resolveTagIds, resolveDocumentTypeId, resolveStoragePathId, uploadToPaperless, setDocumentCustomFields, patchExistingDocument, moveGdriveFile, buildScanTitle |
 | `claude-code/channels/fuzzy-match.ts` | Jaro-Winkler fuzzy correspondent matching |
 | `claude-code/agents/` | Haiku subagents (email-classifier, document-classifier — classifier returns `owner` field for personal/business tag routing) |
-| `checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
-| `checker-mcp/webapp.py` | Flask web UI (matching view + P&L view) |
+| `checker-mcp/server.py` | FastMCP wrapping the engine (4 tools), imports from `engine.*` |
+| `checker-mcp/webapp.py` | Flask web UI (matching view + P&L view), imports from `engine.*` |
 | `checker-mcp/entrypoint.sh` | Two-process entrypoint (MCP background + Flask PID 1) |
-| `checker-mcp/match_invoices.py` | Invoice matching engine |
+| `checker-mcp/match_invoices.py` | CLI entry point + shared configuration constants (~235 lines after Phase 5 split) |
+| `checker-mcp/engine/` | Layered matching engine: `models.py`, `parsing.py`, `matching.py`, `client.py`, `collection.py` |
 | `outlook-mcp/server.py` | Outlook MCP (MSAL device code auth) |
 | `observability/` | Local dev Alloy, Prometheus, Loki, Grafana configs |
 
@@ -143,19 +144,21 @@ All services have `com.centurylinklabs.watchtower.enable: "false"` — no mid-se
 
 Navigational guide to the largest source files. Line numbers are approximate.
 
-### checker-mcp/match_invoices.py (~1380 lines)
+### checker-mcp/engine/ (~1240 lines split across 5 modules)
 
-| Section | Lines | Key functions |
-|---------|-------|---------------|
-| Configuration & skip rules | 40-110 | `PLCategory`, `SkipReason`, `SkipRule` enums |
-| Paperless API client | 113-200 | `PaperlessClient` class — pagination, field/tag ID lookup, caching |
-| Statement parsing | 201-292 | `parse_movements()` — Tatra Banka format regex, page breaks, foreign currency |
-| Skip rule matching | 293-336 | `skip_reason()` — bank fees, loans, taxes, dividends, insurance, payroll |
-| Amount extraction | 337-399 | `normalize_amount()`, `extract_invoice_amounts()` — multi-format regex, OCR artifacts |
-| Month arithmetic | 400-422 | `month_offset()`, `get_month_window()` — +/-1 month sliding window |
-| Invoice pairing | 423-596 | `build_pair_index()`, `find_matching_invoice()` — filename prefix + Jaro-Winkler fuzzy match |
-| Main collection logic | 597-1206 | `collect_month()`, `collect_pl()` — movement-to-invoice matching, P&L categorization |
-| Output & CLI | 1207-1381 | `print_results()`, `main()` |
+The matching engine is a layered package. Strict layering: `models` has no dependencies; `parsing`, `matching`, `client` depend only on `models`; `collection` depends on all four.
+
+| Module | Lines | Key contents |
+|--------|-------|--------------|
+| `engine/models.py` | ~85 | `PLCategory`, `SkipReason`, `SkipRule`, `SkipResult`, `SKIP_RULES`, `SKIP_ACCOUNT_RULES` (loaded from `SKIP_PAYROLL_ACCOUNTS` env var) |
+| `engine/parsing.py` | ~215 | Statement parsing regexes (`RE_STATEMENT_AMOUNT`, `RE_PAGE_BREAK`, `RE_OPENING_BALANCE`, `RE_ORIG_AMOUNT`), `parse_statement_amount()`, `parse_movements()` (Tatra Banka format), invoice amount extraction (`RE_AMOUNT`, `RE_TOTAL_AMOUNT`, `RE_CURRENCY_AMOUNT`), `normalize_amount()`, `extract_invoice_amounts()` |
+| `engine/matching.py` | ~225 | `MONTH_WINDOW`, `month_offset()`, `get_month_window()`, `skip_reason()`, `extract_prefix()`, `_pair_keys()`, `build_pair_index()` (filename prefix + title prefix + cross-sign pairing), `find_matching_invoice()` (4-pass: primary+sign, primary, secondary+sign, secondary) |
+| `engine/client.py` | ~70 | `PaperlessClient` — paginated REST wrapper for documents, tags, custom fields, document types |
+| `engine/collection.py` | ~640 | `collect_month()` (308 lines: fetch + match + skip + alt-amount + cancelled-pair detection + pair enrichment), `filter_resolved_unmatched()`, `collect_pl()` (236 lines: full-year orchestration with VAT deduction + cross-sign cancellation + income-prefix matching), `_detail_to_pl_category()` |
+
+### checker-mcp/match_invoices.py (~235 lines)
+
+CLI entry point only. Owns argparse, terminal-color rendering (`print_results`), the high-level command flow (`main`), and the configuration constants (`PAPERLESS_URL`, `ACCOUNTING_TAG_NAME`, `ACCOUNT_STATEMENT_TAG_NAME`, `INVOICE_TYPE_NAME`, `TOTAL_AMOUNT_FIELD_NAME`, `TOTAL_AMOUNT_ALT_FIELD_NAME`) which are also imported by `server.py` and `webapp.py` so they don't need their own copy.
 
 ### checker-mcp/webapp.py (~520 lines)
 

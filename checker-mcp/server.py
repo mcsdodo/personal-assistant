@@ -6,18 +6,17 @@ from datetime import date
 import uvicorn
 from mcp.server.fastmcp import FastMCP
 
-# match_invoices.py is copied into the same directory at Docker build time
+# Configuration constants live in match_invoices (the CLI entry point);
+# all engine logic now lives in the engine/ package.
+from engine.client import PaperlessClient
+from engine.collection import collect_month, collect_pl, filter_resolved_unmatched
+from engine.matching import month_offset
 from match_invoices import (
     ACCOUNTING_TAG_NAME,
     ACCOUNT_STATEMENT_TAG_NAME,
     INVOICE_TYPE_NAME,
     TOTAL_AMOUNT_ALT_FIELD_NAME,
     TOTAL_AMOUNT_FIELD_NAME,
-    PaperlessClient,
-    collect_month,
-    collect_pl,
-    filter_resolved_unmatched,
-    month_offset,
 )
 
 mcp = FastMCP("checker")
