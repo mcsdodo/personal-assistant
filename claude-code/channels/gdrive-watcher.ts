@@ -27,6 +27,7 @@ import {
 
 import { initTracing, getTracer, getMeter, withSpan, createLogger, getActiveTraceId, SpanStatusCode } from "./tracing";
 import { openWorkflowDb, createJob } from "./workflow-db";
+import { validateScanIntakeInput, WorkflowSchemaError } from "./workflow-schemas";
 
 // ---------------------------------------------------------------------------
 // Config (env vars)
@@ -430,16 +431,26 @@ export async function pollCycle(db: Database, channel: Server, wfDb?: Database):
       const scanDate = new Date(file.createdTime);
       const monthTag = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, "0")}`;
 
+      // Validate the job input against the schema before persisting it.
+      const jobInput = {
+        source: "gdrive" as const,
+        file_id: file.id,
+        watch_folder: file.watchFolder,
+        month_tag: monthTag,
+        filename: file.name,
+      };
+      try {
+        validateScanIntakeInput(jobInput);
+      } catch (err) {
+        const reason = err instanceof WorkflowSchemaError ? err.message : String(err);
+        log(`✗ Refusing to create job for gdrive:${file.id}: ${reason}`);
+        continue;
+      }
+
       // Create workflow job directly (no channel notification to Claude)
       const job = createJob(jobDb, {
         workflowType: "scan_intake",
-        inputJson: JSON.stringify({
-          source: "gdrive",
-          file_id: file.id,
-          watch_folder: file.watchFolder,
-          month_tag: monthTag,
-          filename: file.name,
-        }),
+        inputJson: JSON.stringify(jobInput),
         sourceRef: `gdrive:${file.id}`,
         idempotencyKey: `gdrive:${file.id}`,
         requiresApproval: false,

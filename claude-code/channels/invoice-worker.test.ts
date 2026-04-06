@@ -66,7 +66,12 @@ function defaultEmailClassification(overrides: Partial<InvoiceClassification> = 
   };
 }
 
-/** Default doc classification result (what Claude returns via submit_classification) */
+/** Default doc classification result.
+ *  This is the shape passed to seedClassificationSteps which writes raw events,
+ *  bypassing submitClassification validation. Existing tests rely on these
+ *  exact fields (and absence of order_id/etc.) to exercise specific merge
+ *  paths in invoice-pipeline.mergeClassifications. Do NOT add extra defaults
+ *  here without understanding the test impact. */
 function defaultDocClassification(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     vendor: "Alza",

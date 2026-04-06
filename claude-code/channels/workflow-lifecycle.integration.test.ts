@@ -68,13 +68,18 @@ function defaultEmailClassification(overrides: Partial<InvoiceClassification> = 
   };
 }
 
-/** Default doc classification result */
+/** Default doc classification result — must satisfy DocumentClassificationResult schema */
 function defaultDocClassification(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    doc_type: "invoice",
     vendor: "Alza",
     total_amount: 42.50,
+    currency: "EUR",
+    is_fuel: false,
     owner: "techlab",
-    doc_type: "invoice",
+    confidence: "high",
+    order_id: "FA2026040001",
+    subtitle: null,
     doc_date: "2026-03-25",
     ...overrides,
   };

@@ -51,6 +51,11 @@ import {
   parseServicePeriodStart,
   resolveMonthTag,
 } from "./invoice-pipeline";
+import {
+  validateInvoiceIntakeInput,
+  validateScanIntakeInput,
+  WorkflowSchemaError,
+} from "./workflow-schemas";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -207,10 +212,28 @@ export async function executeInvoiceIntake(
   channel?: Server,
 ): Promise<void> {
   seedCounterFromDb(db);
-  const input = parseJobJson<InvoiceIntakeInput>(job.input_json);
-  if (!input) {
+  const rawInput = parseJobJson<unknown>(job.input_json);
+  if (!rawInput) {
     failJob(db, job.id, { code: "invalid_input", message: "Missing or invalid input_json" });
     return;
+  }
+  let input: InvoiceIntakeInput;
+  try {
+    // Validate input_json against the schema. This catches drift between
+    // the watcher and the worker, and rejects manually-edited workflow.db
+    // entries that don't match the contract.
+    input = validateInvoiceIntakeInput(rawInput) as InvoiceIntakeInput;
+  } catch (err) {
+    if (err instanceof WorkflowSchemaError) {
+      failJob(db, job.id, {
+        code: "schema_validation_failed",
+        message: err.message,
+        schema: err.schemaName,
+        field: err.field,
+      });
+      return;
+    }
+    throw err;
   }
 
   await tracer.startActiveSpan(`invoice-worker.execute`, {
@@ -1305,10 +1328,25 @@ export async function executeScanIntake(
   channel?: Server,
 ): Promise<void> {
   seedCounterFromDb(db);
-  const input = parseJobJson<ScanIntakeInput>(job.input_json);
-  if (!input) {
+  const rawInput = parseJobJson<unknown>(job.input_json);
+  if (!rawInput) {
     failJob(db, job.id, { code: "invalid_input", message: "Missing or invalid input_json" });
     return;
+  }
+  let input: ScanIntakeInput;
+  try {
+    input = validateScanIntakeInput(rawInput) as ScanIntakeInput;
+  } catch (err) {
+    if (err instanceof WorkflowSchemaError) {
+      failJob(db, job.id, {
+        code: "schema_validation_failed",
+        message: err.message,
+        schema: err.schemaName,
+        field: err.field,
+      });
+      return;
+    }
+    throw err;
   }
 
   const { file_id, watch_folder, month_tag } = input;

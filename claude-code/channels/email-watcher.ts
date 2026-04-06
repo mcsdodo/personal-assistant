@@ -30,6 +30,7 @@ import {
 
 import { initTracing, getTracer, getMeter, withSpan, createLogger, getActiveTraceId, SpanStatusCode } from "./tracing";
 import { openWorkflowDb, createJob } from "./workflow-db";
+import { validateInvoiceIntakeInput, WorkflowSchemaError } from "./workflow-schemas";
 
 
 // Pure functions live in email-watcher-utils.ts (no side effects, safe to import from tests).
@@ -397,10 +398,22 @@ export async function processNewEmails(db: Database, channel: Server, emails: Em
       invoiceLinks: email.invoiceLinks?.length ? JSON.stringify(email.invoiceLinks) : null,
     });
 
+    // Validate the job input against the schema before persisting it. This
+    // catches any drift between the watcher's idea of an invoice_intake input
+    // and the worker's expectations.
+    const jobInput = { email_source: email.source, message_id: email.id };
+    try {
+      validateInvoiceIntakeInput(jobInput);
+    } catch (err) {
+      const reason = err instanceof WorkflowSchemaError ? err.message : String(err);
+      log(`✗ Refusing to create job for ${email.source}:${email.id}: ${reason}`);
+      continue;
+    }
+
     // Create workflow job directly (no channel notification to Claude)
     const job = createJob(jobDb, {
       workflowType: "invoice_intake",
-      inputJson: JSON.stringify({ email_source: email.source, message_id: email.id }),
+      inputJson: JSON.stringify(jobInput),
       sourceRef: `${email.source}:${email.id}`,
       idempotencyKey: `${email.source}:${email.id}`,
       requiresApproval: false,

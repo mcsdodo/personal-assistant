@@ -2,6 +2,8 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
 
+import { validateClassificationByStep, WorkflowSchemaError } from "./workflow-schemas";
+
 export type JobState =
   | "queued"
   | "running"
@@ -389,6 +391,10 @@ export function requestClassification(
  * Submit a classification result for a parked job.
  * Writes step_completed event and transitions back to running.
  * Idempotent: second call for same step is a no-op.
+ *
+ * Validates the payload against the schema for the named step before
+ * persisting it. A malformed payload fails the job with `code:
+ * "schema_validation_failed"` instead of corrupting the resume path.
  */
 export function submitClassification(
   db: Database,
@@ -413,8 +419,27 @@ export function submitClassification(
   const startedPayload = JSON.parse(lastStarted.payload_json ?? "{}");
   if (startedPayload.step !== step) return false;
 
+  // Validate the payload before storing it. A malformed payload from Claude
+  // would silently corrupt the resume path otherwise.
+  let validated: unknown;
+  try {
+    validated = validateClassificationByStep(step, classificationResult);
+  } catch (err) {
+    if (err instanceof WorkflowSchemaError) {
+      failJob(db, jobId, {
+        code: "schema_validation_failed",
+        message: err.message,
+        schema: err.schemaName,
+        field: err.field,
+        step,
+      });
+      return false;
+    }
+    throw err;
+  }
+
   const timestamp = nowIso();
-  addJobEvent(db, jobId, "step_completed", { step, result: classificationResult });
+  addJobEvent(db, jobId, "step_completed", { step, result: validated });
   // Set to queued so the worker's claimNextQueuedJob picks it up on next tick.
   // The worker reads completed steps and resumes from where it left off.
   db.prepare(`UPDATE jobs SET state = 'queued', updated_at = ? WHERE id = ?`).run(timestamp, jobId);
