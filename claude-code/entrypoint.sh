@@ -59,6 +59,33 @@ for i in $(seq 1 10); do
   sleep 1
 done
 
+# Verify all expected stdio channel subprocesses spawned.
+# Claude Code v2.1.86 had a startup race where some channels failed silently.
+# Fixed in v2.1.92, but keep this check as a safety net — exits with code 1
+# to trigger Docker's restart policy if channels are missing.
+echo "Verifying stdio channels spawned..."
+sleep 3  # give subprocesses time to appear in ps
+EXPECTED_CHANNELS=(
+  "email-watcher.ts"
+  "gdrive-watcher.ts"
+  "telegram/server.ts"
+  "file-ops.ts"
+  "workflow-mcp.ts"
+)
+MISSING=()
+for ch in "${EXPECTED_CHANNELS[@]}"; do
+  if ! pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
+    MISSING+=("$ch")
+  fi
+done
+if [ ${#MISSING[@]} -gt 0 ]; then
+  echo "ERROR: Missing channel subprocesses: ${MISSING[*]}"
+  echo "Killing tmux session to trigger container restart..."
+  tmux kill-server 2>/dev/null || true
+  exit 1
+fi
+echo "All 5 stdio channels running."
+
 echo "Claude Code session started in tmux."
 echo "Use 'docker exec -it <container> tmux attach -t claude' to view."
 

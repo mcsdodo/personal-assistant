@@ -4,7 +4,7 @@ services:
     build:
       context: ./claude-code
       args:
-        CLAUDE_CODE_VERSION: latest
+        CLAUDE_CODE_VERSION: 2.1.92
     container_name: personal-assistant-claude
     restart: unless-stopped
     labels:
@@ -37,6 +37,9 @@ services:
     environment:
       - NODE_OPTIONS=--max-old-space-size=4096
       - HOME=/home/node
+      # Disable claude.ai-managed MCP servers (Gmail, Calendar) — they require
+      # OAuth which fails in headless containers and pollutes the /mcp UI.
+      - ENABLE_CLAUDEAI_MCP_SERVERS=false
       # OpenTelemetry — Claude Code native telemetry
       - CLAUDE_CODE_ENABLE_TELEMETRY=1
       - OTEL_METRICS_EXPORTER=otlp
