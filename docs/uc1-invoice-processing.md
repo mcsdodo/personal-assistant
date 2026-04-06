@@ -107,23 +107,25 @@ sequenceDiagram
         IW-->>WF: awaiting_approval
         C->>TG: reply("Possible duplicate, approve?")
     else no duplicate
-        IW->>P: post_document + custom fields
-        IW->>IW: delete local file
+        IW->>P: POST /api/documents/post_document/ (direct HTTP) + custom fields PATCH
         IW-->>WF: completed (outcome: uploaded)
         IW->>TG: notifyTelegram("✔️ {vendor} | {amount} EUR | ...")
+        note over WF: completeJob() automatically calls cleanupJobFiles()<br/>which deletes any file_downloaded events for this job
     end
 
     alt action = "ignore"
         note over IW: Job completed (outcome: ignored)
     end
     end
-
-    rect rgb(40, 40, 50)
-    note over C,DB: Record final status
-    C->>EW: update_email_status(id,<br/>status="processed|failed|ignored",<br/>process_result="...")
-    EW->>DB: UPDATE processed_at=now()
-    end
 ```
+
+> **Note on email status recording.** The pipeline does NOT call any
+> `update_email_status` tool — that function does not exist. The email audit
+> trail in `emails.db` is insert-only. Job lifecycle (queued → running →
+> completed/failed/cancelled) lives entirely in `workflow.db` (`jobs` +
+> `job_events` tables). Anywhere in this doc that previously referenced
+> `update_email_status` was wrong; the source of truth for processing state
+> is the workflow ledger.
 
 ## UC-1.1: Gmail Polling
 
@@ -177,18 +179,19 @@ Haiku subagent classifies each new email by sender, subject, and body excerpt.
 
 **Document classification (post-download):** After downloading the PDF, Claude runs the `document-classifier` Haiku subagent ([`agents/document-classifier.md`](../claude-code/agents/document-classifier.md)) which visually inspects the PDF and returns 9 fields: `doc_type`, `vendor`, `total_amount`, `currency`, `is_fuel`, `confidence`, `order_id`, `subtitle`, `owner`. Non-null values override the email-classifier's guesses. `doc_type`, `subtitle`, and `owner` come exclusively from this classifier. This same classifier handles GDrive scans.
 
-**Status recording:** After classification, Claude calls `update_email_status` with the classification JSON, action, vendor, and confidence.
+**Status recording:** Classification results are stored as `step_completed` events on the workflow job (in `workflow.db`), not as a status column on the email row. The email DB is insert-only audit data; the workflow DB is the processing source of truth. `submitClassification(job_id, step, result)` validates the result against the schema in `workflow-schemas.ts` and either fails the job with `schema_validation_failed` (on bad input) or persists it for the worker resume path.
 
 ## UC-1.4: Upload to Paperless
 
-The invoice-worker uploads documents via the Paperless MCP's `post_document` tool.
+The invoice-worker uploads documents directly to the Paperless HTTP API, **not** via the Paperless MCP. The MCP's `post_document` tool buffers the entire file in memory and breaks for documents larger than ~5 MB; direct HTTP POST to `/api/documents/post_document/` streams the multipart upload safely.
 
 **Steps:**
-1. **Resolve correspondent** — match vendor name to existing Paperless correspondent (case-insensitive), create if missing
-2. **Resolve tags** — derive tags from the `owner` field set by the document-classifier (see owner-aware logic below), create missing tags
-3. **Resolve document type** — map `doc_type` to Paperless type (invoice → "Invoice", receipt → "Receipt", credit_note → "Credit Note", account_statement → "Account Statement", document → "Document")
+1. **Resolve correspondent** — match vendor name to existing Paperless correspondent (case-insensitive + Jaro-Winkler 0.85), create if missing (Paperless MCP `list_correspondents` / `create_correspondent`)
+2. **Resolve tags** — derive tags from the `owner` field set by the document-classifier (see owner-aware logic below), create missing tags (Paperless MCP `list_tags` / `create_tag`)
+3. **Resolve document type** — map `doc_type` to Paperless type (invoice → "Invoice", receipt → "Receipt", credit_note → "Credit Note", account_statement → "Account Statement", document → "Document") (Paperless MCP `list_document_types`)
 4. **Build title** — priority: `{vendor} - {order_id}` → `{vendor} - {subtitle}` → `{vendor} - {subject/filename}` → `{vendor} - invoice/scan`
-5. **Upload** — `post_document` with base64 content, correspondent, tags, type, custom fields (total_amount, order_id)
+5. **Upload** — direct HTTP `POST /api/documents/post_document/` with base64-decoded multipart body, correspondent, tags, type. Returns a `task_uuid`.
+6. **Custom fields** — poll `GET /api/tasks/?task_id={uuid}` until consumption succeeds and a doc id is known, then `PATCH /api/documents/{doc_id}/` with custom fields (total_amount, order_id)
 
 **Tag derivation (by source):**
 

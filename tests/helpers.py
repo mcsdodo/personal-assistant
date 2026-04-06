@@ -323,55 +323,11 @@ def workflow_db_query(sql: str) -> list[dict]:
     return json.loads(raw) if raw else []
 
 
-@dataclass
-class EmailStatus:
-    id: str
-    source: str
-    subject: str | None
-    status: str
-    action: str | None
-    vendor: str | None
-    process_result: str | None
-
-
-def poll_email_status(
-    subject_contains: str,
-    target_statuses: set[str],
-    source: str | None = None,
-    timeout: int = 180,
-    poll_interval: int = 10,
-) -> EmailStatus:
-    """Poll email-watcher DB until an email matching subject reaches target status.
-
-    Raises TimeoutError if not reached within timeout seconds.
-    """
-    source_clause = f' AND source=\\"{source}\\"' if source else ""
-    deadline = time.time() + timeout
-
-    while time.time() < deadline:
-        rows = email_db_query(
-            f"SELECT id,source,subject,status,action,vendor,process_result "
-            f'FROM emails WHERE subject LIKE \\"%{subject_contains}%\\"'
-            f'{source_clause} AND status!=\\"seed\\" '
-            f"ORDER BY discovered_at DESC LIMIT 1"
-        )
-        if rows and rows[0].get("status") in target_statuses:
-            r = rows[0]
-            return EmailStatus(
-                id=r["id"],
-                source=r["source"],
-                subject=r["subject"],
-                status=r["status"],
-                action=r.get("action"),
-                vendor=r.get("vendor"),
-                process_result=r.get("process_result"),
-            )
-        time.sleep(poll_interval)
-
-    raise TimeoutError(
-        f"Email matching '{subject_contains}' did not reach {target_statuses} "
-        f"within {timeout}s. Last rows: {rows if 'rows' in locals() else 'none'}"
-    )
+# NOTE: A previous version of this file exposed `EmailStatus` and
+# `poll_email_status` which queried `emails.db` for status/action/vendor/
+# process_result columns. Those columns no longer exist on the current
+# emails.db schema (`db.ts:36`) — emails.db is an insert-only audit trail.
+# Processing state lives in workflow.db. Use `poll_job_completion` below.
 
 
 # ---------------------------------------------------------------------------

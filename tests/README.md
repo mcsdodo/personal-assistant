@@ -61,7 +61,7 @@ python -m pytest tests/ -v -m "not link" --timeout=300
 1. **Reset** — fixture stops claude-code, deletes DBs + Paperless data, restarts
 2. **Seed** — waits for email-watcher to seed existing emails (so test emails are "new")
 3. **Send** — sends test emails via Gmail API to +dev addresses
-4. **Poll** — polls email-watcher SQLite DB until email reaches target status
+4. **Poll** — polls `workflow.db` until the corresponding job reaches a terminal state (`completed` / `failed` / `cancelled`). Note: `emails.db` has no status fields — it's an insert-only audit trail. Job lifecycle lives in `workflow.db` (`jobs` + `job_events` tables).
 5. **Verify** — checks Paperless API for uploaded documents with correct metadata
 
 ## Timing
