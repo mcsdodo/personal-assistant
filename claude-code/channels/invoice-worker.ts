@@ -70,6 +70,9 @@ export interface InvoiceIntakeInput {
   message_id: string;
   /** Path to pre-downloaded file on disk (worker reads instead of downloading via MCP) */
   file_path?: string;
+  /** Force reprocess: if dedup finds an existing Paperless doc, PATCH it in place
+   *  instead of short-circuiting. Set by `create_invoice_intake_job(force=true)`. */
+  force?: boolean;
 }
 
 /** Classification fields produced by the email-classifier + document-classifier channel roundtrips.
@@ -108,6 +111,9 @@ export interface ScanIntakeInput {
   filename?: string;
   /** Path to pre-downloaded file on disk (worker reads instead of downloading from GDrive) */
   file_path?: string;
+  /** Force reprocess: if dedup finds an existing Paperless doc, PATCH it in place
+   *  instead of short-circuiting. Set by `create_scan_intake_job(force=true)`. */
+  force?: boolean;
 }
 
 /** Classification fields produced by the document-classifier for scan intake.
@@ -134,7 +140,7 @@ export interface ScanClassification {
 }
 
 export interface InvoiceIntakeResult {
-  outcome: "uploaded" | "duplicate" | "duplicate_likely" | "paused" | "failed";
+  outcome: "uploaded" | "refreshed" | "duplicate" | "duplicate_likely" | "paused" | "failed";
   title?: string;
   paperless_document_id?: number;
   correspondent?: string;
@@ -383,15 +389,25 @@ export async function executeInvoiceIntake(
       });
 
       // Step 3: Deduplicate
+      // If force=true is set, dedup hits do NOT short-circuit — instead the
+      // worker captures forceTargetDocId and the upload step PATCHes the
+      // existing Paperless document in place. This is the operator's path for
+      // "reprocess this and update the doc with the new tags/title/period".
       addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
       const dedupeResult = await checkDuplicate(merged, correspondent, logger, registry);
+      let forceTargetDocId: number | undefined;
       if (dedupeResult) {
         addJobEvent(db, job.id, "step_completed", {
           step: "deduplicate",
           ...dedupeResult,
         });
 
-        if (dedupeResult.outcome === "duplicate") {
+        if (input.force) {
+          forceTargetDocId = dedupeResult.existing_id;
+          logger.log(`force=true: will refresh existing doc #${forceTargetDocId} (${dedupeResult.outcome}) instead of skipping`);
+          span.setAttribute("invoice.force_refresh", true);
+          span.setAttribute("invoice.force_target_doc_id", forceTargetDocId);
+        } else if (dedupeResult.outcome === "duplicate") {
           const result: InvoiceIntakeResult = {
             outcome: "duplicate",
             duplicate_of: dedupeResult.existing_id,
@@ -403,9 +419,7 @@ export async function executeInvoiceIntake(
           span.setAttribute("invoice.outcome", "duplicate");
           span.setStatus({ code: SpanStatusCode.OK });
           return;
-        }
-
-        if (dedupeResult.outcome === "duplicate_likely") {
+        } else if (dedupeResult.outcome === "duplicate_likely") {
           requestJobApproval(db, job.id, {
             reason: dedupeResult.message,
             existing_document_id: dedupeResult.existing_id,
@@ -449,65 +463,97 @@ export async function executeInvoiceIntake(
       // Step 5b: Resolve storage path
       const storagePathId = await resolveStoragePath(owner, merged.doc_type, logger);
 
-      // Step 6: Upload to Paperless
+      // Step 6: Upload to Paperless — or PATCH the existing doc if force-refresh.
       addJobEvent(db, job.id, "step_started", { step: "upload" });
       const title = generateTitle(merged.vendor, merged.order_id, merged.subtitle, classification.subject);
-      const uploadResult = await uploadToPaperless({
-        title,
-        file,
-        correspondentId: correspondent.id,
-        tagIds,
-        documentTypeId,
-        storagePathId,
-        totalAmount: merged.total_amount,
-        orderId: merged.order_id,
-      }, logger);
-      addJobEvent(db, job.id, "step_completed", {
-        step: "upload",
-        ...uploadResult,
-      });
+      let finalDocId: number | undefined;
+      let finalOutcome: "uploaded" | "refreshed";
 
-      // Step 7: Set custom fields (total_amount, order_id) if available
-      if (merged.total_amount != null || merged.order_id) {
-        addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
-        const cfResult = await setDocumentCustomFields(
-          uploadResult.task_uuid,
-          merged.total_amount,
-          merged.order_id,
-          logger,
-          registry,
-        );
-        addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
+      if (forceTargetDocId) {
+        // Force-refresh path: PATCH the existing doc with fresh metadata.
+        // Single request handles title/correspondent/document_type/tags/storage_path/custom_fields.
+        const patchResult = await patchPaperlessDocument({
+          documentId: forceTargetDocId,
+          title,
+          correspondentId: correspondent.id,
+          tagIds,
+          documentTypeId,
+          storagePathId,
+          totalAmount: merged.total_amount,
+          orderId: merged.order_id,
+        }, logger, registry);
+        addJobEvent(db, job.id, "step_completed", {
+          step: "upload",
+          mode: "patch",
+          document_id: patchResult.document_id,
+          title: patchResult.title,
+        });
+        finalDocId = patchResult.document_id;
+        finalOutcome = "refreshed";
+      } else {
+        const uploadResult = await uploadToPaperless({
+          title,
+          file,
+          correspondentId: correspondent.id,
+          tagIds,
+          documentTypeId,
+          storagePathId,
+          totalAmount: merged.total_amount,
+          orderId: merged.order_id,
+        }, logger);
+        addJobEvent(db, job.id, "step_completed", {
+          step: "upload",
+          mode: "post",
+          ...uploadResult,
+        });
+
+        // Step 7: Set custom fields (total_amount, order_id) if available.
+        // post_document doesn't accept custom fields in multipart, so we PATCH after
+        // consumption. The force-refresh path already set them in the single PATCH above.
+        if (merged.total_amount != null || merged.order_id) {
+          addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
+          const cfResult = await setDocumentCustomFields(
+            uploadResult.task_uuid,
+            merged.total_amount,
+            merged.order_id,
+            logger,
+            registry,
+          );
+          addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
+        }
+        finalDocId = uploadResult.document_id;
+        finalOutcome = "uploaded";
       }
 
       const result: InvoiceIntakeResult = {
-        outcome: "uploaded",
+        outcome: finalOutcome,
         title,
-        paperless_document_id: uploadResult.document_id,
+        paperless_document_id: finalDocId,
         correspondent: correspondent.name,
         tags: allTagNames,
         total_amount: merged.total_amount,
       };
       completeJob(db, job.id, result);
-      logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
+      logger.log(`Job ${job.id} completed: ${finalOutcome} "${title}" → doc #${finalDocId ?? "?"}`);
       correspondentsCounter.add(1, { correspondent: correspondent.name });
       if (notify) {
         const msg = formatNotification({
-          outcome: "uploaded",
+          outcome: finalOutcome,
           vendor: correspondent.name,
           total_amount: merged.total_amount,
           currency: merged.currency,
           doc_type: merged.doc_type,
           owner: merged.owner ?? null,
           month_tag: monthTag,
+          paperless_document_id: finalDocId,
         });
         if (msg) await notify(msg).catch((e) => {
           span.addEvent("notification_failed", { error: e instanceof Error ? e.message : String(e) });
         });
       }
-      outcome = "uploaded";
-      span.setAttribute("invoice.outcome", "uploaded");
-      span.setAttribute("paperless.document_id", uploadResult.document_id ?? 0);
+      outcome = finalOutcome;
+      span.setAttribute("invoice.outcome", finalOutcome);
+      span.setAttribute("paperless.document_id", finalDocId ?? 0);
       span.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1168,6 +1214,86 @@ async function uploadToPaperless(
   });
 }
 
+interface PatchParams {
+  documentId: number;
+  title: string;
+  correspondentId: number;
+  tagIds: number[];
+  documentTypeId?: number;
+  storagePathId?: number;
+  totalAmount?: number | null;
+  orderId?: string | null;
+}
+
+/**
+ * PATCH an existing Paperless document with fresh metadata. Used by the
+ * force-refresh path: when the operator explicitly asks to reprocess a doc
+ * that already exists in Paperless, we re-derive title/tags/correspondent/etc.
+ * from the new pipeline run and patch the existing doc in place — preserving
+ * the doc id, the original PDF, OCR, page count, and thumbnail.
+ *
+ * Single PATCH request hits all metadata at once: title, correspondent,
+ * document_type, tags, storage_path, custom_fields. The custom_fields array
+ * is replaced wholesale, which is what we want — fresh values overwrite stale.
+ */
+async function patchPaperlessDocument(
+  params: PatchParams,
+  logger: WorkerLogger,
+  registry: PaperlessFieldRegistry,
+): Promise<{ document_id: number; title: string }> {
+  return withSpan(tracer, "invoice-worker.patch", {
+    "patch.document_id": params.documentId,
+    "patch.title": params.title,
+    "patch.correspondent_id": params.correspondentId,
+    "patch.tag_ids": params.tagIds.join(","),
+    "patch.document_type_id": params.documentTypeId ?? 0,
+    "patch.storage_path_id": params.storagePathId ?? 0,
+    "patch.total_amount": String(params.totalAmount ?? ""),
+    "patch.order_id": params.orderId ?? "",
+  }, async (span) => {
+    logger.log(`Force-refresh: patching Paperless doc #${params.documentId} with new metadata "${params.title}"`);
+
+    const paperlessUrl = process.env.PAPERLESS_URL;
+    if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
+    const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
+
+    // Build custom_fields array from the same registry the upload path uses.
+    const customFields: Array<{ field: number; value: unknown }> = [];
+    if (params.totalAmount != null) {
+      customFields.push({ field: registry.getFieldId("total_amount"), value: params.totalAmount });
+    }
+    if (params.orderId) {
+      customFields.push({ field: registry.getFieldId("order_id"), value: params.orderId });
+    }
+
+    const body: Record<string, unknown> = {
+      title: params.title,
+      correspondent: params.correspondentId,
+      tags: params.tagIds,
+    };
+    if (params.documentTypeId) body.document_type = params.documentTypeId;
+    if (params.storagePathId) body.storage_path = params.storagePathId;
+    if (customFields.length > 0) body.custom_fields = customFields;
+
+    const response = await fetch(`${paperlessUrl}/api/documents/${params.documentId}/`, {
+      method: "PATCH",
+      headers: {
+        "Authorization": `Token ${paperlessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Paperless PATCH failed (${response.status}): ${errText.slice(0, 200)}`);
+    }
+
+    span.setAttribute("patch.success", true);
+    return { document_id: params.documentId, title: params.title };
+  });
+}
+
 // ── Scan intake (GDrive) ──────────────────────────────────────────────
 
 export async function executeScanIntake(
@@ -1296,13 +1422,20 @@ export async function executeScanIntake(
         correspondent,
       });
 
-      // Step 4: Deduplicate
+      // Step 4: Deduplicate. force=true switches dedup hits from short-circuit
+      // to in-place PATCH (forceTargetDocId captured here, used by upload step).
       addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
       const dedupeResult = await checkDuplicate(classification, correspondent, logger, registry);
+      let forceTargetDocId: number | undefined;
       if (dedupeResult) {
         addJobEvent(db, job.id, "step_completed", { step: "deduplicate", ...dedupeResult });
 
-        if (dedupeResult.outcome === "duplicate") {
+        if (input.force) {
+          forceTargetDocId = dedupeResult.existing_id;
+          logger.log(`force=true: will refresh existing doc #${forceTargetDocId} (${dedupeResult.outcome}) instead of skipping`);
+          span.setAttribute("invoice.force_refresh", true);
+          span.setAttribute("invoice.force_target_doc_id", forceTargetDocId);
+        } else if (dedupeResult.outcome === "duplicate") {
           completeJob(db, job.id, {
             outcome: "duplicate",
             duplicate_of: dedupeResult.existing_id,
@@ -1314,9 +1447,7 @@ export async function executeScanIntake(
           span.setAttribute("invoice.outcome", "duplicate");
           span.setStatus({ code: SpanStatusCode.OK });
           return;
-        }
-
-        if (dedupeResult.outcome === "duplicate_likely") {
+        } else if (dedupeResult.outcome === "duplicate_likely") {
           requestJobApproval(db, job.id, {
             reason: dedupeResult.message,
             existing_document_id: dedupeResult.existing_id,
@@ -1345,55 +1476,82 @@ export async function executeScanIntake(
       const documentTypeId = await resolveDocumentType(classification.doc_type, logger);
       const storagePathId = await resolveStoragePath(scanTagOwner, classification.doc_type, logger);
 
-      // Step 7: Upload to Paperless
+      // Step 7: Upload to Paperless — or PATCH the existing doc if force-refresh.
       addJobEvent(db, job.id, "step_started", { step: "upload" });
       const title = buildScanTitle(classification.vendor, classification.order_id, classification.subtitle, input.filename);
-      const uploadResult = await uploadToPaperless({
-        title, file,
-        correspondentId: correspondent.id, tagIds, documentTypeId, storagePathId,
-        totalAmount: classification.total_amount, orderId: classification.order_id,
-      }, logger);
-      addJobEvent(db, job.id, "step_completed", { step: "upload", ...uploadResult });
+      let finalDocId: number | undefined;
+      let finalOutcome: "uploaded" | "refreshed";
 
-      // Step 8: Set custom fields
-      if (classification.total_amount != null || classification.order_id) {
-        addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
-        const cfResult = await setDocumentCustomFields(
-          uploadResult.task_uuid, classification.total_amount, classification.order_id, logger, registry,
-        );
-        addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
+      if (forceTargetDocId) {
+        const patchResult = await patchPaperlessDocument({
+          documentId: forceTargetDocId,
+          title,
+          correspondentId: correspondent.id,
+          tagIds,
+          documentTypeId,
+          storagePathId,
+          totalAmount: classification.total_amount,
+          orderId: classification.order_id,
+        }, logger, registry);
+        addJobEvent(db, job.id, "step_completed", {
+          step: "upload",
+          mode: "patch",
+          document_id: patchResult.document_id,
+          title: patchResult.title,
+        });
+        finalDocId = patchResult.document_id;
+        finalOutcome = "refreshed";
+      } else {
+        const uploadResult = await uploadToPaperless({
+          title, file,
+          correspondentId: correspondent.id, tagIds, documentTypeId, storagePathId,
+          totalAmount: classification.total_amount, orderId: classification.order_id,
+        }, logger);
+        addJobEvent(db, job.id, "step_completed", { step: "upload", mode: "post", ...uploadResult });
+
+        // Step 8: Set custom fields (post path only — patch path already set them)
+        if (classification.total_amount != null || classification.order_id) {
+          addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
+          const cfResult = await setDocumentCustomFields(
+            uploadResult.task_uuid, classification.total_amount, classification.order_id, logger, registry,
+          );
+          addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
+        }
+        finalDocId = uploadResult.document_id;
+        finalOutcome = "uploaded";
       }
 
       // Step 9: Move GDrive file to Processed/
       await moveGdriveFile(file_id, "processed", watch_folder, logger);
 
       const result: InvoiceIntakeResult = {
-        outcome: "uploaded", title,
-        paperless_document_id: uploadResult.document_id,
+        outcome: finalOutcome, title,
+        paperless_document_id: finalDocId,
         correspondent: correspondent.name,
         tags: allTagNames,
         total_amount: classification.total_amount,
       };
       completeJob(db, job.id, result);
-      logger.log(`Job ${job.id} completed: uploaded "${title}" to Paperless`);
+      logger.log(`Job ${job.id} completed: ${finalOutcome} "${title}" → doc #${finalDocId ?? "?"}`);
       correspondentsCounter.add(1, { correspondent: correspondent.name });
       if (notify) {
         const msg = formatNotification({
-          outcome: "uploaded",
+          outcome: finalOutcome,
           vendor: correspondent.name,
           total_amount: classification.total_amount,
           currency: classification.currency,
           doc_type: classification.doc_type,
           owner: classification.owner ?? null,
           month_tag: resolvedMonthTag,
+          paperless_document_id: finalDocId,
         });
         if (msg) await notify(msg).catch((e) => {
           span.addEvent("notification_failed", { error: e instanceof Error ? e.message : String(e) });
         });
       }
-      outcome = "uploaded";
-      span.setAttribute("invoice.outcome", "uploaded");
-      span.setAttribute("paperless.document_id", uploadResult.document_id ?? 0);
+      outcome = finalOutcome;
+      span.setAttribute("invoice.outcome", finalOutcome);
+      span.setAttribute("paperless.document_id", finalDocId ?? 0);
       span.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

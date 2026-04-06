@@ -1173,6 +1173,194 @@ function moveGdriveMockHandlers(): FetchHandler[] {
   ];
 }
 
+// ── Force re-upload tests ───────────────────────────────────────────────
+
+describe("invoice-worker force-refresh (email pipeline)", () => {
+  test("force=true + exact duplicate → PATCH existing doc, outcome=refreshed", async () => {
+    const input = makeInput({ force: true });
+    const job = createRunningJob(input);
+
+    mockFetch(
+      // 1. get_attachments
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 512 }])),
+      // 2. download_attachment
+      () => jsonResponse(rpcResponse({ name: "inv.pdf", content_type: "application/pdf", size: 512, content_base64: "AA" })),
+      // 3. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 4. dedup check → exact duplicate (would normally short-circuit)
+      () => jsonResponse({ results: [{
+        id: 411,
+        title: "Alza - FA2026030001",
+        custom_fields: [{ field: 4, value: "FA2026030001" }, { field: 1, value: 59.99 }],
+      }] }),
+      // 5. list_tags (force-refresh continues the pipeline)
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      // 6. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      // 7. resolveStoragePath
+      storagePathsMockHandler(),
+      // 8. PATCH existing doc (single request — no post_document, no separate custom_fields PATCH)
+      (url, init) => {
+        expect(url).toContain("/api/documents/411/");
+        expect(init?.method).toBe("PATCH");
+        const body = JSON.parse(init?.body as string);
+        expect(body.title).toBe("Alza - FA2026030001");
+        expect(body.correspondent).toBe(10);
+        expect(body.tags).toEqual([3, 11, 7]);
+        expect(body.document_type).toBe(5);
+        expect(body.custom_fields).toContainEqual({ field: 1, value: 59.99 });
+        expect(body.custom_fields).toContainEqual({ field: 4, value: "FA2026030001" });
+        return jsonResponse({ id: 411 });
+      },
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("refreshed");
+    expect(output.paperless_document_id).toBe(411);
+    expect(output.title).toBe("Alza - FA2026030001");
+    expect(output.tags).toEqual(["techlab", "accounting", "2026-03"]);
+  });
+
+  test("force=true + duplicate_likely → PATCH (no approval gate)", async () => {
+    const input = makeInput({ force: true });
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 512 }])),
+      () => jsonResponse(rpcResponse({ name: "inv.pdf", content_type: "application/pdf", size: 512, content_base64: "AA" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // dedup → likely duplicate (amount differs) — would normally pause for approval
+      () => jsonResponse({ results: [{
+        id: 411,
+        title: "Alza - FA2026030001",
+        custom_fields: [{ field: 4, value: "FA2026030001" }, { field: 1, value: 100.0 }],
+      }] }),
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
+      // PATCH the existing doc — operator's force overrides the approval gate
+      (url, init) => {
+        expect(url).toContain("/api/documents/411/");
+        expect(init?.method).toBe("PATCH");
+        return jsonResponse({ id: 411 });
+      },
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    expect(updated.state).not.toBe("awaiting_approval");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("refreshed");
+    expect(output.paperless_document_id).toBe(411);
+  });
+
+  test("force=true + no dedup hit → normal upload (force is a no-op)", async () => {
+    const input = makeInput({ force: true });
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 512 }])),
+      () => jsonResponse(rpcResponse({ name: "inv.pdf", content_type: "application/pdf", size: 512, content_base64: "AA" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // dedup → no match
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
+      // post_document path runs as normal
+      () => new Response('"task-uuid"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("uploaded");
+  });
+
+  test("force=false + exact duplicate → unchanged behaviour (short-circuit)", async () => {
+    const input = makeInput({ force: false });
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 512 }])),
+      () => jsonResponse(rpcResponse({ name: "inv.pdf", content_type: "application/pdf", size: 512, content_base64: "AA" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [{
+        id: 411,
+        title: "Alza - FA2026030001",
+        custom_fields: [{ field: 4, value: "FA2026030001" }, { field: 1, value: 59.99 }],
+      }] }),
+      // No further fetches — pipeline must short-circuit
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("duplicate");
+    expect(output.duplicate_of).toBe(411);
+  });
+});
+
+describe("invoice-worker force-refresh (scan pipeline)", () => {
+  test("force=true + exact duplicate → PATCH existing scan doc", async () => {
+    const filePath = join(tmpDir, "force_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const input = makeScanInput({ file_path: filePath, force: true });
+    const job = createRunningScanJob(input);
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 2. dedup → exact duplicate
+      () => jsonResponse({ results: [{
+        id: 222,
+        title: "Alza - FA2026030001",
+        custom_fields: [{ field: 4, value: "FA2026030001" }, { field: 1, value: 59.99 }],
+      }] }),
+      // 3. list_tags (continues past dedup under force)
+      () => jsonResponse(rpcResponse([
+        { id: 11, name: "accounting" },
+        { id: 3, name: "techlab" },
+        { id: 7, name: "2026-03" },
+      ])),
+      // 4. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 5. resolveStoragePath
+      storagePathsMockHandler(),
+      // 6. PATCH existing doc 222
+      (url, init) => {
+        expect(url).toContain("/api/documents/222/");
+        expect(init?.method).toBe("PATCH");
+        const body = JSON.parse(init?.body as string);
+        expect(body.tags).toEqual([3, 11, 7]);
+        return jsonResponse({ id: 222 });
+      },
+      // 7-9. moveGdriveFile to processed/
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("refreshed");
+    expect(output.paperless_document_id).toBe(222);
+  });
+});
+
 // ── Scan intake tests ───────────────────────────────────────────────────
 
 describe("executeScanIntake", () => {

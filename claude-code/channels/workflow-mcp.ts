@@ -225,13 +225,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
 
+        // Use source:message_id as idempotency key; force bypasses with unique suffix
+        // AND propagates into input_json so the worker can branch dedup → patch.
+        const force = Boolean(args?.force);
         const inputPayload = {
           email_source: emailSource,
           message_id: messageId,
+          ...(force ? { force: true } : {}),
         };
-
-        // Use source:message_id as idempotency key; force bypasses with unique suffix
-        const force = Boolean(args?.force);
         const idempotencyKey = force
           ? `${emailSource}:${messageId}:force-${Date.now()}`
           : `${emailSource}:${messageId}`;
@@ -278,15 +279,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [text("Error: file_id, watch_folder, and month_tag are required")], isError: true };
         }
 
+        const force = Boolean(args?.force);
         const inputPayload = {
           source: "gdrive",
           file_id: fileId,
           watch_folder: watchFolder,
           month_tag: monthTag,
           filename: (args?.filename as string | undefined) ?? undefined,
+          ...(force ? { force: true } : {}),
         };
 
-        const force = Boolean(args?.force);
         const idempotencyKey = force
           ? `gdrive:${fileId}:force-${Date.now()}`
           : `gdrive:${fileId}`;

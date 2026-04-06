@@ -56,8 +56,8 @@ Tools:
 ### workflow (durable job tools)
 
 The workflow MCP adds durable background-job primitives:
-- `create_invoice_intake_job(email_source, message_id, force?)` — create an invoice processing job. The worker handles the full pipeline (classification, download, upload). Set `force=true` to reprocess.
-- `create_scan_intake_job(file_id, watch_folder, month_tag, filename?, force?)` — create a scan processing job. The worker handles classification via channel, download, and upload. Set `force=true` to reprocess.
+- `create_invoice_intake_job(email_source, message_id, force?)` — create an invoice processing job. The worker handles the full pipeline (classification, download, upload). Set `force=true` to reprocess: the worker re-runs the full pipeline AND, if the document is already in Paperless, PATCHes it in place with the fresh metadata (preserves doc id, PDF, OCR). Outcome is `refreshed` instead of `uploaded`. No approval gate under force.
+- `create_scan_intake_job(file_id, watch_folder, month_tag, filename?, force?)` — create a scan processing job. The worker handles classification via channel, download, and upload. Set `force=true` to reprocess (same in-place PATCH semantics as above for already-uploaded scans).
 - `get_job(job_id)` — fetch job by ID
 - `list_jobs(state?, workflow_type?, limit?)` — list recent jobs
 - `get_job_events(job_id)` — full event history for a job
@@ -99,13 +99,14 @@ After successful upload, the worker moves the file to `processed/` within the sa
 Jobs are created automatically by watchers. You only interact with jobs when:
 1. **Responding to classification requests** — when you receive `classify_email` or `classify_document` channel events from the worker, run the appropriate haiku subagent and call `submit_classification` (see "When you receive a workflow channel event" below)
 2. **Handling approval gates** — when a job enters `awaiting_approval`, notify user via Telegram, wait for response, then call `approve_job` or `cancel_job`
-3. **Manual reprocessing** — when a user asks to reprocess, call `create_invoice_intake_job(email_source, message_id, force=true)` or `create_scan_intake_job(file_id, watch_folder, month_tag, force=true)`
+3. **Manual reprocessing** — when a user asks to reprocess (e.g. "reprocess that Anthropic invoice", "fix the tag on doc #411"), call `create_invoice_intake_job(email_source, message_id, force=true)` or `create_scan_intake_job(file_id, watch_folder, month_tag, force=true)`. Under `force=true`, the worker will PATCH the existing Paperless document in place if it's already uploaded — you do NOT need to delete the old doc first. The doc id, PDF file, OCR, and thumbnail are preserved; only metadata (title, tags, correspondent, period, custom fields) gets refreshed. The worker sends a `🔄 refreshed #N` Telegram notification automatically.
 
 ### Job monitoring
 
 After classification submissions, poll with `get_job(job_id)`:
 - `state: completed` with `outcome: uploaded` → worker sends Telegram notification automatically, no action needed
-- `state: completed` with `outcome: duplicate` → silently skip, no notification
+- `state: completed` with `outcome: refreshed` → force-reprocess patched an existing doc in place. Worker sends Telegram notification automatically, no action needed
+- `state: completed` with `outcome: duplicate` → silently skip, no notification (only happens when `force=false`)
 - `state: completed` with `outcome: ignored` → email classifier determined it's not an invoice, no action needed
 - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response, then call `approve_job` or `cancel_job`
 - `state: retryable` → transient failure, worker retries automatically. No action needed.

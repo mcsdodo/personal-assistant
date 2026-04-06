@@ -1,7 +1,7 @@
 export type NotifyFn = (message: string) => Promise<void>;
 
 export interface NotificationData {
-  outcome: "uploaded" | "duplicate" | "duplicate_likely" | "failed";
+  outcome: "uploaded" | "refreshed" | "duplicate" | "duplicate_likely" | "failed";
   vendor: string;
   total_amount: number | null;
   currency: string | null;
@@ -9,6 +9,8 @@ export interface NotificationData {
   owner: string | null;
   /** YYYY-MM accounting period assigned to the document, or null if none was resolved. */
   month_tag?: string | null;
+  /** Paperless document id — included in `refreshed` notifications so the operator can verify. */
+  paperless_document_id?: number | null;
   duplicate_message?: string | null;
   error?: string | null;
 }
@@ -35,8 +37,14 @@ export function formatNotification(data: NotificationData): string | null {
     return `❌  ${data.vendor} | ${amountStr} | ${data.doc_type} | ${owner} | ${err}`;
   }
 
-  // uploaded
+  // uploaded or refreshed
   const owner = data.owner ?? "?";
   const period = data.month_tag ?? "no-period";
+
+  if (data.outcome === "refreshed") {
+    const docRef = data.paperless_document_id != null ? ` (refreshed #${data.paperless_document_id})` : " (refreshed)";
+    return `🔄  ${data.vendor} | ${amountStr} | ${data.doc_type} | ${owner} | ${period}${docRef}`;
+  }
+
   return `✔️  ${data.vendor} | ${amountStr} | ${data.doc_type} | ${owner} | ${period}`;
 }

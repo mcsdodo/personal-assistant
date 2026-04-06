@@ -119,4 +119,29 @@ describe("formatNotification", () => {
       owner: "techlab",
     })).toBeNull();
   });
+
+  test("refreshed — includes 🔄 icon, period and (refreshed #N)", () => {
+    expect(formatNotification({
+      outcome: "refreshed",
+      vendor: "Anthropic, PBC",
+      total_amount: 100.0,
+      currency: "EUR",
+      doc_type: "invoice",
+      owner: "techlab",
+      month_tag: "2026-04",
+      paperless_document_id: 411,
+    })).toBe("🔄  Anthropic, PBC | 100 EUR | invoice | techlab | 2026-04 (refreshed #411)");
+  });
+
+  test("refreshed — without doc id falls back to (refreshed)", () => {
+    expect(formatNotification({
+      outcome: "refreshed",
+      vendor: "Alza",
+      total_amount: 53.78,
+      currency: "EUR",
+      doc_type: "invoice",
+      owner: "personal",
+      month_tag: "2026-03",
+    })).toBe("🔄  Alza | 53.78 EUR | invoice | personal | 2026-03 (refreshed)");
+  });
 });

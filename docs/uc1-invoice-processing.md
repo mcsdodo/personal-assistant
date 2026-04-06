@@ -244,10 +244,11 @@ The invoice-worker sends structured one-liner notifications via Telegram Bot API
 | Outcome | Format | Example |
 |---------|--------|---------|
 | `uploaded` | `✔️  {vendor} \| {amount} {currency} \| {doc_type} \| {owner} \| {month_tag}` | `✔️  Slovak Telekom \| 42.99 EUR \| invoice \| techlab \| 2026-04` |
+| `refreshed` | `🔄  {vendor} \| {amount} {currency} \| {doc_type} \| {owner} \| {month_tag} (refreshed #N)` | `🔄  Anthropic, PBC \| 100 EUR \| invoice \| techlab \| 2026-04 (refreshed #411)` |
 | `failed` | `❌  {vendor} \| {amount} {currency} \| {doc_type} \| {owner} \| {error}` | `❌  Orange \| ? EUR \| invoice \| techlab \| download failed: 404` |
 | `duplicate` | *(silent — no notification)* | |
 
-Missing fields show `?` placeholder; missing `month_tag` shows `no-period` (tells the operator to tag manually). Currency defaults to `EUR` when null.
+Missing fields show `?` placeholder; missing `month_tag` shows `no-period` (tells the operator to tag manually). Currency defaults to `EUR` when null. The `refreshed` outcome is produced by force-reprocess jobs that PATCH an existing Paperless document instead of uploading a new one — see "Force reprocess" below.
 
 **Code:**
 - [`telegram-notify.ts`](../claude-code/channels/telegram-notify.ts) — `formatNotification()` pure function + `NotifyFn` type
@@ -515,6 +516,25 @@ The worker resolves `month_tag` after merging classifications. **Both pipelines 
 Every candidate passes `validMonthTag` (regex `^\d{4}-(0[1-9]|1[0-2])$` + year in `[2000, currentYear+1]`) before being accepted. `buildTagNames` re-validates defensively so a malformed tag from any upstream caller cannot reach Paperless.
 
 If the entire chain returns `null`, the document is uploaded **without** a month tag, the `invoice_worker_missing_month_tag_total` counter increments, and a Telegram alert is sent so the operator can tag manually. Fabricated tags are never written.
+
+### Force reprocess (in-place metadata refresh)
+
+When the operator calls `create_invoice_intake_job(force=true)` or `create_scan_intake_job(force=true)`, the `force` flag flows all the way to the worker via `input_json`. The worker re-runs the entire pipeline (download, both classifications, month_tag resolution, tag/correspondent/storage_path/document_type derivation, custom field assembly) and then **branches the upload step**:
+
+- **No dedup hit** → normal `post_document` upload, outcome `uploaded`. Force is a no-op.
+- **Dedup hit (`duplicate` or `duplicate_likely`)** → instead of short-circuiting, the worker captures the existing Paperless doc id and PATCHes it in place via a single request to `/api/documents/{id}/`. Outcome is `refreshed`. The doc id, the original PDF file, OCR, page count, and thumbnail are all preserved — only metadata changes.
+
+The single PATCH writes `title`, `correspondent`, `document_type`, `tags`, `storage_path`, and `custom_fields` atomically. The `custom_fields` array is replaced wholesale (Paperless semantic), which is exactly what we want — fresh values overwrite stale ones, no orphans.
+
+Approval gates are skipped under force: when an operator explicitly passes `force=true`, that *is* the approval. A `duplicate_likely` match is patched directly rather than pausing for human confirmation.
+
+This is the recommended way to push corrected metadata onto an already-uploaded document — for example, after fixing a classifier bug or an accounting-period regex (cf. doc #411 / `2940-61` in task 42). Manual `curl` PATCHes against the Paperless API are no longer necessary.
+
+**Code:**
+- [`workflow-mcp.ts:228-237`](../claude-code/channels/workflow-mcp.ts#L228) — `force` propagated into `input_json` (not just the idempotency key)
+- [`invoice-worker.ts:1080-1175`](../claude-code/channels/invoice-worker.ts#L1080) — `patchPaperlessDocument()` helper
+- [`invoice-worker.ts:393-440`](../claude-code/channels/invoice-worker.ts#L393) — dedup branch on `force` (email pipeline)
+- [`invoice-worker.ts:1430-1475`](../claude-code/channels/invoice-worker.ts#L1430) — same for scan pipeline
 
 ## Email Audit Trail
 
