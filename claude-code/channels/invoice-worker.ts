@@ -678,7 +678,7 @@ async function downloadAttachment(
       filename: dlParsed.name,
       content_base64: dlParsed.content_base64,
       content_type: dlParsed.content_type,
-      size: parsed.size,
+      size: dlParsed.size,
     };
   }
 

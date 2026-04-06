@@ -352,6 +352,69 @@ describe("invoice-worker attachment download + upload", () => {
     expect(eventTypes).toContain("completed");
   });
 
+  // Regression: Outlook downloadAttachment used to return `parsed.size` (the
+  // attachment-list metadata size) instead of `dlParsed.size` (the actual
+  // downloaded payload). The two diverge in real life because Outlook reports
+  // the raw size in the list response and the base64-decoded size in the
+  // download response. Verify the worker records the *download* size in the
+  // download step_completed event, not the metadata size.
+  test("Outlook downloadAttachment records actual download size, not metadata size", async () => {
+    const input = makeInput({ email_source: "outlook", message_id: "msg-size-bug" });
+    const job = createRunningJob(input);
+
+    const METADATA_SIZE = 9999; // wrong number — must NOT appear in the recorded event
+    const ACTUAL_SIZE = 1234;   // correct number — must appear in the recorded event
+
+    mockFetch(
+      // 1. get_attachments — list response carries METADATA_SIZE
+      () =>
+        jsonResponse(
+          rpcResponse([
+            { id: "att-1", name: "invoice.pdf", content_type: "application/pdf", size: METADATA_SIZE },
+          ]),
+        ),
+      // 2. download_attachment — download response carries ACTUAL_SIZE
+      () =>
+        jsonResponse(
+          rpcResponse({
+            name: "invoice.pdf",
+            content_type: "application/pdf",
+            size: ACTUAL_SIZE,
+            content_base64: "JVBER",
+          }),
+        ),
+      // 3. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 4. dedup
+      () => jsonResponse({ results: [] }),
+      // 5. list_tags
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      // 6. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      // 7. resolveStoragePath
+      storagePathsMockHandler(),
+      // 8. post_document
+      () => new Response('"task-uuid"', { status: 200 }),
+      // 9-11. setDocumentCustomFields
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    expect(getJob(db, job.id)!.state).toBe("completed");
+
+    const events = getJobEvents(db, job.id);
+    const downloadCompleted = events.find((e) => {
+      if (e.event_type !== "step_completed") return false;
+      const payload = JSON.parse(e.payload_json ?? "{}");
+      return payload.step === "download";
+    });
+    expect(downloadCompleted).toBeDefined();
+    const recorded = JSON.parse(downloadCompleted!.payload_json ?? "{}");
+    expect(recorded.size).toBe(ACTUAL_SIZE);
+    expect(recorded.size).not.toBe(METADATA_SIZE);
+  });
+
   test("detects exact duplicate and completes without upload", async () => {
     const input = makeInput();
     const job = createRunningJob(input);
@@ -1793,5 +1856,60 @@ describe("executeScanIntake", () => {
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
     expect(updated.error_json).toContain("invalid_input");
+  });
+
+  // Regression: downloadFromGdrive used to return `size: fileBuffer.length`
+  // but `fileBuffer` was not in scope. Current code uses `arrayBuffer.byteLength`.
+  // This test exercises the GDrive download path (no file_path shortcut) and
+  // asserts the recorded download size matches the actual binary length, not
+  // any other value.
+  test("downloadFromGdrive records actual binary size in download step event", async () => {
+    // Use scan input WITHOUT file_path so the worker calls downloadFromGdrive
+    const input = makeScanInput({ file_path: undefined, file_id: "gdrive-size-bug" });
+    const job = createRunningScanJob(input);
+
+    // Build a deterministic 1024-byte payload
+    const payload = new Uint8Array(1024);
+    for (let i = 0; i < payload.length; i++) payload[i] = i & 0xff;
+
+    mockFetch(
+      // 1. get_drive_file_download_url (MCP via callMcpTool → fetch)
+      () => jsonResponse(rpcResponse({ url: "http://gmail-mcp:8000/drive-direct/gdrive-size-bug" })),
+      // 2. fetch the binary itself (Buffer.from(arrayBuffer)) — must return raw bytes
+      () => new Response(payload, {
+        status: 200,
+        headers: { "Content-Type": "application/pdf" },
+      }),
+      // 3. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 4. dedup
+      () => jsonResponse({ results: [] }),
+      // 5. list_tags
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      // 6. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 7. resolveStoragePath
+      storagePathsMockHandler(),
+      // 8. post_document
+      () => new Response('"task-uuid-scan-size"', { status: 200 }),
+      // 9-11. setDocumentCustomFields
+      ...customFieldsMockHandlers(),
+      // 12-14. moveGdriveFile
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry, notify);
+
+    expect(getJob(db, job.id)!.state).toBe("completed");
+
+    const events = getJobEvents(db, job.id);
+    const downloadCompleted = events.find((e) => {
+      if (e.event_type !== "step_completed") return false;
+      const p = JSON.parse(e.payload_json ?? "{}");
+      return p.step === "download";
+    });
+    expect(downloadCompleted).toBeDefined();
+    const recorded = JSON.parse(downloadCompleted!.payload_json ?? "{}");
+    expect(recorded.size).toBe(payload.length);
   });
 });
