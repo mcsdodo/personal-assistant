@@ -22,16 +22,20 @@ Typical local endpoints:
 
 ## Data sources
 
-### Email watcher metrics
+### Watcher and worker metrics (OTLP push)
 
-Served from `http://localhost:9465/metrics` in local development.
+All workflow metrics are pushed via OTLP from each container; there is no
+`/metrics` scrape endpoint. The `:9465` port on `email-watcher` exposes
+`/health` only.
 
-Key metrics include:
+| Source | Meter | Metrics |
+|--------|-------|---------|
+| `email-watcher` | `email-watcher` | `email_watcher.emails`, `email_watcher.attachments`, `email_watcher.recent_discovered`, `email_watcher.jobs`, `email_watcher.backlog` |
+| `gdrive-watcher` | `gdrive-watcher` | `gdrive_watcher.files`, `gdrive_watcher.last_poll_seconds_ago` |
+| `workflow-mcp` (invoice worker) | `invoice-worker` | `invoice_worker_correspondents_total`, `invoice_worker_missing_month_tag_total` |
 
-- `email_watcher_backlog_total`
-- `email_watcher_actions_total`
-- `email_watcher_confidence_total`
-- `email_watcher_latency_seconds`
+See [`uc1a-observability.md`](uc1a-observability.md) for the full table with
+attributes, types, and queries.
 
 ### Claude Code telemetry
 
@@ -43,7 +47,6 @@ Public docs use a placeholder such as `YOUR_OTEL_ENDPOINT` or `http://alloy:4317
 
 For a production-like deployment you can:
 
-- scrape the email watcher metrics endpoint from your monitoring stack
 - point `OTEL_ENDPOINT` to your own OTLP receiver
 - mount dashboard JSON files from your persistent config path
 

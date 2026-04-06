@@ -115,13 +115,21 @@ All services have `com.centurylinklabs.watchtower.enable: "false"` — no mid-se
 | `claude-code/channels/db.ts` | Email-watcher SQLite module (emails + source_state tables, invoice_links persistence) |
 | `claude-code/channels/gdrive-watcher.ts` | GDrive-watcher channel (polls Google Drive, SQLite audit) |
 | `claude-code/channels/gdrive-db.ts` | GDrive-watcher SQLite module |
+| `claude-code/channels/watcher-runtime.ts` | Shared health server, MCP client wrapper, poll loop helpers used by both watchers |
 | `claude-code/channels/file-ops.ts` | File-ops MCP tool server (download, delete, list, decrypt, base64, env) |
-| `claude-code/channels/download-helper.ts` | File utility functions (readFileAsDownload, tryDecrypt) used by file-ops + invoice-worker |
-| `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice-worker) |
+| `claude-code/channels/download-helper.ts` | File utility functions (readFileAsDownload, tryDecrypt) used by file-ops + invoice/intake-worker |
+| `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice/download-service) |
 | `claude-code/channels/mcp-client.ts` | HTTP MCP client with retry logic (exponential backoff for transient network errors) |
-| `claude-code/channels/workflow-mcp.ts` | Durable job queue channel (stdio, health on :8003) + invoice/scan workers |
+| `claude-code/channels/workflow-mcp.ts` | Durable job queue channel (stdio, health on :8003) + invoice/scan worker loop. Runs the download-cleanup safety sweep on boot. |
+| `claude-code/channels/workflow-db.ts` | jobs + job_events SQLite schema, lifecycle helpers, schema validation gateway, file-cleanup helpers |
+| `claude-code/channels/workflow-schemas.ts` | Runtime validation for InvoiceIntakeInput, ScanIntakeInput, EmailClassificationResult, DocumentClassificationResult |
+| `claude-code/channels/paperless-adapter.ts` | Unified Paperless boundary (MCP + REST). Owns correspondent/tag/doc-type/storage CRUD, dedup search, upload, PATCH, task polling, custom fields. |
 | `claude-code/channels/invoice-pipeline.ts` | Pure pipeline functions (mergeClassifications, resolveMonthTag, validMonthTag, parseServicePeriodStart, buildTagNames, generateTitle, getCompletedSteps) |
-| `claude-code/channels/invoice-worker.ts` | Invoice intake worker (download, dedup, upload to Paperless) |
+| `claude-code/channels/invoice/intake-worker.ts` | Invoice + scan intake orchestrator (executeInvoiceIntake, executeScanIntake) |
+| `claude-code/channels/invoice/download-service.ts` | Download strategies: Outlook/Gmail attachments, link extraction, direct HTTP, GDrive |
+| `claude-code/channels/invoice/dedup-service.ts` | Duplicate detection (order_id + correspondent + amount comparison) |
+| `claude-code/channels/invoice/classification-state.ts` | parkForClassification helper — channel notification + requestClassification |
+| `claude-code/channels/invoice/postprocess-service.ts` | resolveCorrespondent, resolveTagIds, resolveDocumentTypeId, resolveStoragePathId, uploadToPaperless, setDocumentCustomFields, patchExistingDocument, moveGdriveFile, buildScanTitle |
 | `claude-code/channels/fuzzy-match.ts` | Jaro-Winkler fuzzy correspondent matching |
 | `claude-code/agents/` | Haiku subagents (email-classifier, document-classifier — classifier returns `owner` field for personal/business tag routing) |
 | `checker-mcp/server.py` | FastMCP wrapping match_invoices.py (4 tools) |
@@ -161,21 +169,51 @@ FastMCP wrapping `match_invoices.py`. 4 tools via HTTP. Lazy-init `PaperlessClie
 
 MSAL device code auth with singleton caching (`_msal_lock`). `get_access_token()` does silent acquisition then falls back to device code flow. Background auth thread (daemon) doesn't block server startup. 4 tools: `list_emails`, `get_email`, `get_attachments`, `download_attachment`.
 
-### claude-code/channels/email-watcher.ts (~1100 lines)
+### claude-code/channels/email-watcher.ts (~800 lines)
 
-Polls Gmail + Outlook every 30s. Creates `invoice_intake` jobs directly in `workflow.db` (no channel notification to Claude for new emails). SQLite audit trail (`emails.db`). Metrics endpoint `:9465` (Prometheus format). Health endpoint `/health` with staleness detection. Tools: `get_recent_emails()`, `get_email_stats()`. Startup events (`first_start`, `catchup_required`) still use channel notifications.
+Polls Gmail + Outlook every 30s via Streamable HTTP MCP clients managed by `watcher-runtime.ts`. Creates `invoice_intake` jobs directly in `workflow.db` (no channel notification to Claude for new emails). SQLite audit trail (`emails.db`). Health endpoint `/health` on `:9465` with staleness detection. Validates job input via `workflow-schemas.ts` before `createJob()`. Tools: `get_recent_emails()`, `get_email_stats()`. Startup events (`first_start`, `catchup_required`) still use channel notifications.
 
-### claude-code/channels/invoice-worker.ts (~1580 lines)
+### claude-code/channels/invoice/intake-worker.ts (~1110 lines)
 
-Deterministic job worker and pipeline orchestrator. Drives the full pipeline: request email classification via channel → download (attachment/link extraction from HTML) → request document classification via channel (returns reasoned `accounting_period` + supply_date + service_period) → merge classifications → resolve month_tag (LLM `accounting_period` first, deterministic chain as safety net, validation rejects malformed values), tags, correspondent → dedup via Paperless search (title, correspondent, amount, Jaro-Winkler 0.85 threshold) → upload to Paperless API (direct, bypasses MCP size limit) → set tags and custom fields → Telegram notification (includes month_tag column, or `no-period` if none). Step-level resume via `getCompletedSteps` — on retry, skips already-completed steps. Approval gates for unknown vendors and low confidence. **Force reprocess:** when the job input has `force: true`, dedup hits do NOT short-circuit — the worker re-runs the full pipeline and PATCHes the existing Paperless doc in place (preserves doc id, PDF, OCR), producing the `refreshed` outcome. This is the supported way to push corrected metadata onto already-uploaded docs after a classifier fix.
+Deterministic job worker and pipeline orchestrator. Owns `executeInvoiceIntake` and `executeScanIntake`. Drives the full pipeline:
 
-### claude-code/channels/gdrive-watcher.ts (~750 lines)
+1. validate `input_json` via `workflow-schemas.ts` (fails fast with `schema_validation_failed` on bad rows)
+2. request email classification via channel (`invoice/classification-state.ts:parkForClassification`)
+3. download via `invoice/download-service.ts` (Outlook attachment, Gmail attachment, link extraction, GDrive)
+4. record file path with `recordDownloadedFile()` so cleanup runs at terminal state
+5. request document classification via channel
+6. merge classifications, resolve month_tag (LLM `accounting_period` first, deterministic chain as safety net)
+7. resolve correspondent, dedup, tags, doc type, storage path — all via `invoice/postprocess-service.ts` which delegates to `paperless-adapter.ts`
+8. upload to Paperless directly OR PATCH the existing doc in place (force-refresh path)
+9. set custom fields after consumption (poll task → PATCH → verify)
+10. send Telegram notification
 
-Polls Google Drive folders (`LEVEL1`/`LEVEL2`) every 30s. Creates `scan_intake` jobs directly in `workflow.db` (no channel notification to Claude for new files). SQLite audit trail (`gdrive.db`). Creates `processed/` and `errors/` subfolders for post-upload file management.
+Step-level resume via `getCompletedSteps` — on retry, the worker skips already-completed steps. Approval gates for `browser_required` / `manual_review` / `duplicate_likely`. **Force reprocess:** when the job input has `force: true`, dedup hits do NOT short-circuit — the worker re-runs the full pipeline and PATCHes the existing Paperless doc in place (preserves doc id, PDF, OCR), producing the `refreshed` outcome.
 
-### claude-code/channels/workflow-mcp.ts (~430 lines)
+### claude-code/channels/paperless-adapter.ts (~440 lines)
 
-Durable job queue backed by SQLite (`workflow.db`). Stdio channel with health endpoint on :8003. Job states: queued → running → awaiting_classification → awaiting_approval → completed/failed. Tools: `create_invoice_intake_job(email_source, message_id, force?)` (manual/force reprocessing only — watchers create jobs directly), `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`, `submit_classification(job_id, step, result)`. Worker drives the full pipeline — classification requests go via channel notifications to Claude.
+Unified Paperless boundary. Owns every operation that hits Paperless, regardless of transport. MCP for `list_correspondents`, `create_correspondent`, `list_tags`, `create_tag`, `list_document_types`. Direct HTTP for storage paths, dedup search, multipart upload (`/api/documents/post_document/`), task polling, document PATCH, custom field PATCH. The split is hidden from callers — they see one interface (`findCorrespondent`, `createCorrespondent`, `resolveTagIds`, `findDocumentTypeId`, `findStoragePathId`, `searchDocumentsByCustomFieldAndCorrespondent`, `uploadDocument`, `patchDocument`, `waitForConsumption`, `setCustomFields`).
+
+### claude-code/channels/workflow-schemas.ts (~430 lines)
+
+Hand-rolled runtime validators (no zod) for the four boundary contracts: `InvoiceIntakeInput`, `ScanIntakeInput`, `EmailClassificationResult`, `DocumentClassificationResult`. Each validator throws `WorkflowSchemaError` with schema name, field, expected type, and actual value. `submitClassification` validates payloads on write (rejects malformed Claude outputs); both watchers validate job input before `createJob`; the worker validates `input_json` on every run.
+
+### claude-code/channels/gdrive-watcher.ts (~610 lines)
+
+Polls Google Drive folders (`LEVEL1`/`LEVEL2`) every 30s via the gmail-mcp Drive tools. Creates `scan_intake` jobs directly in `workflow.db`. SQLite audit trail (`gdrive.db`). Creates `processed/` and `errors/` subfolders for post-upload file management. Validates job input via `workflow-schemas.ts` before `createJob()`. Uses `watcher-runtime.ts` for the health server, MCP client lifecycle, and poll loop.
+
+### claude-code/channels/watcher-runtime.ts (~155 lines)
+
+Shared operational scaffolding for both watchers. Three pieces:
+- `startHealthServer({port, db, getStaleMs, maxStaleMs, ...})` — Bun.serve `/health` with staleness check
+- `createManagedMcpClient({name, version, url, ...})` — singleton MCP client wrapper with `.get()` and `.reset()`
+- `startPollLoop({name, intervalMs, poll, runFirstCycleImmediately, ...})` — setInterval poll loop with try/catch logging
+
+Domain logic stays in each watcher (Gmail/Outlook polling, Drive folder logic, audit DB schemas, OTel gauges, channel tools).
+
+### claude-code/channels/workflow-mcp.ts (~440 lines)
+
+Durable job queue backed by SQLite (`workflow.db`). Stdio channel with health endpoint on :8003. Job states: queued → running → awaiting_classification → awaiting_approval → completed/failed. Tools: `create_invoice_intake_job(email_source, message_id, force?)` (manual/force reprocessing only — watchers create jobs directly), `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`, `submit_classification(job_id, step, result)`. On boot, runs `sweepOrphanedDownloads()` to delete files > 7d old that aren't tied to an active job (defense-in-depth for download cleanup; per-job cleanup is automatic via `completeJob` / `failJob` / `cancelJob`).
 
 ### claude-code/agents/
 

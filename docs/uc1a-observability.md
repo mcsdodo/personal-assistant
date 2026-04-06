@@ -70,58 +70,41 @@ workflow.execute_job scan_intake
 
 When the worker parks a job for classification (`awaiting_classification`), the execution span ends. Claude's classification work (fetch email, run Haiku subagent, submit result) happens in a separate Claude Code session span tree. The resumed worker execution creates a new span. Both spans share the same job trace, but there is no explicit span link between the parking span and Claude's classification work.
 
-## UC-1A.1: Inbox Backlog
+## Email-watcher metrics (OTLP push from `email-watcher`, meter: `email-watcher`)
 
-Emails waiting for processing, broken down by source (gmail/outlook).
+All email-watcher metrics are observable gauges pushed via OTLP from
+`email-watcher.ts`. They reflect the *current state* of the
+audit DB and the workflow ledger — there are no per-event counters.
 
-**Metric:** `email_watcher_backlog_total{source}` — count of emails with `status="new"`.
+| Metric | Type | Attributes | Source |
+|--------|------|------------|--------|
+| `email_watcher.emails` | Observable gauge | `source` (gmail/outlook) | `SELECT source, COUNT(*) FROM emails GROUP BY source` |
+| `email_watcher.attachments` | Observable gauge | `source` | `SELECT source, COUNT(*) FROM emails WHERE has_attachments = 1 GROUP BY source` |
+| `email_watcher.recent_discovered` | Observable gauge | `source` | `SELECT source, COUNT(*) FROM emails WHERE discovered_at >= datetime('now', '-1 day') GROUP BY source` |
+| `email_watcher.jobs` | Observable gauge | `type` (workflow_type), `state` | `SELECT workflow_type, state, COUNT(*) FROM jobs GROUP BY workflow_type, state` |
+| `email_watcher.backlog` | Observable gauge | `type` (workflow_type) | `SELECT workflow_type, COUNT(*) FROM jobs WHERE state NOT IN ('completed', 'failed') GROUP BY workflow_type` (always observes both `invoice_intake` and `scan_intake`, including zero, so Prometheus sees fresh samples) |
 
-**Code:** [`email-watcher.ts:119-136`](../claude-code/channels/email-watcher.ts#L119) — SQL query groups `status='new'` by source.
+**Code:** [`email-watcher.ts:registerMetrics()`](../claude-code/channels/email-watcher.ts) — defines all five gauges via `meter.createObservableGauge(...).addCallback(...)`.
 
-## UC-1A.2: Attachment Tracking
+## Invoice worker metrics (OTLP push from `workflow-mcp`, meter: `invoice-worker`)
 
-Emails with attachments, by source and processing status.
-
-**Metric:** `email_watcher_attachments_total{source, status}` — count of `has_attachments=1` emails.
-
-**Code:** [`email-watcher.ts:138-161`](../claude-code/channels/email-watcher.ts#L138) — SQL groups by source + status where `has_attachments = 1`.
-
-## UC-1A.3: Workflow Actions
-
-Distribution of classifier decisions across the pipeline.
-
-**Metric:** `email_watcher_actions_total{action}` — count by action (download_and_upload, notify_user, ignore).
-
-**Code:** [`email-watcher.ts:188-205`](../claude-code/channels/email-watcher.ts#L188) — SQL groups non-null actions.
-
-## UC-1A.4: Correspondent Mix
-
-Top correspondents from completed invoice workflow jobs (normalized names from Paperless fuzzy matching).
-
-**Metric:** `invoice_worker_correspondents_total{correspondent}` — OTLP counter pushed from `workflow-mcp`. Seeded from historical completed jobs at startup, incremented on each new upload.
+| Metric | Type | Attributes | Source |
+|--------|------|------------|--------|
+| `invoice_worker_correspondents_total` | Counter | `correspondent` | Seeded from completed jobs at startup via `seedCounterFromDb()`; incremented after each successful upload |
+| `invoice_worker_missing_month_tag_total` | Counter | `workflow_type` (`invoice_intake` / `scan_intake`) | Incremented when the worker uploads a doc without a valid YYYY-MM tag (LLM-driven `accounting_period` chain fully fell through; operator must tag manually) |
 
 **Dashboard panel:** "Top Correspondents" (bar gauge, queries `invoice_worker_correspondents_total`).
 
-**Code:** [`invoice-worker.ts`](../claude-code/channels/invoice-worker.ts) — counter defined and seeded via `seedCounterFromDb()`, incremented after `completeJob()` on successful upload. [`workflow-mcp.ts`](../claude-code/channels/workflow-mcp.ts) — `getMeter("workflow")` initializes the OTel meter.
+**Code:** [`invoice/intake-worker.ts`](../claude-code/channels/invoice/intake-worker.ts) — counters defined near the top via `meter.createCounter(...)`, seeded by `seedCounterFromDb()`, `correspondentsCounter.add()` after `completeJob()` on success, `missingMonthTagCounter.add()` when month tag resolution fails.
 
-**Legacy:** `email_watcher_vendors_total{vendor}` (scraped from email-watcher `/metrics`) still exists but uses raw classifier vendor names (inconsistent naming). The dashboard now uses the OTLP correspondent metric instead.
+## GDrive watcher metrics (OTLP push from `gdrive-watcher`, meter: `gdrive-watcher`)
 
-## UC-1A.5: Confidence and Latency
+| Metric | Type | Source |
+|--------|------|--------|
+| `gdrive_watcher.files` | Observable gauge | `SELECT COUNT(*) FROM gdrive_files` |
+| `gdrive_watcher.last_poll_seconds_ago` | Observable gauge | `(Date.now() - lastSuccessfulPollAt) / 1000` |
 
-Classification confidence distribution and end-to-end workflow latency.
-
-**Metrics:**
-- `email_watcher_confidence_total{confidence}` — emails by confidence level (high/medium/low)
-- `email_watcher_latency_seconds{stage}` — average seconds from discovery to classification/processing
-
-**Code:**
-- [`email-watcher.ts:207-226`](../claude-code/channels/email-watcher.ts#L207) — confidence grouping
-- [`email-watcher.ts:267-298`](../claude-code/channels/email-watcher.ts#L267) — latency calculation using `julianday()` diff
-
-Additional metrics:
-- `email_watcher_emails_total{source, status}` — total emails tracked
-- `email_watcher_recent_discovered_total{source, status}` — last 24h discovery counts
-- `email_watcher_processed_results_total{status}` — final processing outcomes
+**Code:** [`gdrive-watcher.ts:registerMetrics()`](../claude-code/channels/gdrive-watcher.ts).
 
 ## UC-1A.6: Claude Telemetry
 
