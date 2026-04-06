@@ -216,28 +216,25 @@ reconnect_mcp() {
   done
   tmux send-keys -t claude Enter
 
-  # 5. Verify by re-reading main menu state. HTTP MCPs need a few seconds to
-  #    handshake. Give the action time to process, then re-check up to 3 times.
-  for i in 1 2 3; do
-    sleep 3
-    tmux send-keys -t claude Escape
-    sleep 0.3
-    tmux send-keys -t claude '/mcp' Enter
-    sleep 1.5
-    pane=$(tmux capture-pane -t claude -p)
-    state=$(mcp_parse_state "$pane" "$name")
-    case "$state" in
-      *connected*)
-        tmux send-keys -t claude Escape
-        echo "  ✓ ${name}"
-        return 0
-        ;;
-    esac
-  done
-
+  # 5. Wait for the action to fully process, then verify state. Polling by
+  #    re-opening /mcp seems to interfere with the reconnect, so do a single
+  #    check after a generous wait. HTTP MCP reconnects typically complete
+  #    within 2–3s once Reconnect is triggered.
+  sleep 8
+  pane=$(mcp_open_menu)
+  state=$(mcp_parse_state "$pane" "$name")
   tmux send-keys -t claude Escape
-  echo "  ✗ ${name} (still '${state}' after action)"
-  return 1
+
+  case "$state" in
+    *connected*)
+      echo "  ✓ ${name}"
+      return 0
+      ;;
+    *)
+      echo "  ✗ ${name} (still '${state}' after action)"
+      return 1
+      ;;
+  esac
 }
 
 echo "Reconnecting HTTP MCP servers..."
