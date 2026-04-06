@@ -125,6 +125,9 @@ services:
     environment:
       - PAPERLESS_URL=${PAPERLESS_URL}
       - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}
+      # Comma-separated bank account numbers to skip as payroll/food-stamps
+      # (e.g. "2938452410,1234567890"). Matched substring against raw movement block.
+      - SKIP_PAYROLL_ACCOUNTS=${SKIP_PAYROLL_ACCOUNTS:-}
       # Stateless HTTP: no session IDs, server restarts are transparent to Claude
       - FASTMCP_STATELESS_HTTP=true
 
