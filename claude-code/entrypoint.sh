@@ -110,13 +110,14 @@ fi
 
 # Read the current state of an MCP server from a captured /mcp menu pane.
 # Returns the state word with status icon stripped: "connected", "failed",
-# "disabled", or "" if the server isn't in the pane. Matches ` $name · `
-# which works for both cursor and non-cursor lines (both have that pattern).
+# "disabled", or "" if the server isn't in the pane. Matches a server line:
+# either "❯ <name> · <state>" (cursor line) or "    <name> · <state>" (other),
+# but NOT chat history lines that might happen to mention the server name.
 mcp_parse_state() {
   local pane=$1
   local name=$2
   echo "$pane" \
-    | grep -E " ${name} ·" \
+    | grep -E "(❯ |    )${name} ·" \
     | head -1 \
     | sed -E 's/.*· //' \
     | tr -d '[:space:]'
@@ -172,9 +173,14 @@ reconnect_mcp() {
   esac
 
   # 2. Navigate cursor to the target server's line. Compute delta from the
-  #    current ❯ cursor line to the target server line in the captured pane.
-  cursor_line=$(echo "$pane" | grep -n "❯" | head -1 | cut -d: -f1)
-  target_line=$(echo "$pane" | grep -nE " ${name} ·" | head -1 | cut -d: -f1)
+  #    current menu cursor line to the target server line in the captured pane.
+  #
+  #    IMPORTANT: grep for "❯.*·" not just "❯" — the bare "❯" matches the
+  #    chat prompt indicator at the top of the pane (`❯ /mcp`), which would
+  #    give a wildly wrong line number. The menu cursor is the only `❯` line
+  #    that also contains the `·` separator between server name and state.
+  cursor_line=$(echo "$pane" | grep -n "❯.*·" | head -1 | cut -d: -f1)
+  target_line=$(echo "$pane" | grep -nE "(❯ |    )${name} ·" | head -1 | cut -d: -f1)
   if [ -z "$cursor_line" ] || [ -z "$target_line" ]; then
     tmux send-keys -t claude Escape
     echo "  ✗ ${name} (couldn't locate cursor or target line)"
