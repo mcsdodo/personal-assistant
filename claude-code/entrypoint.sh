@@ -60,11 +60,10 @@ for i in $(seq 1 10); do
 done
 
 # Verify all expected stdio channel subprocesses spawned.
-# Claude Code v2.1.86 had a startup race where some channels failed silently.
-# Fixed in v2.1.92, but keep this check as a safety net — exits with code 1
-# to trigger Docker's restart policy if channels are missing.
+# Claude Code still has an occasional startup race where some channels fail
+# to spawn. Retry for up to 60s before giving up and triggering a container
+# restart via non-zero exit.
 echo "Verifying stdio channels spawned..."
-sleep 3  # give subprocesses time to appear in ps
 EXPECTED_CHANNELS=(
   "email-watcher.ts"
   "gdrive-watcher.ts"
@@ -72,19 +71,77 @@ EXPECTED_CHANNELS=(
   "file-ops.ts"
   "workflow-mcp.ts"
 )
-MISSING=()
-for ch in "${EXPECTED_CHANNELS[@]}"; do
-  if ! pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
-    MISSING+=("$ch")
+CHANNELS_READY=false
+for attempt in $(seq 1 12); do
+  MISSING=()
+  for ch in "${EXPECTED_CHANNELS[@]}"; do
+    if ! pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
+      MISSING+=("$ch")
+    fi
+  done
+  if [ ${#MISSING[@]} -eq 0 ]; then
+    CHANNELS_READY=true
+    echo "All 5 stdio channels running (after ${attempt} checks)"
+    break
   fi
+  sleep 5
 done
-if [ ${#MISSING[@]} -gt 0 ]; then
-  echo "ERROR: Missing channel subprocesses: ${MISSING[*]}"
+if [ "$CHANNELS_READY" = "false" ]; then
+  echo "ERROR: Missing channel subprocesses after 60s: ${MISSING[*]}"
   echo "Killing tmux session to trigger container restart..."
   tmux kill-server 2>/dev/null || true
   exit 1
 fi
-echo "All 5 stdio channels running."
+
+# Reconnect HTTP MCPs. Claude Code v2.1.92 has a bug where interactive
+# sessions mark HTTP MCPs as "failed / not authenticated" at startup even
+# for servers that require no auth (checker, outlook, paperless). The /mcp
+# UI "Reconnect" action works around this. With ENABLE_CLAUDEAI_MCP_SERVERS=false
+# the menu layout is stable (9 items, alphabetical order).
+#
+# Menu position (0-indexed):
+#   0: checker     (HTTP — reconnect needed)
+#   1: email-watcher
+#   2: file-ops
+#   3: gdrive-watcher
+#   4: gmail       (HTTP — reconnect needed)
+#   5: outlook     (HTTP — reconnect needed)
+#   6: paperless   (HTTP — reconnect needed)
+#   7: telegram
+#   8: workflow
+reconnect_mcp() {
+  local down_count=$1
+  local name=$2
+  tmux send-keys -t claude Escape
+  sleep 1
+  tmux send-keys -t claude '/mcp' Enter
+  sleep 3
+  for i in $(seq 1 "$down_count"); do
+    tmux send-keys -t claude Down
+    sleep 0.2
+  done
+  tmux send-keys -t claude Enter    # open server detail menu
+  sleep 2
+  tmux send-keys -t claude Down     # select "Reconnect" (option 2)
+  sleep 0.5
+  tmux send-keys -t claude Enter    # execute reconnect
+  sleep 4
+  if tmux capture-pane -t claude -p -S -5 | grep -q "Reconnected to ${name}"; then
+    echo "  ✓ ${name}"
+    return 0
+  else
+    echo "  ✗ ${name}"
+    return 1
+  fi
+}
+
+echo "Reconnecting HTTP MCP servers..."
+reconnect_mcp 0 checker   || true
+reconnect_mcp 4 gmail     || true
+reconnect_mcp 5 outlook   || true
+reconnect_mcp 6 paperless || true
+# Don't exit on reconnect failure — the session is still usable for stdio
+# channels, and gmail may legitimately need OAuth if the token expired.
 
 echo "Claude Code session started in tmux."
 echo "Use 'docker exec -it <container> tmux attach -t claude' to view."
