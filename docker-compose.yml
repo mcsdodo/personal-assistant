@@ -187,13 +187,9 @@ services:
     command:
       - |
         cat > /tmp/Caddyfile <<'EOF'
+        # External listener (:8080) — bearer-token auth required, used by the
+        # public reverse proxy for OAuth callbacks from Google.
         :8080
-        # RFC 7591-conformant rejection of OAuth Dynamic Client Registration.
-        # Claude Code's MCP SDK speculatively probes /register on first connect;
-        # a non-JSON 404 makes parseErrorResponse blow up trying to JSON.parse
-        # "Not Found" and decorates the /mcp menu with bogus auth options
-        # (claude-code#34008). Returning a valid OAuth error JSON keeps the
-        # error legible and the menu layout stable.
         handle /register {
             header Content-Type application/json
             respond `{"error":"invalid_client_metadata","error_description":"This MCP server does not support OAuth"}` 400
@@ -203,6 +199,23 @@ services:
             not header Authorization "Bearer {$$GMAIL_MCP_TOKEN}"
         }
         respond @mcp_no_auth "Unauthorized" 401
+        reverse_proxy gmail-mcp:8000
+
+        # Internal listener (:9090) — no auth, docker-network only.
+        # Claude Code's HTTP MCP client points here so it benefits from the
+        # /register stub below. Without this, Claude would talk directly to
+        # gmail-mcp:8000 and the SDK's speculative OAuth Dynamic Client
+        # Registration probe (POST /register) would 404 with HTML, blowing up
+        # parseErrorResponse with a JSON-parse exception and decorating the
+        # /mcp detail menu with bogus "Re-authenticate" / "Clear authentication"
+        # entries (claude-code#34008). The stub returns a valid RFC 7591 OAuth
+        # error JSON so the SDK surfaces a clean error and the menu layout
+        # stays stable.
+        :9090
+        handle /register {
+            header Content-Type application/json
+            respond `{"error":"invalid_client_metadata","error_description":"This MCP server does not support OAuth"}` 400
+        }
         reverse_proxy gmail-mcp:8000
         EOF
         exec caddy run --config /tmp/Caddyfile --adapter caddyfile
