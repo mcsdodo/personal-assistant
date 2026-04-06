@@ -9,6 +9,16 @@
 docker exec personal-assistant-claude tmux capture-pane -t claude -p -S -60
 ```
 
+## HTTP MCPs show ✘ failed at startup
+
+The `claude-code` entrypoint runs a state-aware reconnect script that drives the `/mcp` TUI via `tmux send-keys` for each HTTP MCP server (`checker`, `gmail`, `outlook`, `paperless`). If a server still shows `✘ failed` after the container has been up for a minute or two:
+
+1. Check `docker logs personal-assistant-claude` for the `Reconnecting HTTP MCP servers...` block — does it report `✓` or `✗` for each?
+2. If `✗`, the menu layout may have changed in a Claude Code update, breaking the regex assumptions in `reconnect_mcp`. See [claude-code-runtime.md](claude-code-runtime.md#http-mcp-reconnect-workaround).
+3. Manual fallback: `docker exec -it personal-assistant-claude tmux attach -t claude`, then `/mcp`, navigate to the failed server, press Enter, navigate to Reconnect, press Enter.
+
+This is a workaround for [anthropics/claude-code#34008](https://github.com/anthropics/claude-code/issues/34008), an unfixed upstream bug where Claude Code marks HTTP MCPs as `failed` at startup even when the upstream servers are healthy.
+
 ## Health endpoint is failing
 
 ```bash

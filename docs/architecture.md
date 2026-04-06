@@ -41,6 +41,8 @@ Runs the Claude session in `tmux` and hosts:
 - `workflow-mcp`
 - the Haiku-based classifier prompts
 
+See [claude-code-runtime.md](claude-code-runtime.md) for the entrypoint phases, the HTTP MCP reconnect workaround, and the gotchas baked into `entrypoint.sh`.
+
 ### `paperless-mcp`
 
 Exposes Paperless tools over MCP so the stack can create or query documents and metadata.
