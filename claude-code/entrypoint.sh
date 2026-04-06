@@ -123,12 +123,14 @@ mcp_parse_state() {
 }
 
 # Open /mcp menu and capture pane content. Used by both navigation and
-# verification. Closes any open menus first to ensure clean state.
+# verification. Closes any open menu first to ensure clean state.
+#
+# IMPORTANT: only single Escape — Claude Code uses Esc-Esc as a Rewind
+# dialog shortcut, which would trap subsequent input. Single Escape closes
+# any open menu without triggering Rewind.
 mcp_open_menu() {
   tmux send-keys -t claude Escape
-  sleep 0.4
-  tmux send-keys -t claude Escape
-  sleep 0.4
+  sleep 0.6
   tmux send-keys -t claude '/mcp' Enter
   sleep 3
   tmux capture-pane -t claude -p
@@ -139,8 +141,14 @@ reconnect_mcp() {
   local pane state action target_action_num
   local cursor_line target_line delta i
 
-  # 1. Open menu and check current state
+  # 1. Open menu and check current state. If the menu didn't actually open
+  #    (e.g. because something else is on screen), retry once.
   pane=$(mcp_open_menu)
+  if ! echo "$pane" | grep -q "Manage MCP servers"; then
+    tmux send-keys -t claude Escape
+    sleep 1
+    pane=$(mcp_open_menu)
+  fi
   state=$(mcp_parse_state "$pane" "$name")
 
   if [ -z "$state" ]; then
@@ -191,10 +199,13 @@ reconnect_mcp() {
   pane=$(tmux capture-pane -t claude -p)
   target_action_num=$(echo "$pane" | grep -oE "[1-9]\.[[:space:]]+${action}\b" | head -1 | grep -oE '^[1-9]')
   if [ -z "$target_action_num" ]; then
+    # Single Escape closes the detail menu (returns to main menu).
+    # The next mcp_open_menu call will Escape again to dismiss the main menu.
+    # Avoid chained Escapes — Claude Code's Esc-Esc is a Rewind dialog
+    # shortcut that hijacks subsequent input.
     tmux send-keys -t claude Escape
-    sleep 0.4
-    tmux send-keys -t claude Escape
-    echo "  ✗ ${name} (no '${action}' option in detail menu, state was ${state})"
+    sleep 0.5
+    echo "  ✗ ${name} (no '${action}' option in detail menu, state was '${state}')"
     return 1
   fi
 

@@ -30,7 +30,7 @@
     },
     "gmail": {
       "type": "http",
-      "url": "http://gmail-mcp-auth:9090/mcp"
+      "url": "http://gmail-mcp:8000/mcp"
     },
     "outlook": {
       "type": "http",
