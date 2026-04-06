@@ -289,7 +289,19 @@ if __name__ == "__main__":
 
     app = mcp_server.streamable_http_app()
 
-    # ASGI wrapper: health endpoint + Host header rewrite for FastMCP DNS rebinding
+    # RFC 7591-conformant rejection of OAuth Dynamic Client Registration.
+    # Claude Code's MCP SDK speculatively probes /register on first connect; if the
+    # server returns a non-JSON 404, the SDK's parseErrorResponse blows up trying
+    # to JSON.parse "Not Found" and decorates the /mcp menu with bogus
+    # "Re-authenticate" / "Clear authentication" entries (claude-code#34008).
+    # Returning a valid OAuth error JSON makes the SDK surface a clean error
+    # instead of a JSON-parse exception.
+    OAUTH_REGISTER_REJECT = (
+        b'{"error":"invalid_client_metadata",'
+        b'"error_description":"This MCP server does not support OAuth"}'
+    )
+
+    # ASGI wrapper: health endpoint + OAuth /register stub + Host header rewrite
     async def passthrough(scope, receive, send):
         if scope["type"] == "http":
             path = scope.get("path", "")
@@ -302,6 +314,16 @@ if __name__ == "__main__":
                     }
                 )
                 await send({"type": "http.response.body", "body": b"ok"})
+                return
+            if path == "/register" and scope.get("method") == "POST":
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 400,
+                        "headers": [[b"content-type", b"application/json"]],
+                    }
+                )
+                await send({"type": "http.response.body", "body": OAUTH_REGISTER_REJECT})
                 return
             headers = list(scope.get("headers", []))
             scope["headers"] = [
