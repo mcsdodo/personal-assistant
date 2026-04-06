@@ -193,48 +193,68 @@ The invoice-worker uploads documents directly to the Paperless HTTP API, **not**
 5. **Upload** — direct HTTP `POST /api/documents/post_document/` with base64-decoded multipart body, correspondent, tags, type. Returns a `task_uuid`.
 6. **Custom fields** — poll `GET /api/tasks/?task_id={uuid}` until consumption succeeds and a doc id is known, then `PATCH /api/documents/{doc_id}/` with custom fields (total_amount, order_id)
 
-**Tag derivation (by source):**
+**Tag derivation (unified):**
 
-Tags are derived deterministically from the document source and classification. The logic differs by source:
+Tags are derived deterministically by `buildTagNames()` in `invoice-pipeline.ts:185`. Both pipelines (email and GDrive scan) call the same function — there is **no separate per-source tag logic**. The only difference is where `owner` comes from:
 
-- **GDrive** — tags derived from the `watch_folder` path carried per-file (e.g. `techlab/invoicing` → `[techlab, invoicing]`, `techlab/documents` → `[techlab, documents]`). Each path segment becomes a tag. Classifier `owner` and `doc_type` are ignored for tagging.
-- **Email** — tags derived from the document-classifier's `owner` field and `doc_type`. The classifier inspects the PDF for business identifiers (company name, VAT/ICO/DIC, license plates, "Podnikatelsky ucet"). If `owner` is missing, the job fails with `missing_owner` error — this prevents silent mis-tagging when document-classifier didn't run.
+- **Email pipeline** — `owner` comes from the document-classifier (`techlab` or `personal`). The classifier inspects the PDF for business identifiers (company name, VAT/IČO/DIČ, license plates, "Podnikateľský účet"). If `owner` is missing, the job fails with `missing_owner` — this prevents silent mis-tagging when the classifier didn't run.
+- **GDrive scan pipeline** — `owner` comes from the watch folder's first segment (`watch_folder.split("/")[0]`). For `watch_folder=techlab/invoicing` the owner is `techlab`. The classifier's `owner` field is ignored on this path because the operator's folder choice is authoritative.
+
+Both then go through the same `buildTagNames(...)` rules:
+
+| Owner | Always | If `doc_type=credit_note` | If `doc_type=account_statement` | If `is_fuel` | Plus |
+|-------|--------|---------------------------|---------------------------------|--------------|------|
+| techlab | `techlab`, `accounting` | + `credit-note` | + `account-statement` | + `fuel` | + `YYYY-MM` (if validated) |
+| personal | `personal` | + `credit-note` | + `account-statement` | + `fuel` | + `YYYY-MM` (if validated) |
+
+Example: `watch_folder=techlab/invoicing` + invoice + April → `[techlab, accounting, 2026-04]`. Note the second tag is `accounting`, **not** `invoicing` — `invoicing` is a folder path segment, not a Paperless tag.
 
 ```mermaid
 flowchart TD
     A[Document arrives] --> B{Source?}
 
-    B -->|GDrive| C["tags from watch_folder path segments:<br/>e.g. [techlab, invoicing] or [techlab, documents]"]
+    B -->|GDrive scan| Bg["owner = watch_folder.split('/')[0]<br/>e.g. techlab/invoicing → techlab"]
+    B -->|Email| Be["owner = document-classifier.owner"]
 
-    B -->|Email| D{"classifier.owner?"}
-    D -->|missing| X["❌ job fails: missing_owner"]
-    D -->|techlab| F{doc_type?}
-    D -->|personal| E["tags = [personal]"]
+    Bg --> D{owner?}
+    Be --> Dm{owner?}
 
-    F -->|invoice / receipt /<br/>credit_note / account_statement| G["tags = [techlab, invoicing]"]
-    F -->|document| H["tags = [techlab, documents]"]
-    F -->|other / unknown| I["tags = [techlab]"]
+    Dm -->|missing| X["❌ job fails: missing_owner<br/>(email pipeline only)"]
+    Dm -->|techlab or personal| D
 
-    C --> J{is_fuel?}
-    G --> J
-    H --> J
-    I --> J
-    E --> J
+    D -->|techlab| G["base = [techlab, accounting]"]
+    D -->|personal| E["base = [personal]"]
 
+    G --> Dt
+    E --> Dt
+    Dt{doc_type?}
+    Dt -->|credit_note| Cn["+ credit-note"]
+    Dt -->|account_statement| As["+ account-statement"]
+    Dt -->|other| Skip[no extra]
+
+    Cn --> J
+    As --> J
+    Skip --> J
+
+    J{is_fuel?}
     J -->|yes| K["+ fuel"]
     J -->|no| L[skip]
-    K --> M["+ YYYY-MM (month_tag)"]
+    K --> M["+ YYYY-MM (month_tag)<br/>if validated"]
     L --> M
 ```
 
 **`month_tag` source** is unified across both pipelines: the document-classifier returns a reasoned `accounting_period` that wins over all other signals (see `month_tag resolution` section below). Deterministic date inference (`supply_date`, `service_period`, `doc_date`, hardened subject regex, `received_at`, GDrive scan date) acts only as a safety-net chain when the LLM didn't decide.
 
 **Code:**
-- [`invoice-worker.ts:596-637`](../claude-code/channels/invoice-worker.ts#L596) — `resolveCorrespondent()`: list → fuzzy match (via `fuzzy-match.ts`) → create if needed
-- [`invoice-worker.ts:640-720`](../claude-code/channels/invoice-worker.ts#L640) — `checkDuplicate()`: search by order_id + correspondent, compare amounts
-- [`invoice-worker.ts:722-804`](../claude-code/channels/invoice-worker.ts#L722) — `resolveTags()`: list → match → create missing
-- [`invoice-worker.ts:806-888`](../claude-code/channels/invoice-worker.ts#L806) — `uploadToPaperless()`: assemble args, call `post_document`
-- [`invoice-worker.ts:890`](../claude-code/channels/invoice-worker.ts#L890) — `buildTitle()`: title generation logic
+- [`paperless-adapter.ts`](../claude-code/channels/paperless-adapter.ts) — unified Paperless boundary (MCP + direct HTTP). All Paperless interactions in the worker route through this module.
+- [`paperless-adapter.ts:findCorrespondent / createCorrespondent`](../claude-code/channels/paperless-adapter.ts) — fuzzy match (Jaro-Winkler 0.85 via `fuzzy-match.ts`) then create if missing.
+- [`paperless-adapter.ts:searchDocumentsByCustomFieldAndCorrespondent`](../claude-code/channels/paperless-adapter.ts) — dedup search by order_id + correspondent.
+- [`paperless-adapter.ts:resolveTagIds / findDocumentTypeId / findStoragePathId`](../claude-code/channels/paperless-adapter.ts) — list-and-match against MCP / REST API.
+- [`paperless-adapter.ts:uploadDocument`](../claude-code/channels/paperless-adapter.ts) — direct HTTP multipart POST (bypasses paperless-mcp).
+- [`paperless-adapter.ts:patchDocument`](../claude-code/channels/paperless-adapter.ts) — force-refresh path (PATCH existing doc in place).
+- [`paperless-adapter.ts:waitForConsumption / setCustomFields`](../claude-code/channels/paperless-adapter.ts) — task polling + custom field PATCH after consumption.
+- [`invoice-worker.ts:executeInvoiceIntake`](../claude-code/channels/invoice-worker.ts) — orchestrates the steps; calls into the adapter for every Paperless operation.
+- [`invoice-pipeline.ts:buildTagNames / generateTitle`](../claude-code/channels/invoice-pipeline.ts) — pure pipeline functions (tag derivation rules table above; title priority order_id → subtitle → cleaned subject → fallback).
 
 ## UC-1.5: Telegram Notification
 

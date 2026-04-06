@@ -40,9 +40,9 @@ import {
 } from "./workflow-db";
 import { callMcpTool, extractJson, extractText } from "./mcp-client";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
+import { PaperlessAdapter } from "./paperless-adapter";
 import { readFileAsDownload } from "./download-helper";
 import { extractInvoiceLinks, type InvoiceLink } from "./invoice-links";
-import { findBestCorrespondentMatch } from "./fuzzy-match";
 import { formatNotification, type NotifyFn } from "./telegram-notify";
 import {
   buildTagNames,
@@ -174,6 +174,30 @@ const OUTLOOK_MCP_URL = process.env.OUTLOOK_MCP_URL ?? "http://outlook-mcp:8002/
 const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const GOOGLE_EMAIL = process.env.GMAIL_EMAIL ?? "";
 const PAPERLESS_MCP_URL = process.env.PAPERLESS_MCP_URL ?? "http://paperless-mcp:3000/mcp";
+
+// ── Paperless adapter (lazy singleton) ──────────────────────────────────
+//
+// The adapter unifies the two Paperless transports (paperless-mcp HTTP for
+// CRUD + direct REST API for upload/dedup/PATCH/tasks). It depends on the
+// PaperlessFieldRegistry which the worker receives per call, so the singleton
+// is rebuilt whenever the registry instance changes (e.g. between tests).
+let _paperlessAdapter: PaperlessAdapter | null = null;
+let _paperlessAdapterRegistry: PaperlessFieldRegistry | null = null;
+function getPaperlessAdapter(registry: PaperlessFieldRegistry): PaperlessAdapter {
+  if (_paperlessAdapter && _paperlessAdapterRegistry === registry) {
+    return _paperlessAdapter;
+  }
+  const paperlessUrl = process.env.PAPERLESS_URL;
+  if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
+  _paperlessAdapter = new PaperlessAdapter({
+    paperlessUrl,
+    paperlessToken: process.env.PAPERLESS_API_TOKEN ?? "",
+    paperlessMcpUrl: PAPERLESS_MCP_URL,
+    fieldRegistry: registry,
+  });
+  _paperlessAdapterRegistry = registry;
+  return _paperlessAdapter;
+}
 
 const tracer = getTracer("invoice-worker");
 const meter = getMeter("invoice-worker");
@@ -407,7 +431,7 @@ export async function executeInvoiceIntake(
 
       // Step 2: Resolve correspondent
       addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
-      const correspondent = await resolveCorrespondent(merged.vendor, logger);
+      const correspondent = await resolveCorrespondent(merged.vendor, logger, registry);
       addJobEvent(db, job.id, "step_completed", {
         step: "resolve_correspondent",
         correspondent,
@@ -479,14 +503,14 @@ export async function executeInvoiceIntake(
         { owner, doc_type: merged.doc_type, is_fuel: merged.is_fuel },
         monthTag,
       );
-      const tagIds = await resolveTags(allTagNames, logger);
+      const tagIds = await resolveTags(allTagNames, logger, registry);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
 
       // Step 5: Resolve document type
-      const documentTypeId = await resolveDocumentType(merged.doc_type, logger);
+      const documentTypeId = await resolveDocumentType(merged.doc_type, logger, registry);
 
       // Step 5b: Resolve storage path
-      const storagePathId = await resolveStoragePath(owner, merged.doc_type, logger);
+      const storagePathId = await resolveStoragePath(owner, merged.doc_type, logger, registry);
 
       // Step 6: Upload to Paperless — or PATCH the existing doc if force-refresh.
       addJobEvent(db, job.id, "step_started", { step: "upload" });
@@ -525,7 +549,7 @@ export async function executeInvoiceIntake(
           storagePathId,
           totalAmount: merged.total_amount,
           orderId: merged.order_id,
-        }, logger);
+        }, logger, registry);
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
           mode: "post",
@@ -881,39 +905,17 @@ interface CorrespondentInfo {
 async function resolveCorrespondent(
   vendor: string,
   logger: WorkerLogger,
+  registry: PaperlessFieldRegistry,
 ): Promise<CorrespondentInfo> {
-  return withSpan(tracer, "invoice-worker.resolve_correspondent", {
-    "correspondent.vendor": vendor,
-  }, async (span) => {
-    logger.log(`Resolving correspondent for vendor: ${vendor}`);
-
-    const listResult = await callMcpTool(PAPERLESS_MCP_URL, "list_correspondents", {});
-    const listText = extractText(listResult);
-    const parsed = JSON.parse(listText);
-    // Paperless MCP returns paginated object { results: [...] }, not a raw array
-    const correspondents = (Array.isArray(parsed) ? parsed : parsed.results ?? []) as Array<{ id: number; name: string }>;
-
-    // Fuzzy match (handles legal suffix spacing variants from LLM output)
-    const match = findBestCorrespondentMatch(vendor, correspondents);
-    if (match) {
-      logger.log(`Fuzzy matched "${vendor}" → "${match.name}" (score: ${match.score.toFixed(3)})`);
-      span.setAttribute("correspondent.id", match.id);
-      span.setAttribute("correspondent.name", match.name);
-      span.setAttribute("correspondent.match_score", match.score);
-      return { id: match.id, name: match.name };
-    }
-
-    // Create new correspondent
-    logger.log(`Creating new correspondent: ${vendor}`);
-    const createResult = await callMcpTool(PAPERLESS_MCP_URL, "create_correspondent", {
-      name: vendor,
-    });
-    const createText = extractText(createResult);
-    const created = JSON.parse(createText) as { id: number; name: string };
-    span.setAttribute("correspondent.id", created.id);
-    span.setAttribute("correspondent.name", created.name);
-    return { id: created.id, name: created.name };
-  });
+  logger.log(`Resolving correspondent for vendor: ${vendor}`);
+  const adapter = getPaperlessAdapter(registry);
+  const match = await adapter.findCorrespondent(vendor);
+  if (match) {
+    logger.log(`Fuzzy matched "${vendor}" → "${match.name}" (score: ${(match.score ?? 0).toFixed(3)})`);
+    return { id: match.id, name: match.name };
+  }
+  logger.log(`Creating new correspondent: ${vendor}`);
+  return adapter.createCorrespondent(vendor);
 }
 
 interface DedupeResult {
@@ -939,31 +941,12 @@ async function checkDuplicate(
     }
 
     logger.log(`Checking for duplicate: order_id=${classification.order_id}`);
-
-    // Search via direct Paperless API using custom_fields__icontains
-    // (paperless-mcp search_documents does full-text search which doesn't reliably find custom field values)
-    const paperlessUrl = process.env.PAPERLESS_URL;
-    if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
-    const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
-
-    const searchParams = new URLSearchParams({
-      custom_fields__icontains: classification.order_id,
-      correspondent__id: String(correspondent.id),
-      page_size: "10",
-    });
-
-    const response = await fetch(`${paperlessUrl}/api/documents/?${searchParams}`, {
-      headers: { "Authorization": `Token ${paperlessToken}` },
-    });
-
-    if (!response.ok) {
-      logger.log(`Warning: dedup search failed (${response.status}), skipping`);
-      span.setAttribute("dedup.outcome", "no_duplicate");
-      return null;
-    }
-
-    const data = await response.json() as { results: Array<{ id: number; title: string; custom_fields: Array<{ field: number; value: unknown }> }> };
-    const docs = data.results;
+    const adapter = getPaperlessAdapter(registry);
+    const docs = await adapter.searchDocumentsByCustomFieldAndCorrespondent(
+      classification.order_id,
+      correspondent.id,
+      logger,
+    );
 
     if (!docs.length) {
       span.setAttribute("dedup.outcome", "no_duplicate");
@@ -1008,57 +991,19 @@ async function checkDuplicate(
 async function resolveTags(
   tagNames: string[],
   logger: WorkerLogger,
+  registry: PaperlessFieldRegistry,
 ): Promise<number[]> {
-  if (!tagNames.length) return [];
-
-  return withSpan(tracer, "invoice-worker.resolve_tags", {
-    "tags.count": tagNames.length,
-  }, async (_span) => {
-    const listResult = await callMcpTool(PAPERLESS_MCP_URL, "list_tags", {});
-    const listText = extractText(listResult);
-    const parsedTags = JSON.parse(listText);
-    const tags = (Array.isArray(parsedTags) ? parsedTags : parsedTags.results ?? []) as Array<{ id: number; name: string }>;
-
-    const tagIds: number[] = [];
-    for (const name of tagNames) {
-      const match = tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
-      if (match) {
-        tagIds.push(match.id);
-      } else {
-        // Create tag if it doesn't exist (e.g., new month tag)
-        logger.log(`Creating tag: ${name}`);
-        const createResult = await callMcpTool(PAPERLESS_MCP_URL, "create_tag", { name });
-        const createText = extractText(createResult);
-        const created = JSON.parse(createText) as { id: number };
-        tagIds.push(created.id);
-      }
-    }
-
-    return tagIds;
-  });
+  return getPaperlessAdapter(registry).resolveTagIds(tagNames, logger);
 }
 
 async function resolveDocumentType(
   docType: string,
   logger: WorkerLogger,
+  registry: PaperlessFieldRegistry,
 ): Promise<number | undefined> {
   const paperlessTypeName = DOC_TYPE_TO_PAPERLESS[docType];
   if (!paperlessTypeName) return undefined;
-
-  try {
-    const listResult = await callMcpTool(PAPERLESS_MCP_URL, "list_document_types", {});
-    const listText = extractText(listResult);
-    const parsedTypes = JSON.parse(listText);
-    const types = (Array.isArray(parsedTypes) ? parsedTypes : parsedTypes.results ?? []) as Array<{ id: number; name: string }>;
-    const match = types.find(
-      (t) => t.name.toLowerCase() === paperlessTypeName.toLowerCase(),
-    );
-    return match?.id;
-  } catch {
-    // list_document_types may not exist on all paperless-mcp versions
-    logger.log(`Could not resolve document type: ${docType}`);
-    return undefined;
-  }
+  return getPaperlessAdapter(registry).findDocumentTypeId(paperlessTypeName, logger);
 }
 
 // Storage path name mapping: owner → bucket → Paperless storage path name
@@ -1088,6 +1033,7 @@ async function resolveStoragePath(
   owner: string,
   docType: string,
   logger: WorkerLogger,
+  registry: PaperlessFieldRegistry,
 ): Promise<number | undefined> {
   const paperlessType = DOC_TYPE_TO_PAPERLESS[docType] ?? "Document";
   const bucket = paperlessType === "Invoice" ? "invoices" : "documents";
@@ -1096,33 +1042,7 @@ async function resolveStoragePath(
     logger.log(`No storage path mapping for owner=${owner}, docType=${docType}`);
     return undefined;
   }
-
-  const paperlessUrl = process.env.PAPERLESS_URL;
-  if (!paperlessUrl) return undefined;
-  const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
-
-  try {
-    const response = await fetch(`${paperlessUrl}/api/storage_paths/`, {
-      headers: { Authorization: `Token ${paperlessToken}` },
-    });
-    if (!response.ok) {
-      logger.log(`Failed to fetch storage paths: ${response.status}`);
-      return undefined;
-    }
-
-    const data = (await response.json()) as { results: Array<{ id: number; name: string }> };
-    const paths = data.results ?? [];
-    const match = paths.find((p) => p.name.toLowerCase() === pathName.toLowerCase());
-    if (!match) {
-      logger.log(`Storage path not found: ${pathName}`);
-      return undefined;
-    }
-
-    return match.id;
-  } catch (err) {
-    logger.log(`Error resolving storage path: ${err}`);
-    return undefined;
-  }
+  return getPaperlessAdapter(registry).findStoragePathId(pathName, logger);
 }
 
 interface UploadParams {
@@ -1145,98 +1065,25 @@ interface UploadResult {
 async function uploadToPaperless(
   params: UploadParams,
   logger: WorkerLogger,
+  registry: PaperlessFieldRegistry,
 ): Promise<UploadResult> {
-  return withSpan(tracer, "invoice-worker.upload", {
-    "upload.title": params.title,
-    "upload.filename": params.file.filename,
-    "upload.correspondent_id": params.correspondentId,
-    "upload.tag_ids": params.tagIds.join(","),
-    "upload.document_type_id": params.documentTypeId ?? 0,
-    "upload.storage_path_id": params.storagePathId ?? 0,
-    "upload.total_amount": String(params.totalAmount ?? ""),
-    "upload.order_id": params.orderId ?? "",
-    "upload.file_size": params.file.content_base64.length,
-  }, async (span) => {
-    logger.log(`Uploading to Paperless: "${params.title}"`);
-
-    // Upload directly to Paperless API (bypasses paperless-mcp to avoid
-    // 413 Payload Too Large on base64-encoded files over ~200KB).
-    const paperlessUrl = process.env.PAPERLESS_URL;
-    if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
-    const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
-    const fileBuffer = Buffer.from(params.file.content_base64, "base64");
-
-    // Build multipart form data manually
-    const boundary = `----FormBoundary${Date.now()}`;
-    const parts: Buffer[] = [];
-
-    // File field
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${params.file.filename}"\r\nContent-Type: ${params.file.content_type}\r\n\r\n`
-    ));
-    parts.push(fileBuffer);
-    parts.push(Buffer.from("\r\n"));
-
-    // Title
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n${params.title}\r\n`
-    ));
-
-    // Correspondent
-    if (params.correspondentId) {
-      parts.push(Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="correspondent"\r\n\r\n${params.correspondentId}\r\n`
-      ));
-    }
-
-    // Document type
-    if (params.documentTypeId) {
-      parts.push(Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="document_type"\r\n\r\n${params.documentTypeId}\r\n`
-      ));
-    }
-
-    // Tags (one field per tag)
-    for (const tagId of params.tagIds) {
-      parts.push(Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="tags"\r\n\r\n${tagId}\r\n`
-      ));
-    }
-
-    // Storage path
-    if (params.storagePathId) {
-      parts.push(Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="storage_path"\r\n\r\n${params.storagePathId}\r\n`
-      ));
-    }
-
-    parts.push(Buffer.from(`--${boundary}--\r\n`));
-
-    const body = Buffer.concat(parts);
-
-    const response = await fetch(`${paperlessUrl}/api/documents/post_document/`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Token ${paperlessToken}`,
-        "Content-Type": `multipart/form-data; boundary=${boundary}`,
-      },
-      body,
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Paperless upload failed (${response.status}): ${errText.slice(0, 200)}`);
-    }
-
-    const resultText = await response.text();
-    logger.log(`Upload response: ${resultText}`);
-
-    // post_document returns a task UUID string (e.g. "abc-123-def")
-    const taskUuid = resultText.replace(/^["'\s]+|["'\s]+$/g, "");
-
-    span.setAttribute("upload.task_uuid", taskUuid);
-    return { task_uuid: taskUuid, title: params.title };
-  });
+  const adapter = getPaperlessAdapter(registry);
+  const r = await adapter.uploadDocument(
+    {
+      filename: params.file.filename,
+      content_base64: params.file.content_base64,
+      content_type: params.file.content_type,
+    },
+    {
+      title: params.title,
+      correspondentId: params.correspondentId,
+      tagIds: params.tagIds,
+      documentTypeId: params.documentTypeId,
+      storagePathId: params.storagePathId,
+    },
+    logger,
+  );
+  return { task_uuid: r.task_uuid, title: params.title };
 }
 
 interface PatchParams {
@@ -1266,57 +1113,26 @@ async function patchPaperlessDocument(
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<{ document_id: number; title: string }> {
-  return withSpan(tracer, "invoice-worker.patch", {
-    "patch.document_id": params.documentId,
-    "patch.title": params.title,
-    "patch.correspondent_id": params.correspondentId,
-    "patch.tag_ids": params.tagIds.join(","),
-    "patch.document_type_id": params.documentTypeId ?? 0,
-    "patch.storage_path_id": params.storagePathId ?? 0,
-    "patch.total_amount": String(params.totalAmount ?? ""),
-    "patch.order_id": params.orderId ?? "",
-  }, async (span) => {
-    logger.log(`Force-refresh: patching Paperless doc #${params.documentId} with new metadata "${params.title}"`);
-
-    const paperlessUrl = process.env.PAPERLESS_URL;
-    if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
-    const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
-
-    // Build custom_fields array from the same registry the upload path uses.
-    const customFields: Array<{ field: number; value: unknown }> = [];
-    if (params.totalAmount != null) {
-      customFields.push({ field: registry.getFieldId("total_amount"), value: params.totalAmount });
-    }
-    if (params.orderId) {
-      customFields.push({ field: registry.getFieldId("order_id"), value: params.orderId });
-    }
-
-    const body: Record<string, unknown> = {
+  // Build custom_fields array from the same registry the upload path uses.
+  const customFields: Array<{ field: number; value: unknown }> = [];
+  if (params.totalAmount != null) {
+    customFields.push({ field: registry.getFieldId("total_amount"), value: params.totalAmount });
+  }
+  if (params.orderId) {
+    customFields.push({ field: registry.getFieldId("order_id"), value: params.orderId });
+  }
+  return getPaperlessAdapter(registry).patchDocument(
+    params.documentId,
+    {
       title: params.title,
-      correspondent: params.correspondentId,
-      tags: params.tagIds,
-    };
-    if (params.documentTypeId) body.document_type = params.documentTypeId;
-    if (params.storagePathId) body.storage_path = params.storagePathId;
-    if (customFields.length > 0) body.custom_fields = customFields;
-
-    const response = await fetch(`${paperlessUrl}/api/documents/${params.documentId}/`, {
-      method: "PATCH",
-      headers: {
-        "Authorization": `Token ${paperlessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Paperless PATCH failed (${response.status}): ${errText.slice(0, 200)}`);
-    }
-
-    span.setAttribute("patch.success", true);
-    return { document_id: params.documentId, title: params.title };
-  });
+      correspondentId: params.correspondentId,
+      tagIds: params.tagIds,
+      documentTypeId: params.documentTypeId,
+      storagePathId: params.storagePathId,
+      customFields,
+    },
+    logger,
+  );
 }
 
 // ── Scan intake (GDrive) ──────────────────────────────────────────────
@@ -1457,7 +1273,7 @@ export async function executeScanIntake(
 
       // Step 3: Resolve correspondent
       addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
-      const correspondent = await resolveCorrespondent(classification.vendor, logger);
+      const correspondent = await resolveCorrespondent(classification.vendor, logger, registry);
       addJobEvent(db, job.id, "step_completed", {
         step: "resolve_correspondent",
         correspondent,
@@ -1510,12 +1326,12 @@ export async function executeScanIntake(
         { owner: scanTagOwner, doc_type: classification.doc_type, is_fuel: classification.is_fuel },
         resolvedMonthTag,
       );
-      const tagIds = await resolveTags(allTagNames, logger);
+      const tagIds = await resolveTags(allTagNames, logger, registry);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
 
       // Step 6: Resolve document type + storage path
-      const documentTypeId = await resolveDocumentType(classification.doc_type, logger);
-      const storagePathId = await resolveStoragePath(scanTagOwner, classification.doc_type, logger);
+      const documentTypeId = await resolveDocumentType(classification.doc_type, logger, registry);
+      const storagePathId = await resolveStoragePath(scanTagOwner, classification.doc_type, logger, registry);
 
       // Step 7: Upload to Paperless — or PATCH the existing doc if force-refresh.
       addJobEvent(db, job.id, "step_started", { step: "upload" });
@@ -1547,7 +1363,7 @@ export async function executeScanIntake(
           title, file,
           correspondentId: correspondent.id, tagIds, documentTypeId, storagePathId,
           totalAmount: classification.total_amount, orderId: classification.order_id,
-        }, logger);
+        }, logger, registry);
         addJobEvent(db, job.id, "step_completed", { step: "upload", mode: "post", ...uploadResult });
 
         // Step 8: Set custom fields (post path only — patch path already set them)
@@ -1734,41 +1550,14 @@ async function setDocumentCustomFields(
       return { error: "no task UUID" };
     }
 
-    const paperlessUrl = process.env.PAPERLESS_URL;
-    if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
-    const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
+    const adapter = getPaperlessAdapter(registry);
 
     try {
-      // Poll Paperless task API until consumption completes and returns the document ID
-      let docId: number | undefined;
-      for (let attempt = 0; attempt < 12; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-        const taskRes = await fetch(`${paperlessUrl}/api/tasks/?task_id=${taskUuid}`, {
-          headers: { "Authorization": `Token ${paperlessToken}` },
-        });
-        if (!taskRes.ok) continue;
-        const tasks = await taskRes.json() as Array<{ status: string; result?: string; related_document?: string }>;
-        const task = tasks[0];
-        if (!task) continue;
-
-        if (task.status === "SUCCESS") {
-          // Extract document ID from result string: "Success. New document id 379 created"
-          const idMatch = task.result?.match(/document id (\d+)/i);
-          if (idMatch) docId = parseInt(idMatch[1], 10);
-          // Also check related_document field
-          if (!docId && task.related_document) {
-            docId = parseInt(task.related_document, 10) || undefined;
-          }
-          // Wait for Paperless to finish all post-consumption processing (OCR, classification)
-          // before PATCHing custom fields — otherwise Paperless may overwrite them
-          await new Promise((resolve) => setTimeout(resolve, 10000));
-          break;
-        } else if (task.status === "FAILURE") {
-          logger.log(`Warning: Paperless consumption failed: ${task.result?.slice(0, 200)}`);
-          return { error: `consumption failed: ${task.result?.slice(0, 100)}` };
-        }
-        logger.log(`Waiting for Paperless consumption (attempt ${attempt + 1}/12, status: ${task.status})`);
+      const consumed = await adapter.waitForConsumption(taskUuid, logger);
+      if (consumed.status === "FAILURE") {
+        return { error: `consumption failed: ${consumed.result?.slice(0, 100)}` };
       }
+      const docId = consumed.doc_id;
       if (!docId) {
         logger.log(`Warning: could not resolve document ID from task ${taskUuid}`);
         return { error: `could not resolve doc ID from task ${taskUuid}` };
@@ -1784,35 +1573,13 @@ async function setDocumentCustomFields(
       if (orderId) {
         customFields.push({ field: registry.getFieldId("order_id"), value: orderId });
       }
-
       if (customFields.length === 0) return { doc_id: docId, error: "no fields to set" };
 
-      const patchRes = await fetch(`${paperlessUrl}/api/documents/${docId}/`, {
-        method: "PATCH",
-        headers: {
-          "Authorization": `Token ${paperlessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ custom_fields: customFields }),
-      });
-
-      if (!patchRes.ok) {
-        const errText = await patchRes.text();
-        logger.log(`Warning: failed to set custom fields on doc #${docId}: ${errText.slice(0, 200)}`);
-        return { doc_id: docId, fields_set: customFields, error: `PATCH failed: ${errText.slice(0, 100)}` };
+      const result = await adapter.setCustomFields(docId, customFields, logger);
+      if (!result.ok) {
+        return { doc_id: docId, fields_set: customFields, error: result.error };
       }
-
-      // Verify the PATCH actually stuck
-      const verifyRes = await fetch(`${paperlessUrl}/api/documents/${docId}/`, {
-        headers: { "Authorization": `Token ${paperlessToken}` },
-      });
-      let verified: unknown;
-      if (verifyRes.ok) {
-        const verifyDoc = await verifyRes.json() as { custom_fields?: Array<{ field: number; value: unknown }> };
-        verified = verifyDoc.custom_fields;
-        logger.log(`Set custom fields on doc #${docId}: ${JSON.stringify(customFields)} — verified: ${JSON.stringify(verified)}`);
-      }
-      return { doc_id: docId, fields_set: customFields, verified };
+      return { doc_id: docId, fields_set: customFields, verified: result.verified };
     } catch (e: any) {
       logger.log(`Warning: failed to set custom fields: ${e.message}`);
       return { error: e.message };
