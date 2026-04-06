@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { executeInvoiceIntake, executeScanIntake, type InvoiceIntakeInput, type InvoiceClassification, type ScanIntakeInput, type ScanClassification } from "./invoice-worker";
+import { executeInvoiceIntake, executeScanIntake, type InvoiceIntakeInput, type InvoiceClassification, type ScanIntakeInput, type ScanClassification } from "./invoice/intake-worker";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 import {

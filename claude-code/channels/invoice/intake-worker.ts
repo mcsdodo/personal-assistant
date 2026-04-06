@@ -22,8 +22,8 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 
-import { getTracer, getMeter, withSpan, SpanStatusCode } from "./tracing";
-import type { Span } from "./tracing";
+import { getTracer, getMeter, SpanStatusCode } from "../tracing";
+import type { Span } from "../tracing";
 
 import {
   addJobEvent,
@@ -32,23 +32,35 @@ import {
   getJobEvents,
   parseJobJson,
   recordDownloadedFile,
-  requestClassification,
   requestJobApproval,
   scheduleRetry,
   shouldRetry,
   type JobRow,
-} from "./workflow-db";
-import { callMcpTool, extractText } from "./mcp-client";
-import type { PaperlessFieldRegistry } from "./paperless-fields";
-import { PaperlessAdapter } from "./paperless-adapter";
+} from "../workflow-db";
+import type { PaperlessFieldRegistry } from "../paperless-fields";
+import { PaperlessAdapter, type CorrespondentInfo } from "../paperless-adapter";
 import {
   downloadInvoice as downloadInvoiceImpl,
   downloadFromGdrive as downloadFromGdriveImpl,
   type DownloadedFile as ServiceDownloadedFile,
-} from "./invoice/download-service";
-import { checkDuplicate as checkDuplicateImpl, type DedupeResult } from "./invoice/dedup-service";
-import { readFileAsDownload } from "./download-helper";
-import { formatNotification, type NotifyFn } from "./telegram-notify";
+} from "./download-service";
+import { checkDuplicate as checkDuplicateImpl, type DedupeResult } from "./dedup-service";
+import { parkForClassification } from "./classification-state";
+import {
+  buildScanTitle,
+  moveGdriveFile as moveGdriveFileImpl,
+  patchExistingDocument,
+  resolveCorrespondent as resolveCorrespondentImpl,
+  resolveDocumentTypeId,
+  resolveStoragePathId,
+  resolveTagIds,
+  setDocumentCustomFields as setDocumentCustomFieldsImpl,
+  uploadToPaperless as uploadToPaperlessImpl,
+  type CustomFieldResult,
+  type UploadResult,
+} from "./postprocess-service";
+import { readFileAsDownload } from "../download-helper";
+import { formatNotification, type NotifyFn } from "../telegram-notify";
 import {
   buildTagNames,
   generateTitle,
@@ -56,12 +68,12 @@ import {
   mergeClassifications,
   parseServicePeriodStart,
   resolveMonthTag,
-} from "./invoice-pipeline";
+} from "../invoice-pipeline";
 import {
   validateInvoiceIntakeInput,
   validateScanIntakeInput,
   WorkflowSchemaError,
-} from "./workflow-schemas";
+} from "../workflow-schemas";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -278,26 +290,21 @@ export async function executeInvoiceIntake(
       // Step 0: Email classification via channel
       const cachedEmailClass = completedSteps.get("classify_email");
       if (!cachedEmailClass?.result) {
-        // Park the job and request email classification from Claude
-        requestClassification(db, job.id, "classify_email", {
-          email_source: input.email_source,
-          message_id: input.message_id,
-        });
-        if (channel) {
-          await channel.notification({
-            method: "notifications/claude/channel",
-            params: {
-              content: `Classification request: fetch the email, run email-classifier, and call submit_classification. Include subject and received_at in the result.`,
-              meta: {
-                event_type: "classify_email",
-                job_id: job.id,
-                email_source: input.email_source,
-                message_id: input.message_id,
-              },
-            },
-          });
-        }
-        logger.log(`Job ${job.id} parked for email classification`);
+        await parkForClassification(db, job.id, {
+          step: "classify_email",
+          parkedPayload: {
+            email_source: input.email_source,
+            message_id: input.message_id,
+          },
+          channel,
+          notificationContent: `Classification request: fetch the email, run email-classifier, and call submit_classification. Include subject and received_at in the result.`,
+          notificationMeta: {
+            event_type: "classify_email",
+            job_id: job.id,
+            email_source: input.email_source,
+            message_id: input.message_id,
+          },
+        }, logger);
         outcome = "awaiting_classification";
         span.setAttribute("invoice.outcome", "awaiting_classification");
         span.setStatus({ code: SpanStatusCode.OK });
@@ -374,22 +381,18 @@ export async function executeInvoiceIntake(
       // Step 1.5: Document classification via channel (non-blocking)
       const cachedDocClassification = completedSteps.get("classify_document");
       if (!cachedDocClassification?.result) {
-        requestClassification(db, job.id, "classify_document", { file_path: filePath });
-        if (channel) {
-          await channel.notification({
-            method: "notifications/claude/channel",
-            params: {
-              content: `Classification request: run document-classifier on the downloaded file and call submit_classification.`,
-              meta: {
-                event_type: "classify_document",
-                job_id: job.id,
-                file_path: filePath,
-                vendor: classification.vendor,
-              },
-            },
-          });
-        }
-        logger.log(`Job ${job.id} parked for document classification`);
+        await parkForClassification(db, job.id, {
+          step: "classify_document",
+          parkedPayload: { file_path: filePath },
+          channel,
+          notificationContent: `Classification request: run document-classifier on the downloaded file and call submit_classification.`,
+          notificationMeta: {
+            event_type: "classify_document",
+            job_id: job.id,
+            file_path: filePath,
+            vendor: classification.vendor,
+          },
+        }, logger);
         outcome = "awaiting_classification";
         span.setAttribute("invoice.outcome", "awaiting_classification");
         span.setStatus({ code: SpanStatusCode.OK });
@@ -668,27 +671,17 @@ function downloadInvoice(
   );
 }
 
-// ── Paperless operations ───────────────────────────────────────────────
+// ── Paperless operation wrappers ───────────────────────────────────────
+// All Paperless interaction lives in postprocess-service / paperless-adapter.
+// These thin wrappers preserve the orchestrator call shape (no need to thread
+// the adapter through every step site).
 
-interface CorrespondentInfo {
-  id: number;
-  name: string;
-}
-
-async function resolveCorrespondent(
+function resolveCorrespondent(
   vendor: string,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<CorrespondentInfo> {
-  logger.log(`Resolving correspondent for vendor: ${vendor}`);
-  const adapter = getPaperlessAdapter(registry);
-  const match = await adapter.findCorrespondent(vendor);
-  if (match) {
-    logger.log(`Fuzzy matched "${vendor}" → "${match.name}" (score: ${(match.score ?? 0).toFixed(3)})`);
-    return { id: match.id, name: match.name };
-  }
-  logger.log(`Creating new correspondent: ${vendor}`);
-  return adapter.createCorrespondent(vendor);
+  return resolveCorrespondentImpl(vendor, getPaperlessAdapter(registry), logger);
 }
 
 function checkDuplicate(
@@ -700,61 +693,29 @@ function checkDuplicate(
   return checkDuplicateImpl(classification, correspondent, getPaperlessAdapter(registry), registry, logger);
 }
 
-async function resolveTags(
+function resolveTags(
   tagNames: string[],
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<number[]> {
-  return getPaperlessAdapter(registry).resolveTagIds(tagNames, logger);
+  return resolveTagIds(tagNames, getPaperlessAdapter(registry), logger);
 }
 
-async function resolveDocumentType(
+function resolveDocumentType(
   docType: string,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<number | undefined> {
-  const paperlessTypeName = DOC_TYPE_TO_PAPERLESS[docType];
-  if (!paperlessTypeName) return undefined;
-  return getPaperlessAdapter(registry).findDocumentTypeId(paperlessTypeName, logger);
+  return resolveDocumentTypeId(docType, getPaperlessAdapter(registry), logger);
 }
 
-// Storage path name mapping: owner → bucket → Paperless storage path name
-const STORAGE_PATH_NAMES: Record<string, Record<string, string>> = {
-  techlab: {
-    invoices: "Techlab Invoices",
-    documents: "Techlab Documents",
-  },
-  personal: {
-    invoices: "Personal Invoices",
-    documents: "Personal Documents",
-  },
-};
-
-// Reuse the typeMap for bucket resolution (Invoice → invoices, Document → documents)
-const DOC_TYPE_TO_PAPERLESS: Record<string, string> = {
-  invoice: "Invoice",
-  receipt: "Invoice",
-  credit_note: "Invoice",
-  account_statement: "Document",
-  document: "Document",
-  statement: "Document",
-  other: "Document",
-};
-
-async function resolveStoragePath(
+function resolveStoragePath(
   owner: string,
   docType: string,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<number | undefined> {
-  const paperlessType = DOC_TYPE_TO_PAPERLESS[docType] ?? "Document";
-  const bucket = paperlessType === "Invoice" ? "invoices" : "documents";
-  const pathName = STORAGE_PATH_NAMES[owner]?.[bucket];
-  if (!pathName) {
-    logger.log(`No storage path mapping for owner=${owner}, docType=${docType}`);
-    return undefined;
-  }
-  return getPaperlessAdapter(registry).findStoragePathId(pathName, logger);
+  return resolveStoragePathId(owner, docType, getPaperlessAdapter(registry), logger);
 }
 
 interface UploadParams {
@@ -768,34 +729,23 @@ interface UploadParams {
   orderId?: string | null;
 }
 
-interface UploadResult {
-  document_id?: number;
-  task_uuid?: string;
-  title: string;
-}
-
-async function uploadToPaperless(
+function uploadToPaperless(
   params: UploadParams,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<UploadResult> {
-  const adapter = getPaperlessAdapter(registry);
-  const r = await adapter.uploadDocument(
-    {
-      filename: params.file.filename,
-      content_base64: params.file.content_base64,
-      content_type: params.file.content_type,
-    },
+  return uploadToPaperlessImpl(
     {
       title: params.title,
+      file: params.file,
       correspondentId: params.correspondentId,
       tagIds: params.tagIds,
       documentTypeId: params.documentTypeId,
       storagePathId: params.storagePathId,
     },
+    getPaperlessAdapter(registry),
     logger,
   );
-  return { task_uuid: r.task_uuid, title: params.title };
 }
 
 interface PatchParams {
@@ -809,42 +759,12 @@ interface PatchParams {
   orderId?: string | null;
 }
 
-/**
- * PATCH an existing Paperless document with fresh metadata. Used by the
- * force-refresh path: when the operator explicitly asks to reprocess a doc
- * that already exists in Paperless, we re-derive title/tags/correspondent/etc.
- * from the new pipeline run and patch the existing doc in place — preserving
- * the doc id, the original PDF, OCR, page count, and thumbnail.
- *
- * Single PATCH request hits all metadata at once: title, correspondent,
- * document_type, tags, storage_path, custom_fields. The custom_fields array
- * is replaced wholesale, which is what we want — fresh values overwrite stale.
- */
-async function patchPaperlessDocument(
+function patchPaperlessDocument(
   params: PatchParams,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<{ document_id: number; title: string }> {
-  // Build custom_fields array from the same registry the upload path uses.
-  const customFields: Array<{ field: number; value: unknown }> = [];
-  if (params.totalAmount != null) {
-    customFields.push({ field: registry.getFieldId("total_amount"), value: params.totalAmount });
-  }
-  if (params.orderId) {
-    customFields.push({ field: registry.getFieldId("order_id"), value: params.orderId });
-  }
-  return getPaperlessAdapter(registry).patchDocument(
-    params.documentId,
-    {
-      title: params.title,
-      correspondentId: params.correspondentId,
-      tagIds: params.tagIds,
-      documentTypeId: params.documentTypeId,
-      storagePathId: params.storagePathId,
-      customFields,
-    },
-    logger,
-  );
+  return patchExistingDocument(params, getPaperlessAdapter(registry), registry, logger);
 }
 
 // ── Scan intake (GDrive) ──────────────────────────────────────────────
@@ -934,22 +854,18 @@ export async function executeScanIntake(
       // Step 2: Document classification via channel
       const cachedDocClassification = completedSteps.get("classify_document");
       if (!cachedDocClassification?.result) {
-        requestClassification(db, job.id, "classify_document", { file_path: filePath });
-        if (channel) {
-          await channel.notification({
-            method: "notifications/claude/channel",
-            params: {
-              content: `Classification request: run document-classifier on the scanned file and call submit_classification.`,
-              meta: {
-                event_type: "classify_document",
-                job_id: job.id,
-                file_path: filePath,
-                source: "gdrive",
-              },
-            },
-          });
-        }
-        logger.log(`Job ${job.id} parked for document classification`);
+        await parkForClassification(db, job.id, {
+          step: "classify_document",
+          parkedPayload: { file_path: filePath },
+          channel,
+          notificationContent: `Classification request: run document-classifier on the scanned file and call submit_classification.`,
+          notificationMeta: {
+            event_type: "classify_document",
+            job_id: job.id,
+            file_path: filePath,
+            source: "gdrive",
+          },
+        }, logger);
         outcome = "awaiting_classification";
         span.setAttribute("invoice.outcome", "awaiting_classification");
         span.setStatus({ code: SpanStatusCode.OK });
@@ -1158,26 +1074,6 @@ export async function executeScanIntake(
   });
 }
 
-function buildScanTitle(
-  vendor: string,
-  orderId: string | null | undefined,
-  subtitle: string | null | undefined,
-  filename: string | undefined,
-): string {
-  if (orderId) {
-    return `${vendor} - ${orderId}`;
-  }
-  if (subtitle) {
-    return `${vendor} - ${subtitle}`;
-  }
-  if (filename) {
-    // Strip extension and use as title context
-    const cleaned = filename.replace(/\.[^.]+$/, "").trim().slice(0, 80);
-    return `${vendor} - ${cleaned}`;
-  }
-  return `${vendor} - scan`;
-}
-
 // ── GDrive helpers ────────────────────────────────────────────────────
 
 function downloadFromGdrive(
@@ -1188,144 +1084,28 @@ function downloadFromGdrive(
   return downloadFromGdriveImpl(fileId, filename, GMAIL_MCP_URL, GOOGLE_EMAIL, logger);
 }
 
-interface CustomFieldResult {
-  doc_id?: number;
-  fields_set?: Array<{ field: number; value: unknown }>;
-  verified?: unknown;
-  error?: string;
-}
-
-async function setDocumentCustomFields(
+function setDocumentCustomFields(
   taskUuid: string | undefined,
   totalAmount: number | null | undefined,
   orderId: string | null | undefined,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<CustomFieldResult> {
-  return withSpan(tracer, "invoice-worker.set_fields", {
-    "fields.total_amount": String(totalAmount ?? ""),
-    "fields.order_id": orderId ?? "",
-    "fields.task_uuid": taskUuid ?? "",
-  }, async (span) => {
-    if (!taskUuid) {
-      logger.log("Warning: no task UUID from upload, cannot set custom fields");
-      return { error: "no task UUID" };
-    }
-
-    const adapter = getPaperlessAdapter(registry);
-
-    try {
-      const consumed = await adapter.waitForConsumption(taskUuid, logger);
-      if (consumed.status === "FAILURE") {
-        return { error: `consumption failed: ${consumed.result?.slice(0, 100)}` };
-      }
-      const docId = consumed.doc_id;
-      if (!docId) {
-        logger.log(`Warning: could not resolve document ID from task ${taskUuid}`);
-        return { error: `could not resolve doc ID from task ${taskUuid}` };
-      }
-
-      span.setAttribute("fields.doc_id", docId);
-
-      // Build custom_fields array for PATCH
-      const customFields: Array<{ field: number; value: unknown }> = [];
-      if (totalAmount != null) {
-        customFields.push({ field: registry.getFieldId("total_amount"), value: totalAmount });
-      }
-      if (orderId) {
-        customFields.push({ field: registry.getFieldId("order_id"), value: orderId });
-      }
-      if (customFields.length === 0) return { doc_id: docId, error: "no fields to set" };
-
-      const result = await adapter.setCustomFields(docId, customFields, logger);
-      if (!result.ok) {
-        return { doc_id: docId, fields_set: customFields, error: result.error };
-      }
-      return { doc_id: docId, fields_set: customFields, verified: result.verified };
-    } catch (e: any) {
-      logger.log(`Warning: failed to set custom fields: ${e.message}`);
-      return { error: e.message };
-    }
-  });
+  return setDocumentCustomFieldsImpl(
+    taskUuid,
+    totalAmount,
+    orderId,
+    getPaperlessAdapter(registry),
+    registry,
+    logger,
+  );
 }
 
-function extractDriveFolderId(text: string): string | undefined {
-  try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed[0].id ?? parsed[0].fileId;
-    }
-    if (typeof parsed === "object" && parsed !== null) {
-      return parsed.id ?? parsed.fileId;
-    }
-  } catch {
-    const idMatch = text.match(/ID:\s*([^,\s)]+)/);
-    if (idMatch) return idMatch[1].trim();
-  }
-  return undefined;
-}
-
-async function moveGdriveFile(
+function moveGdriveFile(
   fileId: string,
   targetFolder: string,
   watchFolder: string,
   logger: WorkerLogger,
 ): Promise<void> {
-  return withSpan(tracer, "invoice-worker.move_file", {
-    "gdrive.file_id": fileId,
-    "gdrive.target_folder": targetFolder,
-    "gdrive.watch_folder": watchFolder,
-  }, async (_span) => {
-    try {
-      // Resolve watch folder (level2) ID — the parent where processed/errors subfolders live
-      const watchFolderLeaf = watchFolder.split("/").pop()!;
-      const watchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
-        query: `name = '${watchFolderLeaf}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-        user_google_email: GOOGLE_EMAIL,
-      });
-      const watchText = extractText(watchResult);
-      const watchFolderId = watchText ? extractDriveFolderId(watchText) : undefined;
-
-      // Resolve target subfolder (e.g. "processed") within the watch folder
-      let targetFolderId: string | undefined;
-      if (watchFolderId) {
-        const searchResult = await callMcpTool(GMAIL_MCP_URL, "search_drive_files", {
-          query: `name = '${targetFolder}' and '${watchFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-          user_google_email: GOOGLE_EMAIL,
-        });
-        const searchText = extractText(searchResult);
-        if (searchText) {
-          targetFolderId = extractDriveFolderId(searchText);
-        }
-      }
-
-      // Create target folder if it doesn't exist
-      if (!targetFolderId && watchFolderId) {
-        logger.log(`Creating folder "${targetFolder}" in ${watchFolder}`);
-        const createResult = await callMcpTool(GMAIL_MCP_URL, "create_drive_folder", {
-          name: targetFolder,
-          parent_id: watchFolderId,
-          user_google_email: GOOGLE_EMAIL,
-        });
-        const createText = extractText(createResult);
-        if (createText) targetFolderId = extractDriveFolderId(createText);
-      }
-
-      if (!targetFolderId) {
-        logger.log(`Warning: could not find or create folder "${targetFolder}" in ${watchFolder}, skipping move`);
-        return;
-      }
-
-      await callMcpTool(GMAIL_MCP_URL, "update_drive_file", {
-        file_id: fileId,
-        add_parents: targetFolderId,
-        remove_parents: watchFolderId ?? undefined,
-        user_google_email: GOOGLE_EMAIL,
-      });
-      logger.log(`Moved file ${fileId} to ${watchFolder}/${targetFolder}/`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.log(`Warning: failed to move GDrive file ${fileId} to ${watchFolder}/${targetFolder}/: ${message}`);
-    }
-  });
+  return moveGdriveFileImpl(fileId, targetFolder, watchFolder, GMAIL_MCP_URL, GOOGLE_EMAIL, logger);
 }

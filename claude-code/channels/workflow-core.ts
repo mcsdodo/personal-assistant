@@ -13,7 +13,7 @@ import {
   shouldRetry,
   type JobRow,
 } from "./workflow-db";
-import { executeInvoiceIntake, executeScanIntake } from "./invoice-worker";
+import { executeInvoiceIntake, executeScanIntake } from "./invoice/intake-worker";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
