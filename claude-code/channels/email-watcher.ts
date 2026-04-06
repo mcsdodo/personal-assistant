@@ -141,8 +141,14 @@ function registerMetrics(emailDb: Database, wfDb: Database): void {
     const rows = wfDb
       .query("SELECT workflow_type, COUNT(*) AS count FROM jobs WHERE state NOT IN ('completed', 'failed') GROUP BY workflow_type")
       .all() as Array<{ workflow_type: string; count: number }>;
+    // Always observe both workflow types (including zero) so Prometheus sees
+    // fresh samples instead of keeping stale values from earlier exports.
+    const counts: Record<string, number> = { invoice_intake: 0, scan_intake: 0 };
     for (const row of rows) {
-      gauge.observe(row.count, { type: row.workflow_type });
+      counts[row.workflow_type] = row.count;
+    }
+    for (const [type, count] of Object.entries(counts)) {
+      gauge.observe(count, { type });
     }
   });
 }
