@@ -14,9 +14,14 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Database } from "bun:sqlite";
+
+import {
+  createManagedMcpClient,
+  startHealthServer as runtimeStartHealthServer,
+  startPollLoop,
+} from "./watcher-runtime";
 
 import {
   openDb,
@@ -155,68 +160,55 @@ function registerMetrics(emailDb: Database, wfDb: Database): void {
 }
 
 function startHealthServer(emailDb: Database): void {
-  Bun.serve({
+  runtimeStartHealthServer({
     port: METRICS_PORT,
-    fetch(req) {
-      const url = new URL(req.url);
-      if (url.pathname === "/health") {
-        try {
-          emailDb.query("SELECT 1").get();
-          const staleMs = Date.now() - lastSuccessfulPollAt;
-          const maxStaleMs = POLL_INTERVAL_MS * HEALTH_STALE_MULTIPLIER;
-          if (staleMs > maxStaleMs) {
-            return new Response(`stale: last poll ${Math.round(staleMs / 1000)}s ago`, { status: 503 });
-          }
-          return new Response("ok", { status: 200 });
-        } catch {
-          return new Response("db error", { status: 503 });
-        }
-      }
-      return new Response("not found", { status: 404 });
-    },
+    db: emailDb,
+    getStaleMs: () => Date.now() - lastSuccessfulPollAt,
+    maxStaleMs: POLL_INTERVAL_MS * HEALTH_STALE_MULTIPLIER,
+    logger: { log },
+    name: "email-watcher",
   });
-  log(`Health server listening on :${METRICS_PORT} (/health)`);
 }
 
 // ---------------------------------------------------------------------------
 // MCP Client helpers
 // ---------------------------------------------------------------------------
 
-let gmailClient: Client | null = null;
-let outlookClient: Client | null = null;
 let lastSuccessfulPollAt: number = Date.now();
 
 const catchupQueue: Map<string, EmailInfo[]> = new Map();
 const awaitingFirstStart: Set<string> = new Set();
 
-async function getGmailClient(): Promise<Client> {
-  if (gmailClient) return gmailClient;
+const gmailClientWrapper = createManagedMcpClient({
+  name: "email-watcher-gmail",
+  version: "0.0.1",
+  url: GMAIL_MCP_URL,
+  logger: { log },
+  connectMessage: "Connected to gmail-mcp",
+});
 
-  const client = new Client({ name: "email-watcher-gmail", version: "0.0.1" });
-  const transport = new StreamableHTTPClientTransport(new URL(GMAIL_MCP_URL));
-  await client.connect(transport);
-  gmailClient = client;
-  log("Connected to gmail-mcp");
-  return client;
+const outlookClientWrapper = createManagedMcpClient({
+  name: "email-watcher-outlook",
+  version: "0.0.1",
+  url: OUTLOOK_MCP_URL,
+  logger: { log },
+  connectMessage: "Connected to outlook-mcp",
+});
+
+async function getGmailClient(): Promise<Client> {
+  return gmailClientWrapper.get();
 }
 
 async function getOutlookClient(): Promise<Client> {
-  if (outlookClient) return outlookClient;
-
-  const client = new Client({ name: "email-watcher-outlook", version: "0.0.1" });
-  const transport = new StreamableHTTPClientTransport(new URL(OUTLOOK_MCP_URL));
-  await client.connect(transport);
-  outlookClient = client;
-  log("Connected to outlook-mcp");
-  return client;
+  return outlookClientWrapper.get();
 }
 
 export function resetGmailClient(): void {
-  gmailClient = null;
+  gmailClientWrapper.reset();
 }
 
 export function resetOutlookClient(): void {
-  outlookClient = null;
+  outlookClientWrapper.reset();
 }
 
 // parseToolResult, extractGmailIds, parseGmailEmails imported from ./email-watcher-utils
@@ -787,21 +779,14 @@ async function main(): Promise<void> {
     `poll=${POLL_INTERVAL_MS}ms, db=${DB_PATH}`
   );
 
-  // 6. Run first poll cycle
-  try {
-    await pollCycle(db, mcp);
-  } catch (e: any) {
-    log(`First poll cycle error: ${e.message}`);
-  }
-
-  // 7. Start interval timer
-  setInterval(async () => {
-    try {
-      await pollCycle(db, mcp);
-    } catch (e: any) {
-      log(`Poll cycle error: ${e.message}`);
-    }
-  }, POLL_INTERVAL_MS);
+  // 6. Run first poll cycle + start interval timer (managed by watcher-runtime)
+  await startPollLoop({
+    name: "email-watcher",
+    intervalMs: POLL_INTERVAL_MS,
+    poll: () => pollCycle(db, mcp),
+    logger: { log },
+    runFirstCycleImmediately: true,
+  });
 }
 
 if (import.meta.main) {

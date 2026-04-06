@@ -15,8 +15,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Database } from "bun:sqlite";
 import {
   openDb,
@@ -24,6 +23,12 @@ import {
   fileExists,
   getRecentFiles,
 } from "./gdrive-db";
+
+import {
+  createManagedMcpClient,
+  startHealthServer as runtimeStartHealthServer,
+  startPollLoop,
+} from "./watcher-runtime";
 
 import { initTracing, getTracer, getMeter, withSpan, createLogger, getActiveTraceId, SpanStatusCode } from "./tracing";
 import { openWorkflowDb, createJob } from "./workflow-db";
@@ -102,50 +107,34 @@ function registerMetrics(db: Database): void {
 }
 
 function startHealthServer(db: Database): void {
-  Bun.serve({
+  runtimeStartHealthServer({
     port: METRICS_PORT,
-    fetch(req) {
-      const url = new URL(req.url);
-      if (url.pathname === "/health") {
-        try {
-          db.query("SELECT 1").get();
-          const staleMs = Date.now() - lastSuccessfulPollAt;
-          const maxStaleMs = POLL_INTERVAL_MS * HEALTH_STALE_MULTIPLIER;
-          if (staleMs > maxStaleMs) {
-            return new Response(`stale: last poll ${Math.round(staleMs / 1000)}s ago`, { status: 503 });
-          }
-          return new Response("ok", { status: 200 });
-        } catch {
-          return new Response("db error", { status: 503 });
-        }
-      }
-      return new Response("not found", { status: 404 });
-    },
+    db,
+    getStaleMs: () => Date.now() - lastSuccessfulPollAt,
+    maxStaleMs: POLL_INTERVAL_MS * HEALTH_STALE_MULTIPLIER,
+    logger: { log },
+    name: "gdrive-watcher",
   });
-  log(`Health server listening on :${METRICS_PORT} (/health)`);
 }
 
 // ---------------------------------------------------------------------------
 // MCP Client (connects to gmail-mcp for Drive tools)
 // ---------------------------------------------------------------------------
 
-let driveClient: Client | null = null;
+const driveClientWrapper = createManagedMcpClient({
+  name: "gdrive-watcher-drive",
+  version: "0.1.0",
+  url: GDRIVE_MCP_URL,
+  logger: { log },
+  connectMessage: "Connected to gmail-mcp (Drive tools)",
+});
 
 async function getDriveClient(): Promise<Client> {
-  if (driveClient) return driveClient;
-  const client = new Client(
-    { name: "gdrive-watcher-drive", version: "0.1.0" },
-    {}
-  );
-  const transport = new StreamableHTTPClientTransport(new URL(GDRIVE_MCP_URL));
-  await client.connect(transport);
-  driveClient = client;
-  log("Connected to gmail-mcp (Drive tools)");
-  return client;
+  return driveClientWrapper.get();
 }
 
 export function resetDriveClient(): void {
-  driveClient = null;
+  driveClientWrapper.reset();
 }
 
 /**
@@ -606,21 +595,14 @@ async function main(): Promise<void> {
     `Config: watch=[${folderPaths}], mcp=${GDRIVE_MCP_URL}, poll=${POLL_INTERVAL_MS}ms`
   );
 
-  // 6. Run first poll cycle
-  try {
-    await pollCycle(db, mcp);
-  } catch (e: any) {
-    log(`First poll cycle error: ${e.message}`);
-  }
-
-  // 7. Start interval timer
-  setInterval(async () => {
-    try {
-      await pollCycle(db, mcp);
-    } catch (e: any) {
-      log(`Poll cycle error: ${e.message}`);
-    }
-  }, POLL_INTERVAL_MS);
+  // 6. Run first poll cycle + start interval timer (managed by watcher-runtime)
+  await startPollLoop({
+    name: "gdrive-watcher",
+    intervalMs: POLL_INTERVAL_MS,
+    poll: () => pollCycle(db, mcp),
+    logger: { log },
+    runFirstCycleImmediately: true,
+  });
 }
 
 if (import.meta.main) {
