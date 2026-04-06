@@ -31,6 +31,7 @@ import {
   failJob,
   getJobEvents,
   parseJobJson,
+  recordDownloadedFile,
   requestClassification,
   requestJobApproval,
   scheduleRetry,
@@ -334,6 +335,7 @@ export async function executeInvoiceIntake(
         mkdirSync(DOWNLOAD_DIR, { recursive: true });
         filePath = `${DOWNLOAD_DIR}/${file.filename}`;
         writeFileSync(filePath, Buffer.from(file.content_base64, "base64"));
+        recordDownloadedFile(db, job.id, filePath);
         addJobEvent(db, job.id, "step_completed", {
           step: "download",
           file_path: filePath,
@@ -1391,6 +1393,7 @@ export async function executeScanIntake(
         mkdirSync(DOWNLOAD_DIR, { recursive: true });
         filePath = `${DOWNLOAD_DIR}/${file.filename}`;
         writeFileSync(filePath, Buffer.from(file.content_base64, "base64"));
+        recordDownloadedFile(db, job.id, filePath);
         addJobEvent(db, job.id, "step_completed", {
           step: "download",
           file_path: filePath,

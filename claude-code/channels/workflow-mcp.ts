@@ -20,6 +20,7 @@ import {
   listJobs,
   openWorkflowDb,
   submitClassification,
+  sweepOrphanedDownloads,
 } from "./workflow-db";
 
 import { initTracing, createLogger, getTracer, remoteParentContext, SpanStatusCode } from "./tracing";
@@ -381,6 +382,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main(): Promise<void> {
   db = openWorkflowDb(WORKFLOW_DB_PATH);
   log(`Opened workflow DB at ${WORKFLOW_DB_PATH}`);
+
+  // Defense-in-depth: on startup, sweep the downloads directory and delete
+  // any file older than DOWNLOAD_SWEEP_MAX_AGE_MS that isn't referenced by
+  // an active job. Per-job cleanup runs in completeJob/failJob/cancelJob;
+  // this catches orphans left behind by crashes or test runs.
+  const downloadDir = process.env.DOWNLOAD_DIR ?? "/workspace/downloads";
+  const sweepMaxAgeMs = parseInt(
+    process.env.DOWNLOAD_SWEEP_MAX_AGE_MS ?? String(7 * 24 * 60 * 60 * 1000),
+    10,
+  );
+  try {
+    const sweep = sweepOrphanedDownloads(db, downloadDir, sweepMaxAgeMs, { log });
+    log(
+      `Download sweep: scanned=${sweep.scanned} deleted=${sweep.deleted} preserved=${sweep.preserved}`,
+    );
+  } catch (err) {
+    log(`Download sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   const paperlessUrl = process.env.PAPERLESS_URL;
   if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
