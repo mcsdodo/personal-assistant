@@ -120,7 +120,7 @@ All services have `com.centurylinklabs.watchtower.enable: "false"` — no mid-se
 | `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice-worker) |
 | `claude-code/channels/mcp-client.ts` | HTTP MCP client with retry logic (exponential backoff for transient network errors) |
 | `claude-code/channels/workflow-mcp.ts` | Durable job queue channel (stdio, health on :8003) + invoice/scan workers |
-| `claude-code/channels/invoice-pipeline.ts` | Pure pipeline functions (mergeClassifications, resolveMonthTag, buildTagNames, generateTitle, getCompletedSteps) |
+| `claude-code/channels/invoice-pipeline.ts` | Pure pipeline functions (mergeClassifications, resolveMonthTag, validMonthTag, parseServicePeriodStart, buildTagNames, generateTitle, getCompletedSteps) |
 | `claude-code/channels/invoice-worker.ts` | Invoice intake worker (download, dedup, upload to Paperless) |
 | `claude-code/channels/fuzzy-match.ts` | Jaro-Winkler fuzzy correspondent matching |
 | `claude-code/agents/` | Haiku subagents (email-classifier, document-classifier — classifier returns `owner` field for personal/business tag routing) |
@@ -167,7 +167,7 @@ Polls Gmail + Outlook every 30s. Creates `invoice_intake` jobs directly in `work
 
 ### claude-code/channels/invoice-worker.ts (~1580 lines)
 
-Deterministic job worker and pipeline orchestrator. Drives the full pipeline: request email classification via channel → download (attachment/link extraction from HTML) → request document classification via channel → merge classifications → resolve month_tag, tags, correspondent → dedup via Paperless search (title, correspondent, amount, Jaro-Winkler 0.85 threshold) → upload to Paperless API (direct, bypasses MCP size limit) → set tags and custom fields → Telegram notification. Step-level resume via `getCompletedSteps` — on retry, skips already-completed steps. Approval gates for unknown vendors and low confidence.
+Deterministic job worker and pipeline orchestrator. Drives the full pipeline: request email classification via channel → download (attachment/link extraction from HTML) → request document classification via channel (returns reasoned `accounting_period` + supply_date + service_period) → merge classifications → resolve month_tag (LLM `accounting_period` first, deterministic chain as safety net, validation rejects malformed values), tags, correspondent → dedup via Paperless search (title, correspondent, amount, Jaro-Winkler 0.85 threshold) → upload to Paperless API (direct, bypasses MCP size limit) → set tags and custom fields → Telegram notification (includes month_tag column, or `no-period` if none). Step-level resume via `getCompletedSteps` — on retry, skips already-completed steps. Approval gates for unknown vendors and low confidence.
 
 ### claude-code/channels/gdrive-watcher.ts (~750 lines)
 
@@ -500,6 +500,7 @@ No Grafana restart needed — the file provisioner detects changes and reloads.
 | Metric | Meaning |
 |--------|---------|
 | `invoice_worker_correspondents_total` | Completed invoices by normalized Paperless correspondent. Counter seeded from DB at startup, incremented on each upload. Used by "Top Correspondents" dashboard panel. |
+| `invoice_worker_missing_month_tag_total` | Documents uploaded without a valid YYYY-MM accounting period. Labelled by `workflow_type` (invoice_intake / scan_intake). Non-zero indicates the LLM-driven `accounting_period` resolution chain fully fell through and the document needs manual tagging in Paperless. |
 
 ### Events (Loki, via OTel logs)
 

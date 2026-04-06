@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   mergeClassifications,
   resolveMonthTag,
+  validMonthTag,
+  parseServicePeriodStart,
   buildTagNames,
   generateTitle,
   type EmailClassification,
@@ -79,31 +81,237 @@ describe("mergeClassifications", () => {
   });
 });
 
+// ── validMonthTag ───────────────────────────────────────────────────────
+
+describe("validMonthTag", () => {
+  test("accepts valid current/recent year", () => {
+    expect(validMonthTag("2026-04")).toBe("2026-04");
+    expect(validMonthTag("2024-01")).toBe("2024-01");
+    expect(validMonthTag("2026-12")).toBe("2026-12");
+  });
+
+  test("rejects implausible far-future year", () => {
+    expect(validMonthTag("2940-12")).toBeNull();
+    expect(validMonthTag("9999-01")).toBeNull();
+  });
+
+  test("rejects year before 2000", () => {
+    expect(validMonthTag("1999-12")).toBeNull();
+    expect(validMonthTag("0023-04")).toBeNull();
+  });
+
+  test("rejects month > 12", () => {
+    expect(validMonthTag("2026-13")).toBeNull();
+    expect(validMonthTag("2026-99")).toBeNull();
+    expect(validMonthTag("2026-61")).toBeNull();
+  });
+
+  test("rejects month 00", () => {
+    expect(validMonthTag("2026-00")).toBeNull();
+  });
+
+  test("rejects malformed input", () => {
+    expect(validMonthTag("2026-4")).toBeNull(); // missing leading zero
+    expect(validMonthTag("2026/04")).toBeNull();
+    expect(validMonthTag("26-04")).toBeNull();
+    expect(validMonthTag("2026-04-15")).toBeNull(); // full date
+    expect(validMonthTag("foo")).toBeNull();
+    expect(validMonthTag("")).toBeNull();
+    expect(validMonthTag(null)).toBeNull();
+    expect(validMonthTag(undefined)).toBeNull();
+  });
+});
+
+// ── parseServicePeriodStart ─────────────────────────────────────────────
+
+describe("parseServicePeriodStart", () => {
+  test("extracts left side of ISO 8601 interval", () => {
+    expect(parseServicePeriodStart("2026-04-06/2026-05-06")).toBe("2026-04-06");
+    expect(parseServicePeriodStart("2026-03-01/2026-03-31")).toBe("2026-03-01");
+  });
+
+  test("returns null for malformed input", () => {
+    expect(parseServicePeriodStart("2026-04-06")).toBeNull(); // single date
+    expect(parseServicePeriodStart("Apr 6 - May 6")).toBeNull();
+    expect(parseServicePeriodStart("2026-04/2026-05")).toBeNull(); // not full dates
+    expect(parseServicePeriodStart(null)).toBeNull();
+    expect(parseServicePeriodStart(undefined)).toBeNull();
+    expect(parseServicePeriodStart("")).toBeNull();
+  });
+});
+
 // ── resolveMonthTag ─────────────────────────────────────────────────────
 
 describe("resolveMonthTag", () => {
-  test("extracts from subject billing period MM/YYYY", () => {
-    expect(resolveMonthTag("Faktúra 03/2026", "2026-04-01", null)).toBe("2026-03");
+  // ── Priority order ──
+
+  test("LLM accounting_period wins over everything", () => {
+    expect(
+      resolveMonthTag({
+        accountingPeriod: "2026-04",
+        supplyDate: "2026-01-01",
+        docDate: "2026-02-15",
+        subject: "Faktúra 03/2026",
+        receivedAt: "2026-05-01T10:00:00Z",
+      }),
+    ).toBe("2026-04");
   });
 
-  test("extracts YYYY-MM from subject", () => {
-    expect(resolveMonthTag("Statement 2026-02", "2026-04-01", null)).toBe("2026-02");
+  test("supply_date beats doc_date when accounting_period absent", () => {
+    expect(
+      resolveMonthTag({
+        supplyDate: "2026-03-30",
+        docDate: "2026-04-02",
+      }),
+    ).toBe("2026-03");
   });
 
-  test("uses doc date when subject has no period", () => {
-    expect(resolveMonthTag("Invoice", null, "2026-03-15")).toBe("2026-03");
+  test("service_period_start used when supply_date absent", () => {
+    expect(
+      resolveMonthTag({
+        servicePeriodStart: "2026-04-06",
+        docDate: "2026-04-06",
+      }),
+    ).toBe("2026-04");
   });
 
-  test("falls back to received_at", () => {
-    expect(resolveMonthTag("Invoice", "2026-04-01T10:00:00Z", null)).toBe("2026-04");
+  test("doc_date beats subject regex", () => {
+    expect(
+      resolveMonthTag({
+        docDate: "2026-03-15",
+        subject: "Receipt #2024-099876",
+      }),
+    ).toBe("2026-03");
+  });
+
+  test("subject regex used when no doc dates", () => {
+    expect(
+      resolveMonthTag({
+        subject: "Faktúra 03/2026",
+        receivedAt: "2026-04-01T10:00:00Z",
+      }),
+    ).toBe("2026-03");
+  });
+
+  test("YYYY-MM in subject works when surrounded by whitespace", () => {
+    expect(resolveMonthTag({ subject: "Statement 2026-02" })).toBe("2026-02");
+  });
+
+  test("falls back to received_at when nothing else", () => {
+    expect(
+      resolveMonthTag({
+        subject: "Invoice",
+        receivedAt: "2026-04-01T10:00:00Z",
+      }),
+    ).toBe("2026-04");
+  });
+
+  test("scanFallback used as final fallback for scan pipeline", () => {
+    expect(
+      resolveMonthTag({
+        scanFallback: "2026-03",
+      }),
+    ).toBe("2026-03");
   });
 
   test("returns null when nothing available", () => {
-    expect(resolveMonthTag("Invoice", null, null)).toBeNull();
+    expect(resolveMonthTag({})).toBeNull();
+    expect(resolveMonthTag({ subject: "Invoice" })).toBeNull();
   });
 
-  test("null subject still uses doc date", () => {
-    expect(resolveMonthTag(null, null, "2026-06-20")).toBe("2026-06");
+  // ── Adversarial: regex hardening ──
+
+  test("BUG #411: receipt number #2940-6120-5985 must NOT match", () => {
+    // This is the smoking gun. Regex used to match `2940-61` from this subject.
+    expect(
+      resolveMonthTag({
+        subject: "Your receipt from Anthropic, PBC #2940-6120-5985",
+      }),
+    ).toBeNull();
+  });
+
+  test("embedded numeric ID like 12345-678 must NOT match", () => {
+    expect(resolveMonthTag({ subject: "Order 12345-67890 confirmed" })).toBeNull();
+  });
+
+  test("invoice number with year-like prefix must NOT match", () => {
+    expect(resolveMonthTag({ subject: "Invoice FV2024-12345" })).toBeNull();
+  });
+
+  test("month > 12 in subject must NOT match", () => {
+    expect(resolveMonthTag({ subject: "Receipt 2026-15" })).toBeNull();
+    expect(resolveMonthTag({ subject: "Bill 13/2026" })).toBeNull();
+  });
+
+  test("year before 2000 in subject must NOT match", () => {
+    expect(resolveMonthTag({ subject: "Faktúra 999-12" })).toBeNull();
+    expect(resolveMonthTag({ subject: "Document 1850-05 archive" })).toBeNull();
+  });
+
+  test("far-future year in subject must NOT match", () => {
+    expect(resolveMonthTag({ subject: "Sci-fi 2940-06 scenario" })).toBeNull();
+  });
+
+  test("MM/YYYY surrounded by other slashes must NOT match", () => {
+    expect(resolveMonthTag({ subject: "path/03/2026/file" })).toBeNull();
+  });
+
+  test("doc_date overrides bogus subject regex hit", () => {
+    // Even if subject contains a valid YYYY-MM, doc_date wins.
+    expect(
+      resolveMonthTag({
+        docDate: "2026-04-06",
+        subject: "Quarterly review 2024-01",
+      }),
+    ).toBe("2026-04");
+  });
+
+  test("Anthropic case end-to-end", () => {
+    // The exact scenario that produced doc #411 with tag "2940-61".
+    // With LLM reasoning: classifier returns accounting_period directly.
+    expect(
+      resolveMonthTag({
+        accountingPeriod: "2026-04",
+        supplyDate: "2026-04-06",
+        servicePeriodStart: "2026-04-06",
+        docDate: "2026-04-06",
+        subject: "Your receipt from Anthropic, PBC #2940-6120-5985",
+        receivedAt: "2026-04-06T18:00:00Z",
+      }),
+    ).toBe("2026-04");
+  });
+
+  test("Anthropic case if classifier somehow misses accounting_period", () => {
+    // Even without accounting_period, supply_date carries us through correctly.
+    expect(
+      resolveMonthTag({
+        supplyDate: "2026-04-06",
+        servicePeriodStart: "2026-04-06",
+        docDate: "2026-04-06",
+        subject: "Your receipt from Anthropic, PBC #2940-6120-5985",
+        receivedAt: "2026-04-06T18:00:00Z",
+      }),
+    ).toBe("2026-04");
+  });
+
+  test("Anthropic case with ONLY subject and received_at (worst case)", () => {
+    // Everything date-related is missing. Subject regex must NOT produce 2940-61.
+    // received_at still saves us with the email arrival month.
+    expect(
+      resolveMonthTag({
+        subject: "Your receipt from Anthropic, PBC #2940-6120-5985",
+        receivedAt: "2026-04-06T18:00:00Z",
+      }),
+    ).toBe("2026-04");
+  });
+
+  test("invalid accounting_period from LLM is rejected, falls through", () => {
+    expect(
+      resolveMonthTag({
+        accountingPeriod: "2940-61", // bogus LLM output (defensive)
+        docDate: "2026-04-06",
+      }),
+    ).toBe("2026-04");
   });
 });
 
@@ -142,6 +350,34 @@ describe("buildTagNames", () => {
     const tags = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: false }, null);
     expect(tags).not.toContain(null);
     expect(tags).toEqual(["personal"]);
+  });
+
+  test("malformed month_tag is rejected (defense in depth)", () => {
+    // Even if a buggy upstream caller passes a junk tag, buildTagNames must drop it
+    // so it never reaches Paperless and silently auto-creates a malformed tag.
+    const tags = buildTagNames(
+      { owner: "techlab", doc_type: "invoice", is_fuel: false },
+      "2940-61",
+    );
+    expect(tags).not.toContain("2940-61");
+    expect(tags).toEqual(["techlab", "accounting"]);
+  });
+
+  test("month_tag with month > 12 is rejected", () => {
+    const tags = buildTagNames(
+      { owner: "personal", doc_type: "invoice", is_fuel: false },
+      "2026-13",
+    );
+    expect(tags).not.toContain("2026-13");
+    expect(tags).toEqual(["personal"]);
+  });
+
+  test("valid month_tag in plausible range is kept", () => {
+    const tags = buildTagNames(
+      { owner: "personal", doc_type: "invoice", is_fuel: false },
+      "2026-04",
+    );
+    expect(tags).toContain("2026-04");
   });
 });
 

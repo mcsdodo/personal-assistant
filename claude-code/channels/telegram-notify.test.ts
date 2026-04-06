@@ -10,7 +10,8 @@ describe("formatNotification", () => {
       currency: "EUR",
       doc_type: "invoice",
       owner: "techlab",
-    })).toBe("✔️  Slovak Telekom | 42.99 EUR | invoice | techlab");
+      month_tag: "2026-04",
+    })).toBe("✔️  Slovak Telekom | 42.99 EUR | invoice | techlab | 2026-04");
   });
 
   test("uploaded — null amount shows ?", () => {
@@ -21,7 +22,8 @@ describe("formatNotification", () => {
       currency: "EUR",
       doc_type: "receipt",
       owner: "personal",
-    })).toBe("✔️  Alza | ? EUR | receipt | personal");
+      month_tag: "2026-03",
+    })).toBe("✔️  Alza | ? EUR | receipt | personal | 2026-03");
   });
 
   test("uploaded — null currency defaults to EUR", () => {
@@ -32,7 +34,8 @@ describe("formatNotification", () => {
       currency: null,
       doc_type: "invoice",
       owner: "techlab",
-    })).toBe("✔️  Tesco | 18.5 EUR | invoice | techlab");
+      month_tag: "2026-04",
+    })).toBe("✔️  Tesco | 18.5 EUR | invoice | techlab | 2026-04");
   });
 
   test("uploaded — null owner shows ?", () => {
@@ -43,10 +46,11 @@ describe("formatNotification", () => {
       currency: "EUR",
       doc_type: "invoice",
       owner: null,
-    })).toBe("✔️  Orange | 29.99 EUR | invoice | ?");
+      month_tag: "2026-03",
+    })).toBe("✔️  Orange | 29.99 EUR | invoice | ? | 2026-03");
   });
 
-  test("uploaded — all optional fields null", () => {
+  test("uploaded — null month_tag shows no-period", () => {
     expect(formatNotification({
       outcome: "uploaded",
       vendor: "SomeVendor",
@@ -54,7 +58,19 @@ describe("formatNotification", () => {
       currency: null,
       doc_type: "invoice",
       owner: null,
-    })).toBe("✔️  SomeVendor | ? EUR | invoice | ?");
+      month_tag: null,
+    })).toBe("✔️  SomeVendor | ? EUR | invoice | ? | no-period");
+  });
+
+  test("uploaded — missing month_tag shows no-period", () => {
+    expect(formatNotification({
+      outcome: "uploaded",
+      vendor: "SomeVendor",
+      total_amount: null,
+      currency: null,
+      doc_type: "invoice",
+      owner: null,
+    })).toBe("✔️  SomeVendor | ? EUR | invoice | ? | no-period");
   });
 
   test("duplicate_likely — shows duplicate message", () => {

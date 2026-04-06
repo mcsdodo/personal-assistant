@@ -224,7 +224,7 @@ flowchart TD
     L --> M
 ```
 
-**`month_tag` source** also differs: email path infers it from email context (subject, document date, `received_at` fallback); GDrive path defaults to the file's `created_time` (scan date) but the worker overrides it with `doc_date` from the document classifier when present.
+**`month_tag` source** is unified across both pipelines: the document-classifier returns a reasoned `accounting_period` that wins over all other signals (see `month_tag resolution` section below). Deterministic date inference (`supply_date`, `service_period`, `doc_date`, hardened subject regex, `received_at`, GDrive scan date) acts only as a safety-net chain when the LLM didn't decide.
 
 **Code:**
 - [`invoice-worker.ts:596-637`](../claude-code/channels/invoice-worker.ts#L596) — `resolveCorrespondent()`: list → fuzzy match (via `fuzzy-match.ts`) → create if needed
@@ -243,11 +243,11 @@ The invoice-worker sends structured one-liner notifications via Telegram Bot API
 
 | Outcome | Format | Example |
 |---------|--------|---------|
-| `uploaded` | `✔️  {vendor} \| {amount} {currency} \| {doc_type} \| {owner}` | `✔️  Slovak Telekom \| 42.99 EUR \| invoice \| techlab` |
+| `uploaded` | `✔️  {vendor} \| {amount} {currency} \| {doc_type} \| {owner} \| {month_tag}` | `✔️  Slovak Telekom \| 42.99 EUR \| invoice \| techlab \| 2026-04` |
 | `failed` | `❌  {vendor} \| {amount} {currency} \| {doc_type} \| {owner} \| {error}` | `❌  Orange \| ? EUR \| invoice \| techlab \| download failed: 404` |
 | `duplicate` | *(silent — no notification)* | |
 
-Missing fields show `?` placeholder. Currency defaults to `EUR` when null.
+Missing fields show `?` placeholder; missing `month_tag` shows `no-period` (tells the operator to tag manually). Currency defaults to `EUR` when null.
 
 **Code:**
 - [`telegram-notify.ts`](../claude-code/channels/telegram-notify.ts) — `formatNotification()` pure function + `NotifyFn` type
@@ -321,7 +321,7 @@ sequenceDiagram
     DB-->>GW: false
     GW->>DB: INSERT file (status="new")
     GW->>DB: createJob(workflow.db)<br/>scan_intake job<br/>{file_id, watch_folder, month_tag}
-    note over GW: month_tag = file created_time<br/>(default, overridden by doc_date later)
+    note over GW: month_tag = file created_time<br/>(last-resort fallback only)
     end
 
     rect rgb(50, 40, 40)
@@ -333,12 +333,12 @@ sequenceDiagram
     IW->>IW: save to /workspace/downloads/
     IW--)C: channel event (classify_document)
     C->>DC: dispatch document-classifier (Haiku)
-    DC-->>C: JSON {vendor, total_amount, doc_type, owner, doc_date, ...}
+    DC-->>C: JSON {vendor, total_amount, doc_type, owner,<br/>doc_date, supply_date, service_period,<br/>accounting_period, accounting_period_reasoning, ...}
     C->>IW: submit_classification(job_id, "classify_document", result)
 
     note over IW,P: Tick 2 — Upload + move
     IW->>IW: resume job, read classification
-    IW->>IW: resolveMonthTag:<br/>doc_date overrides scan date
+    IW->>IW: resolveMonthTag:<br/>accounting_period (LLM) → supply_date →<br/>service_period → doc_date → scan date fallback
     IW->>P: resolve correspondent, tags, dedup
     IW->>P: post_document + custom fields
     IW->>GD: move file → processed/
@@ -454,7 +454,7 @@ When Claude calls `submit_classification(job_id, "classify_email", result)`, the
 | `received_at` | string | email metadata (Claude fetches) |
 | `sender` | string | email metadata (Claude fetches) |
 
-The last three fields are **not** from the classifier. Claude must fetch the email via MCP and include these. The worker uses `subject` for month_tag resolution (billing period regex) and `received_at` as a fallback date.
+The last three fields are **not** from the classifier. Claude must fetch the email via MCP and include these. The worker uses `received_at` as a late-fallback date and `subject` only as a hardened-regex safety net (see `month_tag resolution` below).
 
 ### classify_document result
 
@@ -469,9 +469,13 @@ The last three fields are **not** from the classifier. Claude must fetch the ema
 | `order_id` | string / null | document-classifier |
 | `subtitle` | string / null | document-classifier |
 | `owner` | "techlab" / "personal" | document-classifier |
-| `doc_date` | string / null (YYYY-MM-DD) | document-classifier |
+| `doc_date` | string / null (YYYY-MM-DD) | document-classifier — issue date as printed |
+| `supply_date` | string / null (YYYY-MM-DD) | document-classifier — Slovak "deň dodania" / legal tax point per § 19 Zákon 222/2004 |
+| `service_period` | string / null (ISO 8601 interval) | document-classifier — `"YYYY-MM-DD/YYYY-MM-DD"` for subscriptions |
+| `accounting_period` | string / null (YYYY-MM) | document-classifier — **the LLM's reasoned answer** for the accounting month |
+| `accounting_period_reasoning` | string / null | document-classifier — short explanation of how the period was chosen |
 
-Non-null values from the document classifier override the corresponding email classifier values when merged (`mergeClassifications`). `doc_type`, `subtitle`, `owner`, and `doc_date` come exclusively from this classifier. The same classifier handles both email PDFs and GDrive scans.
+Non-null values from the document classifier override the corresponding email classifier values when merged (`mergeClassifications`). `doc_type`, `subtitle`, `owner`, `doc_date`, `supply_date`, `service_period`, `accounting_period`, and `accounting_period_reasoning` come exclusively from this classifier. The same classifier handles both email PDFs and GDrive scans.
 
 ### Job input schemas
 
@@ -498,16 +502,19 @@ Idempotency key: `gdrive:{file_id}`
 
 ### month_tag resolution
 
-The worker resolves `month_tag` after merging classifications. Priority differs by source:
+The worker resolves `month_tag` after merging classifications. **Both pipelines use the same chain** (`resolveMonthTag` in `invoice-pipeline.ts`), with the document-classifier's reasoned `accounting_period` as the authoritative answer and deterministic date inference as a hardened safety net:
 
-**Email path** (`resolveMonthTag` in `invoice-pipeline.ts`):
-1. Subject regex — billing period like "03/2026" or "2026-03" in the email subject
-2. `doc_date` from the document classifier (YYYY-MM-DD → YYYY-MM)
-3. `received_at` fallback (email received timestamp)
+1. **`accounting_period`** — the LLM's decision (highest priority). Document-classifier reasons over issue date, supply date, service period, and Slovak VAT § 19 rules to pick the right month and returns it directly with reasoning.
+2. **`supply_date`** — Slovak *deň dodania*, the legal tax point. Used when the LLM didn't return `accounting_period` but extracted a supply date.
+3. **`service_period` start** — for subscriptions/billing periods (ISO 8601 interval, left side).
+4. **`doc_date`** — issue date from the document.
+5. **Subject regex** — hardened with negative lookarounds and range validation (rejects matches inside numeric IDs like `#2940-6120-5985`, rejects implausible years and months > 12). Email path only.
+6. **`received_at`** — email arrival timestamp. Email path only.
+7. **`scanFallback`** — GDrive file `created_time` from job input. Scan path only — final fallback for documents photographed weeks after issue.
 
-**GDrive path:**
-1. `doc_date` from the document classifier (when present)
-2. `month_tag` from job input (file's `created_time` in Google Drive, set by gdrive-watcher)
+Every candidate passes `validMonthTag` (regex `^\d{4}-(0[1-9]|1[0-2])$` + year in `[2000, currentYear+1]`) before being accepted. `buildTagNames` re-validates defensively so a malformed tag from any upstream caller cannot reach Paperless.
+
+If the entire chain returns `null`, the document is uploaded **without** a month tag, the `invoice_worker_missing_month_tag_total` counter increments, and a Telegram alert is sent so the operator can tag manually. Fabricated tags are never written.
 
 ## Email Audit Trail
 

@@ -17,31 +17,38 @@ You will receive a file path. Use the Read tool to read the PDF/image file — t
 
 Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text.
 
-**You MUST return EXACTLY these 10 fields — no more, no fewer:**
+**You MUST return EXACTLY these 14 fields — no more, no fewer:**
 
 ```json
 {
-  "doc_type": "receipt",
-  "vendor": "Slovnaft",
-  "total_amount": 57.49,
+  "doc_type": "invoice",
+  "vendor": "Anthropic, PBC",
+  "total_amount": 100.00,
   "currency": "EUR",
-  "is_fuel": true,
+  "is_fuel": false,
   "confidence": "high",
-  "order_id": "1475807",
+  "order_id": "9E72DD91-0009",
   "subtitle": null,
   "owner": "techlab",
-  "doc_date": "2026-03-25"
+  "doc_date": "2026-04-06",
+  "supply_date": "2026-04-06",
+  "service_period": "2026-04-06/2026-05-06",
+  "accounting_period": "2026-04",
+  "accounting_period_reasoning": "Subscription invoice issued Apr 6 covering Apr 6 – May 6 service period. Per Slovak VAT § 19, tax point is the supply date (Apr 6). Period starts in April → 2026-04."
 }
 ```
 
 **STRICT RULES:**
-- Return ALL 10 fields every time. Never omit any field.
+- Return ALL 14 fields every time. Never omit any field.
 - Do NOT add extra fields (no `description`, `notes`, `doc_number`, or anything else).
 - `confidence` must be a string: `"high"`, `"medium"`, or `"low"` — never a number.
 - `is_fuel` must be a boolean — never omit it.
 - `total_amount` must be a number or `null` — never omit it.
 - `owner` must be `"techlab"` or `"personal"` — never null, never omit.
-- `doc_date` — the document's issue/billing date as `"YYYY-MM-DD"`. Extract from the document header (e.g. "Dátum vystavenia", "Date", invoice date). If no date is visible, return `null`.
+- `doc_date`, `supply_date` — `"YYYY-MM-DD"` or `null`.
+- `service_period` — ISO 8601 interval `"YYYY-MM-DD/YYYY-MM-DD"` or `null`.
+- `accounting_period` — `"YYYY-MM"` or `null`. **This is your reasoned answer**, see decision rules below.
+- `accounting_period_reasoning` — short string explaining HOW you chose the accounting_period (cite which date you used and why), or `null` only if `accounting_period` is also null.
 
 ## Classification Rules
 
@@ -119,3 +126,64 @@ Important:
 - For license plates: match **anywhere** on the document (parking tickets, toll receipts have no buyer section — the plate IS the identifier).
 - A personal name appearing alongside a company name does NOT make it personal — the company name takes precedence.
 - Empty IČO/DIČ/IČ DPH fields (as on personal invoices) are NOT a match — they confirm the absence of business identifiers.
+
+### doc_date
+The document's issue date as `"YYYY-MM-DD"`. Extract from the document header.
+
+**Slovak labels:** *Dátum vystavenia*, *Dátum vyhotovenia*, *Vystavené dňa*, *Dátum*
+**English labels:** *Issue date*, *Date issued*, *Invoice date*, *Date*, *Billed on*
+
+If no date is visible, return `null`.
+
+### supply_date
+The Slovak *deň dodania* / *dátum dodania* — the date the goods or services were actually delivered. **Per § 19 Zákon č. 222/2004 Z. z. (Slovak VAT Act), this is the legal tax point** and determines which VAT period the transaction belongs to.
+
+**Slovak labels:** *Dátum dodania*, *Deň dodania*, *Dátum dodania tovaru/služby*, *Dátum dodania zdaniteľného plnenia*, *DDP*, *Deň uskutočnenia zdaniteľného plnenia*, *DUZP*
+**English labels:** *Date of supply*, *Supply date*, *Delivery date*, *Service date*, *Fulfilment date*, *Tax point*, *Date of taxable supply*
+
+If absent (common on receipts and POS slips), return `null`. Do NOT default to `doc_date` — the worker handles fallback. For receipts, supply_date and doc_date are the same physical event but only doc_date should be returned.
+
+### service_period
+The billing/service period as ISO 8601 interval `"YYYY-MM-DD/YYYY-MM-DD"`. Common on subscriptions, telecom, hosting, SaaS.
+
+**Slovak labels:** *Obdobie*, *Zúčtovacie obdobie*, *Fakturačné obdobie*, *Obdobie dodávky*, *Vyúčtovacie obdobie*, *Obdobie poskytovania služby*
+**English labels:** *Billing period*, *Service period*, *Subscription period*, *Period covered*, *Coverage period*, *From – To*
+
+Examples:
+- "Period: April 6 – May 6, 2026" → `"2026-04-06/2026-05-06"`
+- "Obdobie: 1.3.2026 - 31.3.2026" → `"2026-03-01/2026-03-31"`
+- "01.04.2026 - 30.04.2026" → `"2026-04-01/2026-04-30"`
+
+Return `null` if no explicit period range is shown (one-off purchases, retail, fuel receipts).
+
+### accounting_period
+**This is the field the rest of the system uses.** Reason about all the dates you extracted above and return the `"YYYY-MM"` month this document should be filed under for accounting purposes.
+
+**Decision rules** (apply in order, stop at first match):
+
+1. **Receipt / one-off purchase** (`doc_type: "receipt"`, fuel, parking, retail, single physical transaction) → use the month of `doc_date`. There's no period, no separate supply date — issue date IS the transaction date.
+
+2. **Subscription / service with explicit period** (`service_period` is non-null) → use the month of `service_period` start. This is what the customer pays *for*. Examples: Anthropic Apr 6 – May 6 → `2026-04`. Orange Mar 1 – Mar 31 → `2026-03`.
+
+3. **Slovak invoice with explicit `supply_date`** (different month from `doc_date`) → use the month of `supply_date`. This is the legal tax point. Common when an invoice is issued in early April for services delivered in late March → `2026-03`.
+
+4. **Other invoices** (no period, no separate supply date) → use the month of `doc_date`.
+
+5. **Bank statement** (`doc_type: "account_statement"`) → use the month the statement covers (extract from `subtitle` like "Výpis 03/2026" or `service_period`), NOT the issue date. A March statement issued April 1 → `2026-03`.
+
+6. **Credit note** (`doc_type: "credit_note"`) → use the credit note's own `supply_date` if present, else `doc_date`. Do NOT use the original invoice's date.
+
+7. **Conflict, missing dates, or unreadable** → return `null`. The worker will fall back to other signals (subject regex, email arrival date, scan date) and alert the user if even those fail. Better to admit uncertainty than fabricate.
+
+Format: `"YYYY-MM"`. Year must be plausible (2000–current+1), month must be 01–12.
+
+### accounting_period_reasoning
+A short string explaining your `accounting_period` choice — which rule you applied, which date you used, and why. This is mandatory whenever `accounting_period` is non-null. It forces explicit reasoning and gives operators a paper trail when reviewing accounting periods.
+
+Examples:
+- `"One-off fuel receipt at Slovnaft on Mar 25; doc_date is the transaction date → 2026-03 (rule 1)."`
+- `"Anthropic subscription, service period Apr 6 – May 6, 2026; period start in April → 2026-04 (rule 2)."`
+- `"Orange invoice issued Apr 5 for service delivered Mar 1–31; supply_date in March → 2026-03 (rule 3 / rule 5)."`
+- `"Tatra Banka výpis 03/2026 issued Apr 1; statement covers March → 2026-03 (rule 5)."`
+
+If `accounting_period` is `null`, set `accounting_period_reasoning` to `null` as well.

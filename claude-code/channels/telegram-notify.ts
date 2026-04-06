@@ -7,6 +7,8 @@ export interface NotificationData {
   currency: string | null;
   doc_type: string;
   owner: string | null;
+  /** YYYY-MM accounting period assigned to the document, or null if none was resolved. */
+  month_tag?: string | null;
   duplicate_message?: string | null;
   error?: string | null;
 }
@@ -35,5 +37,6 @@ export function formatNotification(data: NotificationData): string | null {
 
   // uploaded
   const owner = data.owner ?? "?";
-  return `✔️  ${data.vendor} | ${amountStr} | ${data.doc_type} | ${owner}`;
+  const period = data.month_tag ?? "no-period";
+  return `✔️  ${data.vendor} | ${amountStr} | ${data.doc_type} | ${owner} | ${period}`;
 }

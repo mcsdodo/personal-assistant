@@ -43,7 +43,14 @@ import { readFileAsDownload } from "./download-helper";
 import { extractInvoiceLinks, type InvoiceLink } from "./invoice-links";
 import { findBestCorrespondentMatch } from "./fuzzy-match";
 import { formatNotification, type NotifyFn } from "./telegram-notify";
-import { buildTagNames, generateTitle, getCompletedSteps, mergeClassifications, resolveMonthTag } from "./invoice-pipeline";
+import {
+  buildTagNames,
+  generateTitle,
+  getCompletedSteps,
+  mergeClassifications,
+  parseServicePeriodStart,
+  resolveMonthTag,
+} from "./invoice-pipeline";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -116,6 +123,14 @@ export interface ScanClassification {
   order_id: string | null;
   subtitle: string | null;
   doc_date: string | null;
+  /** Slovak "deň dodania" — legal tax point per § 19 Zákon 222/2004. Optional. */
+  supply_date?: string | null;
+  /** ISO 8601 interval for subscriptions/billing periods, "YYYY-MM-DD/YYYY-MM-DD". Optional. */
+  service_period?: string | null;
+  /** LLM's reasoned accounting-period decision, "YYYY-MM". Preferred over date inference. Optional. */
+  accounting_period?: string | null;
+  /** Short reasoning string explaining the accounting_period choice. Optional. */
+  accounting_period_reasoning?: string | null;
 }
 
 export interface InvoiceIntakeResult {
@@ -152,6 +167,9 @@ const tracer = getTracer("invoice-worker");
 const meter = getMeter("invoice-worker");
 const correspondentsCounter = meter.createCounter("invoice_worker_correspondents_total", {
   description: "Completed invoices by normalized Paperless correspondent",
+});
+const missingMonthTagCounter = meter.createCounter("invoice_worker_missing_month_tag_total", {
+  description: "Documents uploaded without a valid YYYY-MM accounting period (operator must tag manually)",
 });
 
 let counterSeeded = false;
@@ -326,13 +344,35 @@ export async function executeInvoiceIntake(
       const merged = mergeClassifications(classification, docResult);
       logger.log(`Merged doc classification (owner=${merged.owner})`);
 
-      // Step 3.5: Derive month_tag from classification metadata
-      const docDate = (docResult as { doc_date?: string }).doc_date ?? null;
-      const monthTag = resolveMonthTag(
-        classification.subject,
-        classification.received_at,
-        docDate,
-      );
+      // Step 3.5: Derive month_tag from classification metadata.
+      // Document-classifier is the authority — its `accounting_period` reflects
+      // explicit reasoning over supply date / service period / doc type / Slovak
+      // VAT rules. The deterministic chain is a hardened safety net only.
+      const docExt = docResult as {
+        doc_date?: string | null;
+        supply_date?: string | null;
+        service_period?: string | null;
+        accounting_period?: string | null;
+        accounting_period_reasoning?: string | null;
+      };
+      if (docExt.accounting_period_reasoning) {
+        logger.log(`accounting_period: ${docExt.accounting_period} — ${docExt.accounting_period_reasoning}`);
+      }
+      const monthTag = resolveMonthTag({
+        accountingPeriod: docExt.accounting_period,
+        supplyDate: docExt.supply_date,
+        servicePeriodStart: parseServicePeriodStart(docExt.service_period),
+        docDate: docExt.doc_date,
+        subject: classification.subject,
+        receivedAt: classification.received_at,
+      });
+      if (!monthTag) {
+        missingMonthTagCounter.add(1, { workflow_type: "invoice_intake" });
+        logger.log(`⚠ Job ${job.id}: no valid accounting period resolved — uploading without month tag`);
+        if (notify) {
+          await notify(`⚠ ${merged.vendor ?? "Document"}: no accounting period detected. Tag manually in Paperless.`).catch(() => {});
+        }
+      }
 
       // Step 2: Resolve correspondent
       addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
@@ -459,6 +499,7 @@ export async function executeInvoiceIntake(
           currency: merged.currency,
           doc_type: merged.doc_type,
           owner: merged.owner ?? null,
+          month_tag: monthTag,
         });
         if (msg) await notify(msg).catch((e) => {
           span.addEvent("notification_failed", { error: e instanceof Error ? e.message : String(e) });
@@ -1224,10 +1265,27 @@ export async function executeScanIntake(
       vendorForSpan = classification.vendor;
       span.setAttribute("invoice.vendor", classification.vendor);
 
-      // Derive month_tag from doc_date if available, fall back to scan date from input
-      const resolvedMonthTag = resolveMonthTag(null, null, classification.doc_date) ?? month_tag;
-      if (resolvedMonthTag !== month_tag) {
-        logger.log(`month_tag overridden: ${month_tag} → ${resolvedMonthTag} (from doc_date ${classification.doc_date})`);
+      // Derive month_tag — document-classifier's reasoned accounting_period wins.
+      // GDrive scan creation date is only the *last* fallback (a scanned invoice
+      // photographed weeks after issue should NOT be tagged by the scan date).
+      if (classification.accounting_period_reasoning) {
+        logger.log(`accounting_period: ${classification.accounting_period} — ${classification.accounting_period_reasoning}`);
+      }
+      const resolvedMonthTag = resolveMonthTag({
+        accountingPeriod: classification.accounting_period,
+        supplyDate: classification.supply_date,
+        servicePeriodStart: parseServicePeriodStart(classification.service_period),
+        docDate: classification.doc_date,
+        scanFallback: month_tag,
+      });
+      if (!resolvedMonthTag) {
+        missingMonthTagCounter.add(1, { workflow_type: "scan_intake" });
+        logger.log(`⚠ Job ${job.id}: no valid accounting period resolved — uploading without month tag`);
+        if (notify) {
+          await notify(`⚠ ${classification.vendor ?? "Scan"}: no accounting period detected. Tag manually in Paperless.`).catch(() => {});
+        }
+      } else if (resolvedMonthTag !== month_tag) {
+        logger.log(`month_tag overridden: ${month_tag} → ${resolvedMonthTag}`);
       }
 
       // Step 3: Resolve correspondent
@@ -1327,6 +1385,7 @@ export async function executeScanIntake(
           currency: classification.currency,
           doc_type: classification.doc_type,
           owner: classification.owner ?? null,
+          month_tag: resolvedMonthTag,
         });
         if (msg) await notify(msg).catch((e) => {
           span.addEvent("notification_failed", { error: e instanceof Error ? e.message : String(e) });
