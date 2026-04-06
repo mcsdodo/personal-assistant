@@ -38,11 +38,16 @@ import {
   shouldRetry,
   type JobRow,
 } from "./workflow-db";
-import { callMcpTool, extractJson, extractText } from "./mcp-client";
+import { callMcpTool, extractText } from "./mcp-client";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
 import { PaperlessAdapter } from "./paperless-adapter";
+import {
+  downloadInvoice as downloadInvoiceImpl,
+  downloadFromGdrive as downloadFromGdriveImpl,
+  type DownloadedFile as ServiceDownloadedFile,
+} from "./invoice/download-service";
+import { checkDuplicate as checkDuplicateImpl, type DedupeResult } from "./invoice/dedup-service";
 import { readFileAsDownload } from "./download-helper";
-import { extractInvoiceLinks, type InvoiceLink } from "./invoice-links";
 import { formatNotification, type NotifyFn } from "./telegram-notify";
 import {
   buildTagNames,
@@ -157,12 +162,9 @@ export interface InvoiceIntakeResult {
   error?: string;
 }
 
-interface DownloadedFile {
-  filename: string;
-  content_base64: string;
-  content_type: string;
-  size: number;
-}
+// `DownloadedFile` is owned by the download service so the worker, the
+// service, and any future caller share one shape.
+type DownloadedFile = ServiceDownloadedFile;
 
 interface WorkerLogger {
   log(message: string): void;
@@ -643,256 +645,27 @@ export async function executeInvoiceIntake(
 }
 
 // ── Download step ──────────────────────────────────────────────────────
+//
+// All download logic now lives in `./invoice/download-service.ts`. This
+// thin wrapper preserves the in-file call signature so the orchestrator
+// (executeInvoiceIntake) doesn't need to know about MCP URLs.
 
-async function downloadInvoice(
+function downloadInvoice(
   input: InvoiceIntakeInput,
   classification: InvoiceClassification,
   logger: WorkerLogger,
 ): Promise<DownloadedFile> {
-  return withSpan(tracer, "invoice-worker.download", {
-    "download.strategy": classification.download_strategy ?? "unknown",
-    "email.source": input.email_source,
-    "email.message_id": input.message_id,
-  }, async (span) => {
-    const { email_source, message_id } = input;
-    const strategy = classification.download_strategy;
-    const mcpUrl = email_source === "gmail" ? GMAIL_MCP_URL : OUTLOOK_MCP_URL;
-
-    let file: DownloadedFile;
-    switch (strategy) {
-      case "attachment":
-      case "claude_download":
-        // claude_download: multiple attachments — worker picks the first PDF (best heuristic)
-        file = await downloadAttachment(mcpUrl, email_source, message_id, logger);
-        break;
-
-      case "known_link":
-      case "direct_url":
-        file = await downloadViaLink(input, classification, mcpUrl, logger);
-        break;
-
-      default:
-        throw new Error(`Unsupported download strategy: ${strategy}`);
-    }
-
-    span.setAttribute("download.filename", file.filename);
-    span.setAttribute("download.size", file.size);
-    return file;
-  });
-}
-
-async function downloadAttachment(
-  mcpUrl: string,
-  source: string,
-  messageId: string,
-  logger: WorkerLogger,
-): Promise<DownloadedFile> {
-  logger.log(`Downloading attachment from ${source} message ${messageId}`);
-
-  if (source === "outlook") {
-    // Get attachments list
-    const attachmentsResult = await callMcpTool(mcpUrl, "get_attachments", {
-      message_id: messageId,
-    });
-    const attachmentsText = extractText(attachmentsResult);
-    const parsed = JSON.parse(attachmentsText);
-    // FastMCP unwraps single-element arrays into a plain object
-    const attachments: Array<{ id: string; name: string; content_type: string; size: number }> =
-      Array.isArray(parsed) ? parsed : [parsed];
-
-    if (!attachments.length || !attachments[0]?.id) {
-      throw new Error("No attachments found on email");
-    }
-
-    // Find the best attachment (prefer PDF, then largest)
-    const pdfAttachment = attachments.find(
-      (a) => a.content_type === "application/pdf" || a.name.toLowerCase().endsWith(".pdf"),
-    );
-    const target = pdfAttachment ?? attachments[0];
-
-    // Download it
-    const downloadResult = await callMcpTool(mcpUrl, "download_attachment", {
-      message_id: messageId,
-      attachment_id: target.id,
-    });
-    const downloadData = extractText(downloadResult);
-    const dlParsed = JSON.parse(downloadData) as {
-      name: string;
-      content_type: string;
-      size: number;
-      content_base64: string;
-    };
-
-    return {
-      filename: dlParsed.name,
-      content_base64: dlParsed.content_base64,
-      content_type: dlParsed.content_type,
-      size: dlParsed.size,
-    };
-  }
-
-  if (source === "gmail") {
-    // Gmail: get_gmail_message_content lists attachments in --- ATTACHMENTS --- section,
-    // then get_gmail_attachment_content downloads a specific one.
-    const contentResult = await callMcpTool(mcpUrl, "get_gmail_message_content", {
-      message_id: messageId,
-      user_google_email: GOOGLE_EMAIL,
-    });
-    const contentText = extractText(contentResult);
-
-    // Parse attachment metadata from text: "1. file.pdf (mime, size)\n   Attachment ID: abc"
-    const attachmentRegex = /\d+\.\s+(.+?)\s+\(([^,]+),\s*[\d.]+\s*KB\)\s*\n\s*Attachment ID:\s*(\S+)/g;
-    const attachments: Array<{ filename: string; mimeType: string; attachmentId: string }> = [];
-    let match;
-    while ((match = attachmentRegex.exec(contentText)) !== null) {
-      attachments.push({ filename: match[1], mimeType: match[2], attachmentId: match[3] });
-    }
-
-    if (!attachments.length) {
-      throw new Error("No attachments found on Gmail message");
-    }
-
-    // Find PDF attachment (prefer PDF, fallback to first)
-    const target = attachments.find(
-      (a) => a.mimeType === "application/pdf" || a.filename.toLowerCase().endsWith(".pdf"),
-    ) ?? attachments[0];
-
-    // Download via Gmail MCP — returns a file path or download URL
-    const downloadResult = await callMcpTool(mcpUrl, "get_gmail_attachment_content", {
-      message_id: messageId,
-      attachment_id: target.attachmentId,
-      user_google_email: GOOGLE_EMAIL,
-    });
-    const downloadText = extractText(downloadResult);
-
-    // Extract download URL or file path from text response
-    const urlMatch = downloadText.match(/Download URL:\s*(https?:\/\/\S+)/);
-    const pathMatch = downloadText.match(/Saved to:\s*(\S+)/);
-
-    if (urlMatch) {
-      // HTTP mode — fetch the file from the temporary URL
-      const resp = await fetch(urlMatch[1]);
-      if (!resp.ok) throw new Error(`Failed to fetch Gmail attachment: ${resp.status}`);
-      const buf = Buffer.from(await resp.arrayBuffer());
-      return {
-        filename: target.filename,
-        content_base64: buf.toString("base64"),
-        content_type: target.mimeType,
-        size: buf.length,
-      };
-    } else if (pathMatch) {
-      // stdio mode — read from disk
-      const { readFileSync } = await import("fs");
-      const buf = readFileSync(pathMatch[1]);
-      return {
-        filename: target.filename,
-        content_base64: buf.toString("base64"),
-        content_type: target.mimeType,
-        size: buf.length,
-      };
-    }
-
-    throw new Error("Could not extract file path or URL from Gmail attachment response");
-  }
-
-  throw new Error(`Unsupported email source: ${source}`);
-}
-
-async function downloadViaLink(
-  input: InvoiceIntakeInput,
-  classification: InvoiceClassification,
-  mcpUrl: string,
-  logger: WorkerLogger,
-): Promise<DownloadedFile> {
-  const { email_source: source, message_id: messageId } = input;
-  const { sender, subject } = classification;
-  logger.log(`Downloading via link extraction from ${source} message ${messageId}`);
-
-  // 1. Extract invoice links from email HTML
-  let links: InvoiceLink[] = [];
-  {
-    let html: string | undefined;
-
-    if (source === "outlook") {
-      const emailResult = await callMcpTool(mcpUrl, "get_email", {
-        message_id: messageId,
-      });
-      const emailData = extractText(emailResult);
-      const parsed = JSON.parse(emailData);
-      html = parsed.body_html ?? "";
-    } else if (source === "gmail") {
-      const contentResult = await callMcpTool(mcpUrl, "get_gmail_message_content", {
-        message_id: messageId,
-        user_google_email: process.env.GMAIL_EMAIL ?? "",
-        body_format: "html",
-      });
-      html = extractText(contentResult);
-    }
-
-    if (html) {
-      links = extractInvoiceLinks(html, sender, subject);
-    }
-  }
-
-  if (!links.length) {
-    throw new Error("No invoice download links found in email");
-  }
-
-  // 2. Download the first matching link
-  logger.log(`Downloading invoice from: ${links[0].url}`);
-  return downloadInvoiceUrl(links[0].url);
-}
-
-/** Download a file from an invoice URL. Retries with browser headers on 403/409/429. */
-async function downloadInvoiceUrl(url: string): Promise<DownloadedFile> {
-  let resp = await fetch(url, { redirect: "follow" });
-
-  // Retry with browser-like headers if blocked
-  if (resp.status === 403 || resp.status === 409 || resp.status === 429) {
-    resp = await fetch(url, {
-      redirect: "follow",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,*/*;q=0.8",
-      },
-    });
-  }
-
-  if (resp.status === 403 || resp.status === 409 || resp.status === 429) {
-    throw new Error(`Download failed: HTTP ${resp.status}. Link may have expired.`);
-  }
-
-  if (!resp.ok) {
-    throw new Error(`Download failed: HTTP ${resp.status}`);
-  }
-
-  const buffer = await resp.arrayBuffer();
-  const content_base64 = Buffer.from(buffer).toString("base64");
-
-  // Extract filename from Content-Disposition or URL
-  let filename: string | undefined;
-  const cd = resp.headers.get("content-disposition") ?? "";
-  if (cd.includes("filename=")) {
-    const names = cd.match(/filename[*]?=["']?([^"';]+)/);
-    filename = names?.[1];
-  }
-  if (!filename) {
-    filename = new URL(url).pathname.split("/").pop() || "download.pdf";
-    if (buffer.byteLength > 4) {
-      const header = new Uint8Array(buffer.slice(0, 5));
-      const isPdf = header[0] === 0x25 && header[1] === 0x50 && header[2] === 0x44 && header[3] === 0x46;
-      if (isPdf && !filename.toLowerCase().endsWith(".pdf")) {
-        filename += ".pdf";
-      }
-    }
-  }
-
-  return {
-    filename: filename!,
-    content_base64,
-    content_type: resp.headers.get("content-type") ?? "application/pdf",
-    size: buffer.byteLength,
-  };
+  return downloadInvoiceImpl(
+    { email_source: input.email_source, message_id: input.message_id },
+    {
+      sender: classification.sender,
+      subject: classification.subject,
+      download_strategy: classification.download_strategy,
+    },
+    { gmail: GMAIL_MCP_URL, outlook: OUTLOOK_MCP_URL },
+    GOOGLE_EMAIL,
+    logger,
+  );
 }
 
 // ── Paperless operations ───────────────────────────────────────────────
@@ -918,74 +691,13 @@ async function resolveCorrespondent(
   return adapter.createCorrespondent(vendor);
 }
 
-interface DedupeResult {
-  outcome: "duplicate" | "duplicate_likely";
-  existing_id: number;
-  message: string;
-}
-
-async function checkDuplicate(
+function checkDuplicate(
   classification: { order_id: string | null; total_amount: number | null },
   correspondent: CorrespondentInfo,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<DedupeResult | null> {
-  return withSpan(tracer, "invoice-worker.dedup", {
-    "dedup.order_id": classification.order_id ?? "none",
-    "dedup.correspondent": correspondent.name,
-  }, async (span) => {
-    if (!classification.order_id) {
-      logger.log("No order_id — skipping dedup check");
-      span.setAttribute("dedup.outcome", "no_duplicate");
-      return null;
-    }
-
-    logger.log(`Checking for duplicate: order_id=${classification.order_id}`);
-    const adapter = getPaperlessAdapter(registry);
-    const docs = await adapter.searchDocumentsByCustomFieldAndCorrespondent(
-      classification.order_id,
-      correspondent.id,
-      logger,
-    );
-
-    if (!docs.length) {
-      span.setAttribute("dedup.outcome", "no_duplicate");
-      return null;
-    }
-
-    // Extract custom field values by field ID
-    const orderIdFieldId = registry.getFieldId("order_id");
-    const totalAmountFieldId = registry.getFieldId("total_amount");
-
-    for (const doc of docs) {
-      const existingOrderId = doc.custom_fields.find(cf => cf.field === orderIdFieldId)?.value as string | undefined;
-      if (existingOrderId === classification.order_id) {
-        const existingAmount = doc.custom_fields.find(cf => cf.field === totalAmountFieldId)?.value as number | undefined;
-        if (
-          existingAmount != null &&
-          classification.total_amount != null &&
-          existingAmount !== classification.total_amount
-        ) {
-          span.setAttribute("dedup.outcome", "duplicate_likely");
-          return {
-            outcome: "duplicate_likely",
-            existing_id: doc.id,
-            message: `Order ${classification.order_id} matches doc #${doc.id} "${doc.title}" but amount differs (${existingAmount} vs ${classification.total_amount})`,
-          };
-        }
-
-        span.setAttribute("dedup.outcome", "duplicate");
-        return {
-          outcome: "duplicate",
-          existing_id: doc.id,
-          message: `Order ${classification.order_id} already exists as doc #${doc.id} "${doc.title}"`,
-        };
-      }
-    }
-
-    span.setAttribute("dedup.outcome", "no_duplicate");
-    return null;
-  });
+  return checkDuplicateImpl(classification, correspondent, getPaperlessAdapter(registry), registry, logger);
 }
 
 async function resolveTags(
@@ -1468,62 +1180,12 @@ function buildScanTitle(
 
 // ── GDrive helpers ────────────────────────────────────────────────────
 
-async function downloadFromGdrive(
+function downloadFromGdrive(
   fileId: string,
   filename: string | undefined,
   logger: WorkerLogger,
 ): Promise<DownloadedFile> {
-  logger.log(`Downloading file ${fileId} from GDrive`);
-
-  // Step 1: Get download URL via Drive MCP
-  const urlResult = await callMcpTool(GMAIL_MCP_URL, "get_drive_file_download_url", {
-    file_id: fileId,
-    user_google_email: GOOGLE_EMAIL,
-  });
-  const urlText = extractText(urlResult);
-  if (!urlText) throw new Error("Failed to get download URL from GDrive");
-
-  // Extract URL from response (may be JSON or text with URL)
-  let downloadUrl: string;
-  try {
-    const parsed = JSON.parse(urlText);
-    downloadUrl = parsed.url ?? parsed.download_url ?? parsed.webContentLink ?? "";
-  } catch {
-    // Try to extract URL from text
-    const urlMatch = urlText.match(/https?:\/\/[^\s"<>]+/);
-    downloadUrl = urlMatch ? urlMatch[0] : "";
-  }
-  if (!downloadUrl) throw new Error(`Could not extract download URL from: ${urlText.slice(0, 200)}`);
-
-  // The MCP server returns localhost URLs, but we're in Docker — replace with container hostname
-  downloadUrl = downloadUrl.replace("http://localhost:8000", GMAIL_MCP_URL.replace("/mcp", ""));
-  logger.log(`Got download URL for ${fileId}`);
-
-  // Step 2: Download the actual file binary
-  const resolvedFilename = filename ?? `gdrive-${fileId}`;
-
-  const response = await fetch(downloadUrl, { redirect: "follow" });
-  if (!response.ok) throw new Error(`GDrive download failed: ${response.status} ${response.statusText}`);
-
-  const arrayBuffer = await response.arrayBuffer();
-  const contentBase64 = Buffer.from(arrayBuffer).toString("base64");
-
-  // Determine content type from response or filename
-  let contentType = response.headers.get("content-type") ?? "application/pdf";
-  const ext = resolvedFilename.toLowerCase().split(".").pop();
-  if (contentType === "application/octet-stream") {
-    if (ext === "jpg" || ext === "jpeg") contentType = "image/jpeg";
-    else if (ext === "png") contentType = "image/png";
-    else if (ext === "heic") contentType = "image/heic";
-    else contentType = "application/pdf";
-  }
-
-  return {
-    filename: resolvedFilename,
-    content_base64: contentBase64,
-    content_type: contentType,
-    size: arrayBuffer.byteLength,
-  };
+  return downloadFromGdriveImpl(fileId, filename, GMAIL_MCP_URL, GOOGLE_EMAIL, logger);
 }
 
 interface CustomFieldResult {
