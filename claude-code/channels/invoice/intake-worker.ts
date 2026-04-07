@@ -742,6 +742,8 @@ function uploadToPaperless(
       tagIds: params.tagIds,
       documentTypeId: params.documentTypeId,
       storagePathId: params.storagePathId,
+      totalAmount: params.totalAmount,
+      orderId: params.orderId,
     },
     getPaperlessAdapter(registry),
     logger,

@@ -29,11 +29,13 @@ export class WorkflowSchemaError extends Error {
     public readonly expected: string,
     public readonly got: unknown,
     public readonly context?: Record<string, unknown>,
+    options?: { cause?: unknown },
   ) {
     const gotDesc = describe(got);
     const ctx = context ? ` ${JSON.stringify(context)}` : "";
     super(
       `${schemaName}: invalid field '${field}' — expected ${expected}, got ${gotDesc}${ctx}`,
+      options,
     );
     this.name = "WorkflowSchemaError";
   }
@@ -349,12 +351,16 @@ export function validateClassificationByStep(step: string, result: unknown): unk
     return result;
   } catch (err) {
     if (err instanceof WorkflowSchemaError) {
+      // Re-throw with the step name added to the context. Pass `cause` so the
+      // original stack trace and error chain are preserved (Node.js prints
+      // "Caused by:" frames when this is logged).
       throw new WorkflowSchemaError(
         err.schemaName,
         err.field,
         err.expected,
         err.got,
         { ...(err.context ?? {}), step },
+        { cause: err },
       );
     }
     throw err;

@@ -117,7 +117,7 @@ export async function downloadInvoice(
  * `get_attachments` list response than in `download_attachment`. Phase 0.1
  * fixed a regression where this was returning the metadata size.
  */
-export async function downloadAttachment(
+async function downloadAttachment(
   mcpUrl: string,
   source: string,
   messageId: string,
@@ -235,7 +235,7 @@ export async function downloadAttachment(
  * Extract invoice download links from the email HTML body using vendor
  * rules in `invoice-links.ts`, then HTTP-download the first match.
  */
-export async function downloadViaLink(
+async function downloadViaLink(
   input: EmailRef,
   classification: LinkDownloadContext,
   mcpUrl: string,
@@ -290,7 +290,7 @@ export async function downloadViaLink(
  * path; falls back to `download.pdf` and adds `.pdf` if the magic header
  * `%PDF-` is present.
  */
-export async function downloadInvoiceUrl(url: string): Promise<DownloadedFile> {
+async function downloadInvoiceUrl(url: string): Promise<DownloadedFile> {
   let resp = await fetch(url, { redirect: "follow" });
 
   // Retry with browser-like headers if blocked

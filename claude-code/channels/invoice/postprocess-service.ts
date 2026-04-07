@@ -38,7 +38,7 @@ const tracer = getTracer("invoice-worker");
 // ── Owner / doc-type → Paperless name mappings ────────────────────────
 
 /** Storage path name mapping: owner → bucket → Paperless storage path name. */
-export const STORAGE_PATH_NAMES: Record<string, Record<string, string>> = {
+const STORAGE_PATH_NAMES: Record<string, Record<string, string>> = {
   techlab: {
     invoices: "Techlab Invoices",
     documents: "Techlab Documents",
@@ -50,7 +50,7 @@ export const STORAGE_PATH_NAMES: Record<string, Record<string, string>> = {
 };
 
 /** doc_type → Paperless document type name (also used to pick storage bucket). */
-export const DOC_TYPE_TO_PAPERLESS: Record<string, string> = {
+const DOC_TYPE_TO_PAPERLESS: Record<string, string> = {
   invoice: "Invoice",
   receipt: "Invoice",
   credit_note: "Invoice",
@@ -126,6 +126,11 @@ export interface UploadParams {
   tagIds: number[];
   documentTypeId?: number;
   storagePathId?: number;
+  /** Observability — surfaced as `upload.total_amount` span attribute.
+   *  Custom fields are PATCHed post-consumption, not in the multipart upload. */
+  totalAmount?: number | null;
+  /** Observability — surfaced as `upload.order_id` span attribute. */
+  orderId?: string | null;
 }
 
 export interface UploadResult {
@@ -151,6 +156,8 @@ export async function uploadToPaperless(
       tagIds: params.tagIds,
       documentTypeId: params.documentTypeId,
       storagePathId: params.storagePathId,
+      totalAmountForSpan: params.totalAmount,
+      orderIdForSpan: params.orderId,
     },
     logger,
   );

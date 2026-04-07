@@ -61,6 +61,12 @@ export interface UploadMetadata {
   tagIds: number[];
   documentTypeId?: number;
   storagePathId?: number;
+  /** Observability-only: surfaced as `upload.total_amount` span attribute.
+   *  NOT sent in the multipart body — custom fields are PATCHed
+   *  post-consumption via `setCustomFields`. */
+  totalAmountForSpan?: number | null;
+  /** Observability-only: surfaced as `upload.order_id` span attribute. */
+  orderIdForSpan?: string | null;
 }
 
 export interface UploadResult {
@@ -296,6 +302,8 @@ export class PaperlessAdapter {
       "upload.tag_ids": metadata.tagIds.join(","),
       "upload.document_type_id": metadata.documentTypeId ?? 0,
       "upload.storage_path_id": metadata.storagePathId ?? 0,
+      "upload.total_amount": String(metadata.totalAmountForSpan ?? ""),
+      "upload.order_id": metadata.orderIdForSpan ?? "",
       "upload.file_size": file.content_base64.length,
     }, async (span) => {
       logger.log(`Uploading to Paperless: "${metadata.title}"`);
