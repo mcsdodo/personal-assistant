@@ -359,7 +359,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const ok = submitClassification(db, jobId, step, result);
         if (!ok) {
-          return { content: [text("Error: job not found, not awaiting classification, or step mismatch")], isError: true };
+          // submitClassification returns false for FOUR distinct reasons.
+          // Re-fetch the job to give the caller the actual reason instead of
+          // a generic message — schema validation failures left for hours of
+          // debugging in the past, see _tasks/46-mcp-oauth-state-cleanup/.
+          const j = getJob(db, jobId);
+          if (!j) {
+            return { content: [text(`Error: job ${jobId} not found`)], isError: true };
+          }
+          if (j.state === "failed" && j.error_json) {
+            const errMsg = (() => {
+              try {
+                const e = JSON.parse(j.error_json);
+                if (e.code === "schema_validation_failed") {
+                  return `Schema validation failed for ${step}: ${e.message} (field: ${e.field ?? "?"})`;
+                }
+                return e.message ?? j.error_json;
+              } catch {
+                return j.error_json;
+              }
+            })();
+            return { content: [text(`Error: job ${jobId} is failed — ${errMsg}`)], isError: true };
+          }
+          return { content: [text(`Error: job ${jobId} cannot accept submit_classification (state=${j.state}, expected awaiting_classification with matching step_started)`)], isError: true };
         }
         return { content: [text({ success: true, job_id: jobId, step })] };
       }

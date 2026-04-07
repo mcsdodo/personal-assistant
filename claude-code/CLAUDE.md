@@ -126,6 +126,7 @@ The workflow worker sends classification requests via channel when it needs LLM 
    - All email-classifier output fields (vendor, action, download_strategy, etc.)
    - `subject`: the email subject line (worker needs it for month_tag inference)
    - `received_at`: the email received timestamp ISO (worker needs it for month_tag fallback)
+   - `sender`: the email's From address (worker needs it for the download path)
 5. If the classifier returns `action: "ignore"`, the worker will complete the job as ignored automatically
 
 **`event_type: "classify_document"`** — the worker has downloaded a PDF and needs document classification:

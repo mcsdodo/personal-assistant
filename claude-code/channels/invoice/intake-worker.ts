@@ -297,7 +297,7 @@ export async function executeInvoiceIntake(
             message_id: input.message_id,
           },
           channel,
-          notificationContent: `Classification request: fetch the email, run email-classifier, and call submit_classification. Include subject and received_at in the result.`,
+          notificationContent: `Classification request: fetch the email, run email-classifier, and call submit_classification. Include subject, received_at, and sender (the email's From address) in the result.`,
           notificationMeta: {
             event_type: "classify_email",
             job_id: job.id,
