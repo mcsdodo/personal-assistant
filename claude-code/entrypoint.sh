@@ -117,10 +117,16 @@ for attempt in $(seq 1 12); do
     echo "All 5 stdio channels running (after ${attempt} checks)"
     break
   fi
+  # Per-iteration log so the failure trace is unambiguous. The MISSING array
+  # is rebuilt every iteration, so the post-loop final value is a snapshot of
+  # the LAST attempt's missing channels — not necessarily the ones that
+  # blocked the loop. Logging every iteration gives the full timeline.
+  # See _tasks/47-pipeline-hardening-followups/ Issue 3 for the bug this fixes.
+  echo "  attempt ${attempt}/12: still missing: ${MISSING[*]}"
   sleep 5
 done
 if [ "$CHANNELS_READY" = "false" ]; then
-  echo "ERROR: Missing channel subprocesses after 60s: ${MISSING[*]}"
+  echo "ERROR: Missing channel subprocesses after 60s — see per-attempt log above"
   echo "Killing tmux session to trigger container restart..."
   tmux kill-server 2>/dev/null || true
   exit 1
