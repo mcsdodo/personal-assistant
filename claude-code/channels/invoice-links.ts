@@ -34,16 +34,31 @@ const INVOICE_LINK_RULES: VendorRule[] = [
  */
 export function extractInvoiceLinks(
   html: string,
-  sender: string,
-  subject: string,
+  sender: string | null,
+  subject: string | null,
 ): InvoiceLink[] {
   if (!html) return [];
+
+  // sender and subject can be null for manual jobs (created via the
+  // `create_invoice_intake_job` MCP tool, where the operator only supplies
+  // email_source + message_id). Vendor-specific rules need at least one of
+  // them to match — if both are null we skip vendor matching entirely and
+  // return an empty list, since we can't classify which vendor the link
+  // belongs to. See _tasks/_done/47-pipeline-hardening-followups/ Issue 1.
+  if (sender === null && subject === null) return [];
 
   // Use regex to find all <a> tags with href attributes.
   // This avoids a DOM parser dependency while handling real-world email HTML.
   const anchorRegex = /<a\s[^>]*href\s*=\s*"([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
   const links: InvoiceLink[] = [];
   const seen = new Set<string>();
+
+  // Vendor rules expect string inputs for the regex .test() calls. Use
+  // empty-string fallbacks for the null branches so the existing rule
+  // semantics (test against sender OR subject) keep working when only
+  // one of the two is available.
+  const senderForMatch = sender ?? "";
+  const subjectForMatch = subject ?? "";
 
   let match: RegExpExecArray | null;
   while ((match = anchorRegex.exec(html)) !== null) {
@@ -67,9 +82,9 @@ export function extractInvoiceLinks(
 
     for (const rule of INVOICE_LINK_RULES) {
       // Match sender pattern against sender OR subject (handles forwarded emails)
-      if (!rule.sender.test(sender) && !rule.sender.test(subject)) continue;
+      if (!rule.sender.test(senderForMatch) && !rule.sender.test(subjectForMatch)) continue;
       if (!rule.linkText.test(text)) continue;
-      if (rule.subject && !rule.subject.test(subject)) continue;
+      if (rule.subject && !rule.subject.test(subjectForMatch)) continue;
 
       const url = new URL(href);
       const docId = url.searchParams.get("d") ?? undefined;

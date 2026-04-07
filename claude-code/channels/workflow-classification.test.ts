@@ -193,3 +193,141 @@ describe("awaiting_classification state", () => {
     expect(getJob(db, job.id)!.state).toBe("cancelled");
   });
 });
+
+// ── submitClassification merge step (task 47 / Issue 1) ────────────────
+//
+// The merge copies sender/subject/received_at from the job's input_json
+// (where the watcher writes them at job-creation time) into Claude's
+// classification result before schema validation. Tests cover:
+//   - Watcher metadata wins when present in input_json
+//   - Watcher null wins when explicitly null in input_json (source MCP
+//     returned null)
+//   - Falls back to Claude's value when watcher didn't provide the key
+//   - Falls back to null when neither provided (and the field is
+//     `nullableString` so validation accepts it)
+//   - Manual jobs (empty input_json) work via Claude-injection fallback
+
+describe("submitClassification metadata merge", () => {
+  // Strip the would-be-injected fields from the base classification —
+  // simulates Claude's NEW (post-task-47) submission that doesn't include
+  // sender/subject/received_at because the worker no longer asks for them.
+  const CLAUDE_RESULT_NO_METADATA = (() => {
+    const { sender, subject, received_at, ...rest } = VALID_EMAIL_RESULT;
+    return rest;
+  })();
+
+  function setupParkedJob(inputJson: string) {
+    const job = createJob(db, { workflowType: "invoice_intake", inputJson });
+    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
+    requestClassification(db, job.id, "classify_email", {});
+    return job;
+  }
+
+  function getStoredResult(jobId: string) {
+    const events = getJobEvents(db, jobId);
+    const completed = events.find(
+      (e) =>
+        e.event_type === "step_completed" &&
+        JSON.parse(e.payload_json!).step === "classify_email",
+    );
+    return JSON.parse(completed!.payload_json!).result;
+  }
+
+  test("merges watcher-injected metadata when input_json has it", () => {
+    const job = setupParkedJob(
+      JSON.stringify({
+        email_source: "outlook",
+        message_id: "abc",
+        sender: "watcher@vendor.com",
+        subject: "From the watcher",
+        received_at: "2026-04-07T10:00:00Z",
+      }),
+    );
+
+    const ok = submitClassification(db, job.id, "classify_email", CLAUDE_RESULT_NO_METADATA);
+    expect(ok).toBe(true);
+
+    const stored = getStoredResult(job.id);
+    expect(stored.sender).toBe("watcher@vendor.com");
+    expect(stored.subject).toBe("From the watcher");
+    expect(stored.received_at).toBe("2026-04-07T10:00:00Z");
+    expect(stored.vendor).toBe("Alza.sk"); // Claude's classification preserved
+  });
+
+  test("merges null metadata when watcher explicitly wrote null", () => {
+    const job = setupParkedJob(
+      JSON.stringify({
+        email_source: "outlook",
+        message_id: "abc",
+        sender: null,
+        subject: null,
+        received_at: null,
+      }),
+    );
+
+    const ok = submitClassification(db, job.id, "classify_email", CLAUDE_RESULT_NO_METADATA);
+    expect(ok).toBe(true);
+
+    const stored = getStoredResult(job.id);
+    expect(stored.sender).toBeNull();
+    expect(stored.subject).toBeNull();
+    expect(stored.received_at).toBeNull();
+  });
+
+  test("falls back to Claude-provided value when watcher didn't include the field (manual job)", () => {
+    // Manual jobs from create_invoice_intake_job: input_json has only the
+    // bare minimum, no watcher metadata. Claude would still include sender
+    // etc. for backward compat in this scenario.
+    const job = setupParkedJob(JSON.stringify({ email_source: "outlook", message_id: "abc" }));
+
+    const ok = submitClassification(db, job.id, "classify_email", VALID_EMAIL_RESULT);
+    expect(ok).toBe(true);
+
+    const stored = getStoredResult(job.id);
+    expect(stored.sender).toBe("test@alza.sk"); // from Claude's payload
+    expect(stored.subject).toBe("Test invoice");
+    expect(stored.received_at).toBe("2026-04-01T00:00:00Z");
+  });
+
+  test("watcher value wins over Claude value when both present", () => {
+    // Defensive: during a hypothetical rolling upgrade, Claude might still
+    // include sender. The watcher's value is the source of truth.
+    const job = setupParkedJob(
+      JSON.stringify({
+        email_source: "outlook",
+        message_id: "abc",
+        sender: "watcher@authoritative.com",
+      }),
+    );
+
+    const ok = submitClassification(db, job.id, "classify_email", VALID_EMAIL_RESULT);
+    expect(ok).toBe(true);
+
+    const stored = getStoredResult(job.id);
+    expect(stored.sender).toBe("watcher@authoritative.com");
+  });
+
+  test("succeeds with null fields when neither watcher nor Claude provided them", () => {
+    const job = setupParkedJob(JSON.stringify({ email_source: "outlook", message_id: "abc" }));
+
+    const ok = submitClassification(db, job.id, "classify_email", CLAUDE_RESULT_NO_METADATA);
+    expect(ok).toBe(true);
+
+    const stored = getStoredResult(job.id);
+    expect(stored.sender).toBeNull();
+    expect(stored.subject).toBeNull();
+    expect(stored.received_at).toBeNull();
+    expect(stored.vendor).toBe("Alza.sk"); // classification preserved
+  });
+
+  test("malformed input_json is treated as empty (no merge), Claude's values used as fallback", () => {
+    const job = setupParkedJob("not-valid-json");
+
+    const ok = submitClassification(db, job.id, "classify_email", VALID_EMAIL_RESULT);
+    expect(ok).toBe(true);
+
+    const stored = getStoredResult(job.id);
+    // No watcher metadata, Claude's values flow through
+    expect(stored.sender).toBe("test@alza.sk");
+  });
+});

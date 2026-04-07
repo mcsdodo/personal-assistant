@@ -115,12 +115,23 @@ export interface InvoiceClassification {
   subtitle: string | null;
   total_amount: number | null;
   currency: string | null;
-  /** Email subject — required in classify_email result for month_tag and title */
-  subject: string;
-  /** Email received timestamp ISO — required in classify_email result for month_tag fallback */
-  received_at: string;
-  /** Email sender — required in classify_email result for link extraction */
-  sender: string;
+  /**
+   * Email subject — worker-injected from input_json by submitClassification
+   * before validation. Null for manual jobs that lacked the metadata.
+   * Used for month_tag inference and title generation; downstream null-safe.
+   */
+  subject: string | null;
+  /**
+   * Email received timestamp ISO — worker-injected from input_json. Null
+   * for manual jobs. Used as a month_tag fallback; downstream null-safe.
+   */
+  received_at: string | null;
+  /**
+   * Email sender — worker-injected from input_json. Null for manual jobs.
+   * Used for vendor-specific link extraction rules; extractInvoiceLinks
+   * gracefully degrades when null.
+   */
+  sender: string | null;
 }
 
 export interface ScanIntakeInput {
@@ -297,7 +308,7 @@ export async function executeInvoiceIntake(
             message_id: input.message_id,
           },
           channel,
-          notificationContent: `Classification request: fetch the email, run email-classifier, and call submit_classification. Include subject, received_at, and sender (the email's From address) in the result.`,
+          notificationContent: `Classification request: fetch the email, run email-classifier, and call submit_classification with the classifier output.`,
           notificationMeta: {
             event_type: "classify_email",
             job_id: job.id,

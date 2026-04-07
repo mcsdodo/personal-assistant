@@ -393,7 +393,19 @@ export async function processNewEmails(db: Database, channel: Server, emails: Em
     // Validate the job input against the schema before persisting it. This
     // catches any drift between the watcher's idea of an invoice_intake input
     // and the worker's expectations.
-    const jobInput = { email_source: email.source, message_id: email.id };
+    //
+    // We pass the email metadata (sender/subject/received_at) here so the
+    // worker can read it from input_json without round-tripping through
+    // Claude's classification. submitClassification's merge step copies
+    // these into the classification result before schema validation.
+    // See _tasks/_done/47-pipeline-hardening-followups/ Issue 1.
+    const jobInput = {
+      email_source: email.source,
+      message_id: email.id,
+      sender: email.sender ?? null,
+      subject: email.subject ?? null,
+      received_at: email.receivedAt ?? null,
+    };
     try {
       validateInvoiceIntakeInput(jobInput);
     } catch (err) {

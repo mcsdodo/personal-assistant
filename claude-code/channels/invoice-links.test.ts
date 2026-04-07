@@ -165,6 +165,35 @@ describe("extractInvoiceLinks", () => {
     });
   });
 
+  // Manual jobs (created via the create_invoice_intake_job MCP tool with no
+  // watcher metadata in input_json) can land here with null sender and null
+  // subject. The schema's nullableString allows it; this function must
+  // gracefully handle the null path. Added in task 47 / Issue 1.
+  describe("null sender/subject (manual job path)", () => {
+    test("returns empty array when both sender and subject are null", () => {
+      // Without sender/subject we can't classify which vendor the link
+      // belongs to, so we don't try.
+      const links = extractInvoiceLinks(ALZA_SIMPLE_HTML, null, null);
+      expect(links).toHaveLength(0);
+    });
+
+    test("matches via subject when sender is null", () => {
+      const links = extractInvoiceLinks(
+        ALZA_SIMPLE_HTML,
+        null,
+        "Fwd: alza.sk order confirmation",
+      );
+      expect(links).toHaveLength(1);
+      expect(links[0].docId).toBe("12345");
+    });
+
+    test("matches via sender when subject is null", () => {
+      const links = extractInvoiceLinks(ALZA_SIMPLE_HTML, "info@alza.sk", null);
+      expect(links).toHaveLength(1);
+      expect(links[0].docId).toBe("12345");
+    });
+  });
+
   describe("doc_id extraction", () => {
     test("extracts doc_id from 'd' query parameter", () => {
       const links = extractInvoiceLinks(

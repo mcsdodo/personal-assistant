@@ -48,8 +48,12 @@ export interface DownloadServiceLogger {
 
 /** Subset of the email classification fields the link-download path needs. */
 export interface LinkDownloadContext {
-  sender: string;
-  subject: string;
+  // Both can be null for manual jobs (operator created via the
+  // create_invoice_intake_job MCP tool without watcher metadata in
+  // input_json). When both are null, link extraction returns no matches
+  // — see invoice-links.ts.
+  sender: string | null;
+  subject: string | null;
   download_strategy: DownloadStrategy | null;
 }
 

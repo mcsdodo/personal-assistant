@@ -422,11 +422,55 @@ export function submitClassification(
   const startedPayload = JSON.parse(lastStarted.payload_json ?? "{}");
   if (startedPayload.step !== step) return false;
 
+  // For classify_email, the schema requires `sender`, `subject`, and
+  // `received_at` — but these are NOT classifier output. They're structural
+  // metadata that the watcher writes into `input_json` at job-creation time.
+  // Merge them into Claude's classification result here, BEFORE validation,
+  // so the schema can validate the merged result. Watcher-injected fields
+  // override anything Claude may have included (defensive against rolling
+  // upgrades; normally Claude won't include these at all). For manual jobs
+  // where `input_json` lacks the metadata, the merged values will be null
+  // and downstream code (`extractInvoiceLinks`, etc.) handles the null path.
+  // See _tasks/_done/47-pipeline-hardening-followups/ Issue 1.
+  let mergedResult: unknown = classificationResult;
+  if (step === "classify_email") {
+    let inputMeta: Record<string, unknown> = {};
+    if (job.input_json) {
+      try {
+        const parsed = JSON.parse(job.input_json);
+        if (parsed && typeof parsed === "object") {
+          inputMeta = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // Malformed input_json — proceed with empty inputMeta. Schema
+        // validation will surface a clear error if Claude also didn't
+        // provide the fields.
+      }
+    }
+    const claudeObj = (classificationResult && typeof classificationResult === "object")
+      ? (classificationResult as Record<string, unknown>)
+      : {};
+    // Watcher-injected fields take precedence WHEN PRESENT in input_json
+    // (even if explicitly null — the watcher writes null when the source MCP
+    // didn't return a sender, and that null is the source of truth). When
+    // the watcher didn't write the field at all (manual jobs from the legacy
+    // input_json shape), fall back to whatever Claude returned. Final null
+    // fallback if neither provided.
+    const pickField = (key: string) =>
+      key in inputMeta ? (inputMeta[key] ?? null) : (claudeObj[key] ?? null);
+    mergedResult = {
+      ...claudeObj,
+      sender: pickField("sender"),
+      subject: pickField("subject"),
+      received_at: pickField("received_at"),
+    };
+  }
+
   // Validate the payload before storing it. A malformed payload from Claude
   // would silently corrupt the resume path otherwise.
   let validated: unknown;
   try {
-    validated = validateClassificationByStep(step, classificationResult);
+    validated = validateClassificationByStep(step, mergedResult);
   } catch (err) {
     if (err instanceof WorkflowSchemaError) {
       failJob(db, jobId, {

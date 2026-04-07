@@ -122,11 +122,7 @@ The workflow worker sends classification requests via channel when it needs LLM 
 1. Read `email_source`, `message_id`, and `job_id` from the event meta
 2. Fetch the email from the email MCP (use `message_id`) to get sender, subject, body preview, has_attachments, received_at
 3. Invoke the `email-classifier` subagent with the email metadata
-4. Call `submit_classification(job_id, step="classify_email", result=<combined>)` — the result MUST include:
-   - All email-classifier output fields (vendor, action, download_strategy, etc.)
-   - `subject`: the email subject line (worker needs it for month_tag inference)
-   - `received_at`: the email received timestamp ISO (worker needs it for month_tag fallback)
-   - `sender`: the email's From address (worker needs it for the download path)
+4. Call `submit_classification(job_id, step="classify_email", result=<email-classifier output>)` — pass the email-classifier subagent's output directly. The worker injects `sender`/`subject`/`received_at` from the watcher's `input_json` automatically before validation; you do not need to include them.
 5. If the classifier returns `action: "ignore"`, the worker will complete the job as ignored automatically
 
 **`event_type: "classify_document"`** — the worker has downloaded a PDF and needs document classification:

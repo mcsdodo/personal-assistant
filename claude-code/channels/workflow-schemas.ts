@@ -156,6 +156,15 @@ export interface InvoiceIntakeInputSchema {
   message_id: string;
   file_path?: string;
   force?: boolean;
+  // Watcher-injected metadata. Present when the email-watcher created the
+  // job (typical case); absent for manual jobs created via the
+  // `create_invoice_intake_job` MCP tool. The submitClassification merge
+  // step copies these into the classification result so the schema there
+  // can validate the merged result and the worker can use them in the
+  // resume path. See _tasks/_done/47-pipeline-hardening-followups/ Issue 1.
+  sender?: string | null;
+  subject?: string | null;
+  received_at?: string | null;
 }
 
 export const EMAIL_SOURCES = ["gmail", "outlook"] as const;
@@ -167,6 +176,9 @@ export function validateInvoiceIntakeInput(input: unknown): InvoiceIntakeInputSc
     message_id: reqString("InvoiceIntakeInput", obj, "message_id"),
     file_path: optString("InvoiceIntakeInput", obj, "file_path"),
     force: optBool("InvoiceIntakeInput", obj, "force"),
+    sender: nullableString("InvoiceIntakeInput", obj, "sender", { allowMissing: true }),
+    subject: nullableString("InvoiceIntakeInput", obj, "subject", { allowMissing: true }),
+    received_at: nullableString("InvoiceIntakeInput", obj, "received_at", { allowMissing: true }),
   };
 }
 
@@ -197,9 +209,14 @@ export function validateScanIntakeInput(input: unknown): ScanIntakeInputSchema {
 //
 // IMPORTANT: these schemas reflect what the worker actually consumes, NOT
 // the simplified shapes in design docs. The download_strategy enum and
-// action enum match what email-classifier.md returns, plus the additional
-// `subject`/`received_at`/`sender` fields the worker injects so it can build
-// titles and month tags during the resume path.
+// action enum match what email-classifier.md returns. The `subject` /
+// `received_at` / `sender` fields are NOT from the email-classifier — they
+// come from `input_json` (written by the watcher at job creation time) and
+// are merged into the classification result by `submitClassification` in
+// `workflow-db.ts` BEFORE schema validation runs. They're listed here as
+// part of the schema because the worker uses them during the resume path
+// (title generation, month-tag inference, download routing).
+// See _tasks/_done/47-pipeline-hardening-followups/ Issue 1.
 
 export const DOWNLOAD_STRATEGIES = [
   "attachment",
@@ -238,10 +255,16 @@ export interface EmailClassificationResultSchema {
   subtitle?: string | null;
   total_amount: number | null;
   currency: string | null;
-  /** Worker-injected so the resume path can rebuild titles and month tags. */
-  subject: string;
-  received_at: string;
-  sender: string;
+  /**
+   * Worker-injected from `input_json` by `submitClassification`'s merge step.
+   * Watcher writes them at job-creation time. Manual jobs (created via the
+   * `create_invoice_intake_job` MCP tool) may have these as null. Downstream
+   * code (`extractInvoiceLinks`, `resolveMonthTag`, `generateTitle`) handles
+   * null values.
+   */
+  subject: string | null;
+  received_at: string | null;
+  sender: string | null;
 }
 
 export function validateEmailClassificationResult(input: unknown): EmailClassificationResultSchema {
@@ -283,9 +306,13 @@ export function validateEmailClassificationResult(input: unknown): EmailClassifi
     subtitle: nullableString("EmailClassificationResult", obj, "subtitle", { allowMissing: true }),
     total_amount: nullableNumber("EmailClassificationResult", obj, "total_amount"),
     currency: nullableString("EmailClassificationResult", obj, "currency"),
-    subject: reqString("EmailClassificationResult", obj, "subject"),
-    received_at: reqString("EmailClassificationResult", obj, "received_at"),
-    sender: reqString("EmailClassificationResult", obj, "sender"),
+    // These three are watcher-injected via `submitClassification`'s merge
+    // step (or null for manual jobs). They must be present in the merged
+    // object — `nullableString` without `allowMissing` enforces that — but
+    // their value can be null.
+    subject: nullableString("EmailClassificationResult", obj, "subject"),
+    received_at: nullableString("EmailClassificationResult", obj, "received_at"),
+    sender: nullableString("EmailClassificationResult", obj, "sender"),
   };
 }
 
