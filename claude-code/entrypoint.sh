@@ -10,6 +10,39 @@ if [ ! -f /home/node/.claude/.credentials.json ]; then
   echo "Run: docker exec -it personal-assistant-claude claude login"
 fi
 
+# Strip stale mcpOAuth state from .credentials.json. Claude Code's MCP SDK
+# caches OAuth Dynamic Client Registration discovery state per HTTP MCP server
+# under the `mcpOAuth` key. Once an entry exists with a non-empty
+# `discoveryState`, the SDK persistently treats that server as OAuth-protected
+# on every startup — even with an empty `accessToken`. The /mcp UI then shows
+# the server as "△ needs authentication" and replaces every real tool with
+# an `authenticate` placeholder, silently breaking the pipeline (jobs stall
+# at awaiting_classification because Claude can't fetch email bodies).
+#
+# We don't use OAuth on any HTTP MCP in this stack (gmail uses a Caddy bearer
+# token sidecar; checker/paperless/outlook have no client auth). So the entire
+# `mcpOAuth` block is always stale state that should be wiped on startup.
+#
+# Background: an experimental RFC 7591 /register stub (commit 6778670) caused
+# the SDK to populate this state for paperless/checker/gmail. The stub was
+# reverted server-side (3de8d81) but the cached client state survived in the
+# bind-mounted data dir. See _tasks/46-mcp-oauth-state-cleanup/ for the full
+# post-mortem and upstream tracking.
+if [ -f /home/node/.claude/.credentials.json ]; then
+  bun -e "$(cat <<'BUNEOF'
+import {readFileSync, writeFileSync} from 'fs'
+const path = '/home/node/.claude/.credentials.json'
+const j = JSON.parse(readFileSync(path, 'utf8'))
+if (j.mcpOAuth && Object.keys(j.mcpOAuth).length > 0) {
+  const cleared = Object.keys(j.mcpOAuth)
+  j.mcpOAuth = {}
+  writeFileSync(path, JSON.stringify(j))
+  console.log('Cleared stale mcpOAuth entries:', cleared.join(', '))
+}
+BUNEOF
+)" 2>&1 || echo "WARNING: mcpOAuth cleanup failed, proceeding anyway"
+fi
+
 # Run Claude Code in interactive mode inside tmux
 tmux new-session -d -s claude \
   "claude --model sonnet --remote-control --name personal-assistant \

@@ -99,6 +99,36 @@ All services have `com.centurylinklabs.watchtower.enable: "false"` — no mid-se
 | `gmail-mcp` | Pinned to `1.16.2` (semver available on GHCR). HTML body truncation patched from 20k→100k via sed in compose entrypoint |
 | `paperless-mcp` | `:latest` (no semver tags; Watchtower excluded, `auto_pull=false`) |
 
+### Troubleshooting: HTTP MCPs show "△ needs authentication"
+
+**Symptom.** In Claude's `/mcp` UI, one or more HTTP MCPs (paperless, checker, gmail) show as `△ needs authentication`. Asking Claude to call those tools returns an `authenticate` placeholder instead of executing the tool. The pipeline silently stalls — invoice jobs accumulate in `awaiting_classification` because Claude can't fetch email bodies. Watchers and stdio channels keep working (they have their own MCP clients), so the failure looks partial.
+
+**Root cause.** Claude Code's MCP SDK persistently caches OAuth Dynamic Client Registration discovery state under `mcpOAuth` in `~/.claude/.credentials.json`. Once an entry exists with a non-empty `discoveryState`, the SDK treats that server as OAuth-protected on every startup — even when `accessToken` is empty and the server returns plain 404s on `/register`. The state survives container restarts because `data/claude-config/` is a host bind-mount. Upstream tracking: [anthropics/claude-code#34008](https://github.com/anthropics/claude-code/issues/34008). Full post-mortem: [`_tasks/46-mcp-oauth-state-cleanup/`](../../../_tasks/46-mcp-oauth-state-cleanup/).
+
+**Defensive fix (in place).** `claude-code/entrypoint.sh` strips the entire `mcpOAuth` block from `.credentials.json` on every container start, before launching Claude. Logs `Cleared stale mcpOAuth entries: ...` when it cleans something, silent no-op otherwise. We never use OAuth on any HTTP MCP in this stack, so the block is always safe to wipe.
+
+**Manual recovery** (if you ever roll back the entrypoint fix or hit the same symptom on a stack without it):
+
+```bash
+# Inspect the cache (look for entries other than `outlook` — outlook never gets one)
+docker exec personal-assistant-claude bun -e \
+  'console.log(Object.keys(JSON.parse(require("fs").readFileSync("/home/node/.claude/.credentials.json","utf8")).mcpOAuth || {}))'
+
+# Wipe it (preserves claudeAiOauth and all other top-level fields)
+docker exec personal-assistant-claude bun -e '
+  const fs = require("fs")
+  const p = "/home/node/.claude/.credentials.json"
+  const j = JSON.parse(fs.readFileSync(p, "utf8"))
+  j.mcpOAuth = {}
+  fs.writeFileSync(p, JSON.stringify(j))
+'
+
+# Restart so Claude Code re-initializes the HTTP MCPs from a clean cache
+docker restart personal-assistant-claude
+```
+
+After restart, `docker logs personal-assistant-claude` should show all 4 HTTP MCPs as `✓ ... already connected` from the entrypoint reconnect script.
+
 ## Key Files
 
 | File | Purpose |
