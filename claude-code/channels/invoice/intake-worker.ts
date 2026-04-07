@@ -316,12 +316,16 @@ export async function executeInvoiceIntake(
             message_id: input.message_id,
           },
           channel,
-          notificationContent: `Classification request: fetch the email, run email-classifier, and call submit_classification with the classifier output.`,
+          notificationContent: `Classification request: invoke email-classifier with the meta from this event, then call submit_classification with its output.`,
           notificationMeta: {
             event_type: "classify_email",
             job_id: job.id,
             email_source: input.email_source,
             message_id: input.message_id,
+            // gmail tools require user_google_email; outlook tools don't.
+            // Pre-resolve here so the subagent can fetch the body in one turn
+            // (matches the strict maxTurns: 2 contract: one MCP call + final JSON).
+            ...(input.email_source === "gmail" ? { user_google_email: GOOGLE_EMAIL } : {}),
           },
         }, logger);
         outcome = "awaiting_classification";

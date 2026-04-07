@@ -599,13 +599,12 @@ const mcp = new Server(
       tools: {},
     },
     instructions:
-      'Events from email-watcher arrive as <channel source="email-watcher" email_source="gmail|outlook" ...>.\n' +
-      "Each event is a NEW email detected in a monitored inbox.\n" +
-      "Special events: first_start (ask user how far back to check), catchup_required (too many emails, ask to approve).\n" +
-      "Classify using the email-classifier subagent, then act on the result.\n" +
-      "The email_source and message_id fields tell you which MCP tools to use.\n\n" +
-      "For first_start events: ask user via Telegram, then call init_source or skip_catchup.\n" +
-      "For catchup_required events: ask user via Telegram, then call approve_catchup or skip_catchup.",
+      'Events from email-watcher arrive as <channel source="email-watcher" ...>.\n' +
+      "Per-email events are not pushed here — the watcher writes new emails directly to workflow.db as invoice_intake jobs, " +
+      "and the workflow worker requests classification through the workflow channel (event_type: classify_email).\n" +
+      "Only two startup events arrive on this channel:\n" +
+      "  - first_start: ask user via Telegram how far back to check, then call init_source or skip_catchup.\n" +
+      "  - catchup_required: too many emails since last check, ask user to approve, then call approve_catchup or skip_catchup.",
   }
 );
 

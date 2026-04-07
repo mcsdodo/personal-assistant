@@ -119,11 +119,10 @@ Do NOT manually inspect emails, download PDFs, or run classifiers outside of cha
 The workflow worker sends classification requests via channel when it needs LLM judgment.
 
 **`event_type: "classify_email"`** — the worker needs email classification before proceeding:
-1. Read `email_source`, `message_id`, and `job_id` from the event meta
-2. Fetch the email from the email MCP (use `message_id`) to get sender, subject, body preview, has_attachments, received_at
-3. Invoke the `email-classifier` subagent with the email metadata
-4. Call `submit_classification(job_id, step="classify_email", result=<email-classifier output>)` — pass the email-classifier subagent's output directly. The worker injects `sender`/`subject`/`received_at` from the watcher's `input_json` automatically before validation; you do not need to include them.
-5. If the classifier returns `action: "ignore"`, the worker will complete the job as ignored automatically
+1. Read `email_source`, `message_id`, `job_id`, and (for gmail) `user_google_email` from the event meta
+2. Invoke the `email-classifier` subagent with a prompt naming `email_source`, `message_id`, and (gmail only) `user_google_email`. The subagent fetches the email body itself.
+3. Call `submit_classification(job_id, step="classify_email", result=<email-classifier output>)` — pass the subagent's output directly. The worker injects `sender`/`subject`/`received_at` from the watcher's `input_json` automatically before validation; you do not need to include them.
+4. If the classifier returns `action: "ignore"`, the worker will complete the job as ignored automatically
 
 **`event_type: "classify_document"`** — the worker has downloaded a PDF and needs document classification:
 1. Read `file_path` and `job_id` from the event meta

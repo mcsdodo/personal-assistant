@@ -164,7 +164,7 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 
 ## UC-1.3: Classification
 
-Haiku subagent classifies each new email by sender, subject, and body excerpt.
+Haiku subagent fetches the email body itself via the gmail/outlook MCP and classifies it. The parent Claude session never reads the body — it just dispatches the subagent with `{email_source, message_id, user_google_email?}` from the workflow channel meta. Keeping the body inside the throwaway subagent context prevents the parent session from accumulating email bodies across classifications.
 
 **Output fields:** `is_invoice`, `confidence` (high/medium/low), `vendor`, `is_fuel`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/claude_download/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`. Note: `doc_type` and `owner` are not returned by the email-classifier — these come exclusively from the document-classifier after PDF download.
 
@@ -458,7 +458,7 @@ The worker processes jobs in ticks. When it needs Claude's classification, it pa
 
 ### classify_email result
 
-When Claude calls `submit_classification(job_id, "classify_email", result)`, the result must include all email-classifier fields **plus** email metadata that Claude fetches from the MCP:
+When Claude calls `submit_classification(job_id, "classify_email", result)`, the result is the email-classifier subagent's JSON output passed through unchanged. `submitClassification` in `workflow-db.ts` injects `sender`, `subject`, and `received_at` from the watcher's `input_json` before schema validation, so Claude does not need to include them.
 
 | Field | Type | Source |
 |-------|------|--------|
@@ -474,11 +474,11 @@ When Claude calls `submit_classification(job_id, "classify_email", result)`, the
 | `order_id` | string / null | email-classifier |
 | `total_amount` | number / null | email-classifier |
 | `currency` | string / null | email-classifier |
-| `subject` | string | email metadata (Claude fetches) |
-| `received_at` | string | email metadata (Claude fetches) |
-| `sender` | string | email metadata (Claude fetches) |
+| `subject` | string | worker-injected from `input_json` |
+| `received_at` | string | worker-injected from `input_json` |
+| `sender` | string | worker-injected from `input_json` |
 
-The last three fields are **not** from the classifier. Claude must fetch the email via MCP and include these. The worker uses `received_at` as a late-fallback date and `subject` only as a hardened-regex safety net (see `month_tag resolution` below).
+The last three fields come from the watcher (which captured them at poll time and persisted them in the job's `input_json`), not from the classifier or from any fetch. The worker uses `received_at` as a late-fallback date and `subject` only as a hardened-regex safety net (see `month_tag resolution` below).
 
 ### classify_document result
 
