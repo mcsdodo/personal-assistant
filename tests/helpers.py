@@ -442,6 +442,71 @@ def wait_healthy(timeout: int = 90):
     raise TimeoutError(f"Container not healthy within {timeout}s")
 
 
+def wait_claude_ready(timeout: int = 180):
+    """Wait until the claude-code container reports `healthy` AND all 5 stdio
+    channel subprocesses are spawned. The :9465 health endpoint only verifies
+    email-watcher is up — Claude itself can still be in the middle of its
+    startup race (Claude Code v2.1.92 sometimes flaps stdio MCP spawns).
+    Without this extra wait, channel notifications pushed by workflow-mcp can
+    be dropped because Claude isn't yet attached to the workflow stdio MCP.
+    """
+    expected_channels = (
+        "email-watcher.ts",
+        "gdrive-watcher.ts",
+        "workflow-mcp.ts",
+        "telegram/server.ts",
+        "file-ops.ts",
+    )
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        # 1. container `healthy` (the docker-compose healthcheck verifies the
+        #    tmux session is alive AND email-watcher health is OK).
+        try:
+            res = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Health.Status}}", "personal-assistant-claude"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            health = res.stdout.decode().strip()
+        except Exception:
+            health = ""
+
+        if health == "healthy":
+            # 2. all 5 stdio channel subprocesses spawned.
+            try:
+                res = subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        "personal-assistant-claude",
+                        "sh",
+                        "-c",
+                        'for pid in /proc/[0-9]*; do tr "\\0" " " < "$pid/cmdline" 2>/dev/null; echo; done',
+                    ],
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
+                cmdlines = res.stdout.decode("utf-8", errors="replace")
+                missing = [c for c in expected_channels if c not in cmdlines]
+                if not missing:
+                    # 3. give the workflow stdio MCP an extra moment to attach
+                    #    its notification handler so an early channel push
+                    #    doesn't get dropped.
+                    time.sleep(5)
+                    return
+            except Exception:
+                pass
+
+        time.sleep(5)
+
+    raise TimeoutError(
+        f"Claude not fully ready within {timeout}s "
+        f"(missing channels: {missing if 'missing' in locals() else 'unknown'})"
+    )
+
+
 def preseed_source_state(*sources: str):
     """Pre-create the email-watcher DB with last_checked for given sources.
 
@@ -487,6 +552,10 @@ def full_reset(*sources: str):
 
     Sources are pre-seeded with last_checked=now BEFORE the container starts,
     so the email-watcher's first poll sees them and skips first_start events.
+
+    Waits for Claude to be fully ready (all stdio channels attached) before
+    returning so the test can immediately push channel events without losing
+    them in a partial-startup window.
     """
     stop_claude()
     clear_dbs()
@@ -495,3 +564,4 @@ def full_reset(*sources: str):
         preseed_source_state(*sources)
     start_claude()
     wait_healthy()
+    wait_claude_ready()
