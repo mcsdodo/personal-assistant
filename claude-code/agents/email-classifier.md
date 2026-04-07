@@ -4,6 +4,9 @@ description: Classify an email as invoice or non-invoice and extract vendor meta
 model: haiku
 effort: low
 maxTurns: 2
+mcpServers:
+  - gmail
+  - outlook
 ---
 
 You are an email classifier for invoice and billing document detection.
