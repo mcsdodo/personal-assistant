@@ -414,34 +414,47 @@ export async function processNewEmails(db: Database, channel: Server, emails: Em
       continue;
     }
 
-    // Create workflow job directly (no channel notification to Claude)
-    const job = createJob(jobDb, {
-      workflowType: "invoice_intake",
-      inputJson: JSON.stringify(jobInput),
-      sourceRef: `${email.source}:${email.id}`,
-      idempotencyKey: `${email.source}:${email.id}`,
-      requiresApproval: false,
-      traceId: getActiveTraceId(),
-    });
-
-    // OTel span — links job creation to the poll cycle trace
-    try {
-      const tracer = getTracer("email-watcher");
-      tracer.startActiveSpan("email-watcher.job_created", {
+    // Start a NEW root span per email so each job gets its own trace_id.
+    // Before task 48 Issue 3, the poll cycle's trace_id was inherited by
+    // every job in the batch, which mixed unrelated files into one trace and
+    // made multi-file incidents painful to debug in Tempo. The `root: true`
+    // option detaches this span from any parent span, giving it a fresh
+    // trace_id that `getActiveTraceId()` then captures for createJob.
+    const perEmailTracer = getTracer("email-watcher");
+    let createdJobId: string | null = null;
+    await perEmailTracer.startActiveSpan(
+      "email-watcher.process_email",
+      {
+        root: true,
         attributes: {
-          "job.id": job.id,
-          "job.type": "invoice_intake",
-          "job.state": job.state,
           "email.source": email.source,
           "email.message_id": email.id,
+          "email.sender": email.sender ?? "",
+          "email.subject": email.subject ?? "",
         },
-      }, (span) => {
-        span.setStatus({ code: SpanStatusCode.OK });
-        span.end();
-      });
-    } catch { /* tracing unavailable */ }
+      },
+      (span) => {
+        try {
+          const job = createJob(jobDb, {
+            workflowType: "invoice_intake",
+            inputJson: JSON.stringify(jobInput),
+            sourceRef: `${email.source}:${email.id}`,
+            idempotencyKey: `${email.source}:${email.id}`,
+            requiresApproval: false,
+            traceId: getActiveTraceId(),
+          });
+          createdJobId = job.id;
+          span.setAttribute("job.id", job.id);
+          span.setAttribute("job.type", "invoice_intake");
+          span.setAttribute("job.state", job.state);
+          span.setStatus({ code: SpanStatusCode.OK });
+        } finally {
+          span.end();
+        }
+      },
+    );
 
-    log(`Created job ${job.id} for ${email.source}:${email.id} (state: ${job.state})`);
+    log(`Created job ${createdJobId} for ${email.source}:${email.id} (state: queued)`);
   }
 
   log(`Processed ${capped.length} new email(s), created jobs directly`);

@@ -308,6 +308,63 @@ describe("processNewEmails", () => {
     expect(mockChannel._notifications).toHaveLength(0);
   });
 
+  test("each email gets its own root span (per-file trace topology)", async () => {
+    // Before task 48 Issue 3, every job created in the same poll cycle
+    // inherited the poll span's trace_id, making multi-file incidents hard
+    // to debug in Tempo. After the fix, each email starts its own `root: true`
+    // span so each job has a distinct trace.
+    //
+    // We can't rely on real OTel trace_ids here because bun + the OTel SDK's
+    // ProxyTracer interaction prevents `BasicTracerProvider.register()` from
+    // replacing the cached no-op tracer that `getTracer()` captured at module
+    // load time. Instead we assert the CODE STRUCTURE: `startActiveSpan` is
+    // invoked once per email with `root: true`. Full trace_id distinctness is
+    // verified manually in production (see task 48, Issue 3).
+    const { getTracer } = await import("./tracing");
+    const realTracer = getTracer("email-watcher");
+    const spanCalls: Array<{ name: string; options: any }> = [];
+    const origStartActiveSpan = realTracer.startActiveSpan.bind(realTracer);
+    (realTracer as any).startActiveSpan = function (
+      name: string,
+      optionsOrFn: any,
+      ctxOrFn?: any,
+      fn?: any,
+    ) {
+      if (name === "email-watcher.process_email") {
+        spanCalls.push({ name, options: optionsOrFn });
+      }
+      return origStartActiveSpan(name, optionsOrFn, ctxOrFn, fn);
+    };
+
+    try {
+      const emails = [
+        { id: "trace-1", source: "gmail" as const, sender: "a@x.com", subject: "Invoice 1", hasAttachments: true },
+        { id: "trace-2", source: "gmail" as const, sender: "b@y.com", subject: "Invoice 2", hasAttachments: true },
+        { id: "trace-3", source: "outlook" as const, sender: "c@z.com", subject: "Invoice 3", hasAttachments: true },
+      ];
+
+      await processNewEmails(db, mockChannel as any, emails, wfDb);
+
+      // One span per email, all marked as root
+      expect(spanCalls).toHaveLength(3);
+      for (const call of spanCalls) {
+        expect(call.options.root).toBe(true);
+      }
+      // And attributes carry identifying info so traces are self-describing
+      expect(spanCalls[0].options.attributes["email.message_id"]).toBe("trace-1");
+      expect(spanCalls[1].options.attributes["email.message_id"]).toBe("trace-2");
+      expect(spanCalls[2].options.attributes["email.message_id"]).toBe("trace-3");
+
+      // Sanity: three jobs got created
+      const jobs = wfDb.prepare(
+        "SELECT id FROM jobs WHERE source_ref IN ('gmail:trace-1','gmail:trace-2','outlook:trace-3')",
+      ).all();
+      expect(jobs).toHaveLength(3);
+    } finally {
+      (realTracer as any).startActiveSpan = origStartActiveSpan;
+    }
+  });
+
   test("caps at MAX_NEW_PER_CYCLE", async () => {
     const emails = Array.from({ length: 10 }, (_, i) => ({
       id: `cap-${i}`,

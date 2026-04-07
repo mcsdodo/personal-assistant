@@ -204,6 +204,51 @@ describe("gdrive-watcher integration", () => {
   });
 
   // -------------------------------------------------------------------------
+  // pollCycle: per-file root span for trace-per-file topology (task 48)
+  // -------------------------------------------------------------------------
+  test("pollCycle starts a root span per file for trace-per-file topology", async () => {
+    const driveFiles = [
+      { id: "trace-file-1", name: "invoice_a.pdf", mimeType: "application/pdf", createdTime: "2026-03-15T10:00:00Z", modifiedTime: "2026-03-15T10:00:00Z" },
+      { id: "trace-file-2", name: "invoice_b.pdf", mimeType: "application/pdf", createdTime: "2026-03-16T10:00:00Z", modifiedTime: "2026-03-16T10:00:00Z" },
+    ];
+    callToolImpl = createStandardCallTool(driveFiles);
+
+    // Spy on startActiveSpan for the per-file span name. See the equivalent
+    // test in email-watcher.integration.test.ts for the rationale — we assert
+    // the code structure rather than real OTel trace_ids because bun + OTel
+    // SDK interactions make real trace_id generation unreliable in tests.
+    const { getTracer } = await import("./tracing");
+    const realTracer = getTracer("gdrive-watcher");
+    const spanCalls: Array<{ name: string; options: any }> = [];
+    const orig = realTracer.startActiveSpan.bind(realTracer);
+    (realTracer as any).startActiveSpan = function (
+      name: string,
+      optionsOrFn: any,
+      ctxOrFn?: any,
+      fn?: any,
+    ) {
+      if (name === "gdrive-watcher.process_file") {
+        spanCalls.push({ name, options: optionsOrFn });
+      }
+      return orig(name, optionsOrFn, ctxOrFn, fn);
+    };
+
+    try {
+      await pollCycle(db, createMockChannel() as any, wfDb);
+
+      expect(spanCalls).toHaveLength(2);
+      for (const call of spanCalls) {
+        expect(call.options.root).toBe(true);
+      }
+      expect(spanCalls[0].options.attributes["gdrive.file_id"]).toBe("trace-file-1");
+      expect(spanCalls[0].options.attributes["gdrive.filename"]).toBe("invoice_a.pdf");
+      expect(spanCalls[1].options.attributes["gdrive.file_id"]).toBe("trace-file-2");
+    } finally {
+      (realTracer as any).startActiveSpan = orig;
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // pollCycle: skip already-seen files
   // -------------------------------------------------------------------------
   test("pollCycle skips already-seen files", async () => {

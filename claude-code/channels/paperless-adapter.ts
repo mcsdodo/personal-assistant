@@ -114,6 +114,51 @@ export class PaperlessAdapter {
     this.cfg = cfg;
   }
 
+  // ── Pagination helper ────────────────────────────────────────────────
+
+  /**
+   * Walk a paginated Paperless MCP `list_*` tool until exhausted, returning
+   * every result accumulated across pages.
+   *
+   * Paperless defaults to `page_size=25`. We pass `page_size=100` (perf) and
+   * follow the `next` link by incrementing `page` until the response reports
+   * `next: null`. Before this helper existed, call sites grabbed only page 1
+   * and silently missed any entry past entry 25 — which caused 17 production
+   * documents to be uploaded with `correspondent: null` because the
+   * fuzzy-matcher couldn't see the correspondent. See task 48.
+   *
+   * A hard ceiling of 50 pages (≈5000 entries at page_size=100) guards against
+   * a server bug that returns `next` indefinitely.
+   */
+  private async listAllPages<T>(toolName: string): Promise<T[]> {
+    const accumulated: T[] = [];
+    let page = 1;
+    const PAGE_SIZE = 100;
+    const MAX_PAGES = 50;
+
+    for (; page <= MAX_PAGES; page++) {
+      const result = await callMcpTool(this.cfg.paperlessMcpUrl, toolName, {
+        page,
+        page_size: PAGE_SIZE,
+      });
+      const text = extractText(result);
+      const parsed = JSON.parse(text);
+
+      // Raw array response: no pagination, return it directly.
+      if (Array.isArray(parsed)) {
+        return parsed as T[];
+      }
+
+      // Paginated object: { count, next, previous, results: [...] }
+      const pageResults = (parsed.results ?? []) as T[];
+      accumulated.push(...pageResults);
+
+      if (!parsed.next) break;
+    }
+
+    return accumulated;
+  }
+
   // ── Correspondent operations ─────────────────────────────────────────
 
   /**
@@ -125,14 +170,9 @@ export class PaperlessAdapter {
     return withSpan(tracer, "paperless-adapter.find_correspondent", {
       "correspondent.vendor": vendor,
     }, async (span) => {
-      const listResult = await callMcpTool(this.cfg.paperlessMcpUrl, "list_correspondents", {});
-      const listText = extractText(listResult);
-      const parsed = JSON.parse(listText);
-      // Paperless MCP returns paginated object { results: [...] }, not a raw array
-      const correspondents = (Array.isArray(parsed) ? parsed : parsed.results ?? []) as Array<{
-        id: number;
-        name: string;
-      }>;
+      const correspondents = await this.listAllPages<{ id: number; name: string }>(
+        "list_correspondents",
+      );
 
       const match = findBestCorrespondentMatch(vendor, correspondents);
       if (match) {
@@ -154,7 +194,16 @@ export class PaperlessAdapter {
         name,
       });
       const createText = extractText(createResult);
-      const created = JSON.parse(createText) as { id: number; name: string };
+      const created = JSON.parse(createText);
+      // Runtime validation — the `as` type assertion that used to live here
+      // was a runtime lie when paperless-mcp returned an unexpected shape
+      // (e.g. error payload slipping through, server bug, schema drift),
+      // silently producing `{id: undefined, name: undefined}`. See task 48.
+      if (typeof created?.id !== "number" || typeof created?.name !== "string") {
+        throw new Error(
+          `paperless-mcp create_correspondent returned unexpected shape: ${createText.slice(0, 200)}`,
+        );
+      }
       span.setAttribute("correspondent.id", created.id);
       return { id: created.id, name: created.name };
     });
@@ -173,13 +222,7 @@ export class PaperlessAdapter {
     return withSpan(tracer, "paperless-adapter.resolve_tags", {
       "tags.count": tagNames.length,
     }, async (_span) => {
-      const listResult = await callMcpTool(this.cfg.paperlessMcpUrl, "list_tags", {});
-      const listText = extractText(listResult);
-      const parsedTags = JSON.parse(listText);
-      const tags = (Array.isArray(parsedTags) ? parsedTags : parsedTags.results ?? []) as Array<{
-        id: number;
-        name: string;
-      }>;
+      const tags = await this.listAllPages<{ id: number; name: string }>("list_tags");
 
       const tagIds: number[] = [];
       for (const name of tagNames) {
@@ -190,7 +233,13 @@ export class PaperlessAdapter {
           logger.log(`Creating tag: ${name}`);
           const createResult = await callMcpTool(this.cfg.paperlessMcpUrl, "create_tag", { name });
           const createText = extractText(createResult);
-          const created = JSON.parse(createText) as { id: number };
+          const created = JSON.parse(createText);
+          // Runtime validation — same lesson as createCorrespondent. See task 48.
+          if (typeof created?.id !== "number") {
+            throw new Error(
+              `paperless-mcp create_tag returned unexpected shape: ${createText.slice(0, 200)}`,
+            );
+          }
           tagIds.push(created.id);
         }
       }
@@ -207,13 +256,7 @@ export class PaperlessAdapter {
    */
   async findDocumentTypeId(paperlessTypeName: string, logger: AdapterLogger): Promise<number | undefined> {
     try {
-      const listResult = await callMcpTool(this.cfg.paperlessMcpUrl, "list_document_types", {});
-      const listText = extractText(listResult);
-      const parsedTypes = JSON.parse(listText);
-      const types = (Array.isArray(parsedTypes) ? parsedTypes : parsedTypes.results ?? []) as Array<{
-        id: number;
-        name: string;
-      }>;
+      const types = await this.listAllPages<{ id: number; name: string }>("list_document_types");
       const match = types.find(
         (t) => t.name.toLowerCase() === paperlessTypeName.toLowerCase(),
       );

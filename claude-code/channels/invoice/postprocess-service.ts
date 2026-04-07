@@ -65,20 +65,42 @@ const DOC_TYPE_TO_PAPERLESS: Record<string, string> = {
 /**
  * Resolve a vendor name to a Paperless correspondent. Tries fuzzy match
  * first; creates a new correspondent if no match passes the threshold.
+ *
+ * When `vendor` is null/empty/whitespace — which the document-classifier
+ * can legitimately return for internal documents like cestovný príkaz,
+ * dochádzka, and payroll — falls back to `BUSINESS_COMPANY_NAME` from env.
+ * The user's own company is the correct correspondent for those docs, and
+ * this is what the updated classifier prompt asks for explicitly. The
+ * worker-side fallback is a defensive safety net for LLM drift and ships
+ * a WARN log so we can monitor how often the prompt rule fails. See task 48.
  */
 export async function resolveCorrespondent(
-  vendor: string,
+  vendor: string | null,
   adapter: PaperlessAdapter,
   logger: PostprocessLogger,
 ): Promise<CorrespondentInfo> {
-  logger.log(`Resolving correspondent for vendor: ${vendor}`);
-  const match = await adapter.findCorrespondent(vendor);
+  let resolvedVendor = vendor;
+  if (!resolvedVendor || !resolvedVendor.trim()) {
+    const fallback = process.env.BUSINESS_COMPANY_NAME;
+    if (!fallback || !fallback.trim()) {
+      throw new Error(
+        "resolveCorrespondent: vendor is null/empty and BUSINESS_COMPANY_NAME env var is unset",
+      );
+    }
+    logger.log(
+      `WARN: classifier returned null/empty vendor — falling back to BUSINESS_COMPANY_NAME="${fallback}"`,
+    );
+    resolvedVendor = fallback;
+  }
+
+  logger.log(`Resolving correspondent for vendor: ${resolvedVendor}`);
+  const match = await adapter.findCorrespondent(resolvedVendor);
   if (match) {
-    logger.log(`Fuzzy matched "${vendor}" → "${match.name}" (score: ${(match.score ?? 0).toFixed(3)})`);
+    logger.log(`Fuzzy matched "${resolvedVendor}" → "${match.name}" (score: ${(match.score ?? 0).toFixed(3)})`);
     return { id: match.id, name: match.name };
   }
-  logger.log(`Creating new correspondent: ${vendor}`);
-  return adapter.createCorrespondent(vendor);
+  logger.log(`Creating new correspondent: ${resolvedVendor}`);
+  return adapter.createCorrespondent(resolvedVendor);
 }
 
 // ── Tags / document type / storage path ──────────────────────────────

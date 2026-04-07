@@ -131,6 +131,36 @@ describe("PaperlessAdapter.findCorrespondent", () => {
     const match = await adapter.findCorrespondent("CompletelyDifferentVendor");
     expect(match).toBeNull();
   });
+
+  test("walks paginated list_correspondents until exhausted (finds entry on page 2)", async () => {
+    // Simulates the exact production bug: Paperless has 34 correspondents,
+    // default page_size=25, "Techlab s.r.o." is at id=13 on page 2.
+    // Before the fix, findCorrespondent only saw page 1 and returned null.
+    mockFetch(
+      () => jsonResponse(rpcResponse({
+        count: 34,
+        next: "http://paperless/api/correspondents/?page=2",
+        previous: null,
+        results: Array.from({ length: 25 }, (_, i) => ({
+          id: 100 + i,
+          name: `OtherVendor${i}`,
+        })),
+      })),
+      () => jsonResponse(rpcResponse({
+        count: 34,
+        next: null,
+        previous: "http://paperless/api/correspondents/?page=1",
+        results: [
+          { id: 13, name: "Techlab s.r.o." },
+          ...Array.from({ length: 8 }, (_, i) => ({ id: 200 + i, name: `MoreVendor${i}` })),
+        ],
+      })),
+    );
+    const match = await adapter.findCorrespondent("Techlab s.r.o.");
+    expect(match?.id).toBe(13);
+    expect(match?.name).toBe("Techlab s.r.o.");
+    expect(fetchCallLog).toHaveLength(2); // proves it walked past page 1
+  });
 });
 
 describe("PaperlessAdapter.createCorrespondent", () => {
@@ -140,6 +170,44 @@ describe("PaperlessAdapter.createCorrespondent", () => {
     );
     const created = await adapter.createCorrespondent("NewVendor");
     expect(created).toEqual({ id: 50, name: "NewVendor" });
+  });
+
+  test("throws when MCP tool returns isError:true (duplicate name)", async () => {
+    // Reproduces doc 413 root cause: paperless-mcp returns isError:true when
+    // Paperless rejects a duplicate correspondent, but extractText was
+    // silently returning the error JSON as if it were the tool output, and
+    // the `as` type assertion then produced {id: undefined, name: undefined}.
+    mockFetch(
+      () => jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              error: "Request failed with status code 400",
+              responseData: { error: "Object violates owner / name unique constraint" },
+              status: 400,
+            }),
+          }],
+          isError: true,
+        },
+      }),
+    );
+    await expect(adapter.createCorrespondent("Techlab s.r.o.")).rejects.toThrow(
+      /unique constraint|isError|paperless/i,
+    );
+  });
+
+  test("throws when MCP response is valid JSON but missing id field", async () => {
+    // Defense against the `as {id, name}` type assertion silently producing
+    // undefined when the server returns an unexpected shape.
+    mockFetch(
+      () => jsonResponse(rpcResponse({ foo: "bar", message: "something weird" })),
+    );
+    await expect(adapter.createCorrespondent("AnyVendor")).rejects.toThrow(
+      /unexpected|id|shape/i,
+    );
   });
 });
 

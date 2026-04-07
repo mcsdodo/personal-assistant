@@ -15,9 +15,41 @@ function serverName(url: string): string {
   try { return new URL(url).hostname; } catch { return url; }
 }
 
+/**
+ * Thrown when an MCP tool returns `isError: true`. Before this class existed,
+ * `extractText` silently returned the error payload as if it were tool output
+ * and callers type-asserted their way into `{id: undefined}`, which caused
+ * 17 production documents to be uploaded with `correspondent: null`. See task 48.
+ */
+export class McpToolError extends Error {
+  constructor(
+    public readonly toolName: string,
+    public readonly payload: string,
+  ) {
+    super(`MCP tool ${toolName} returned isError: ${payload.slice(0, 300)}`);
+    this.name = "McpToolError";
+  }
+}
+
 export interface McpToolResult {
   content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
   isError?: boolean;
+}
+
+/**
+ * Throw `McpToolError` if a tool result has `isError: true`. Callers should
+ * invoke this right after receiving a result from `callMcpTool` if they plan
+ * to parse the payload as tool output — otherwise errors silently leak into
+ * `extractText` and get JSON.parse()'d as if they were valid responses.
+ */
+function throwIfError(toolName: string, result: McpToolResult): void {
+  if (result.isError) {
+    const payload = result.content
+      .filter((c) => c.type === "text" && c.text)
+      .map((c) => c.text!)
+      .join("\n");
+    throw new McpToolError(toolName, payload);
+  }
 }
 
 interface McpJsonRpcResponse {
@@ -86,12 +118,18 @@ export async function callMcpTool(
         }
 
         const result = await callMcpToolOnce(serverUrl, toolName, args, span);
+        // Surface tool-level errors instead of silently returning them as
+        // if they were valid output. See McpToolError doc above.
+        throwIfError(toolName, result);
         if (attempt > 0) {
           span.setAttribute("mcp.retries", attempt);
         }
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+        // McpToolError is a business-level failure (400, duplicate, etc.) —
+        // don't retry, just propagate.
+        if (error instanceof McpToolError) throw lastError;
         if (!isTransientNetworkError(error) || attempt === MAX_RETRIES) {
           throw lastError;
         }

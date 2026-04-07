@@ -149,7 +149,7 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 | `claude-code/channels/file-ops.ts` | File-ops MCP tool server (download, delete, list, decrypt, base64, env) |
 | `claude-code/channels/download-helper.ts` | File utility functions (readFileAsDownload, tryDecrypt) used by file-ops + invoice/intake-worker |
 | `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice/download-service) |
-| `claude-code/channels/mcp-client.ts` | HTTP MCP client with retry logic (exponential backoff for transient network errors) |
+| `claude-code/channels/mcp-client.ts` | HTTP MCP client with retry logic (exponential backoff for transient network errors) + `McpToolError` thrown on `isError: true` tool responses so error payloads don't silently leak into callers as if they were valid output (task 48) |
 | `claude-code/channels/workflow-mcp.ts` | Durable job queue channel (stdio, health on :8003) + invoice/scan worker loop. Runs the download-cleanup safety sweep on boot. |
 | `claude-code/channels/workflow-db.ts` | jobs + job_events SQLite schema, lifecycle helpers, schema validation gateway, file-cleanup helpers |
 | `claude-code/channels/workflow-schemas.ts` | Runtime validation for InvoiceIntakeInput, ScanIntakeInput, EmailClassificationResult, DocumentClassificationResult |
@@ -223,9 +223,11 @@ Deterministic job worker and pipeline orchestrator. Owns `executeInvoiceIntake` 
 
 Step-level resume via `getCompletedSteps` — on retry, the worker skips already-completed steps. Approval gates for `browser_required` / `manual_review` / `duplicate_likely`. **Force reprocess:** when the job input has `force: true`, dedup hits do NOT short-circuit — the worker re-runs the full pipeline and PATCHes the existing Paperless doc in place (preserves doc id, PDF, OCR), producing the `refreshed` outcome.
 
-### claude-code/channels/paperless-adapter.ts (~440 lines)
+### claude-code/channels/paperless-adapter.ts (~485 lines)
 
 Unified Paperless boundary. Owns every operation that hits Paperless, regardless of transport. MCP for `list_correspondents`, `create_correspondent`, `list_tags`, `create_tag`, `list_document_types`. Direct HTTP for storage paths, dedup search, multipart upload (`/api/documents/post_document/`), task polling, document PATCH, custom field PATCH. The split is hidden from callers — they see one interface (`findCorrespondent`, `createCorrespondent`, `resolveTagIds`, `findDocumentTypeId`, `findStoragePathId`, `searchDocumentsByCustomFieldAndCorrespondent`, `uploadDocument`, `patchDocument`, `waitForConsumption`, `setCustomFields`).
+
+All `list_*` MCP calls go through a private `listAllPages` helper that walks the `next` link until exhausted (page_size=100, max 50 pages). Before task 48 the adapter only ever saw page 1 of Paperless's paginated responses — which silently corrupted 17 production documents with `correspondent: null` because the fuzzy matcher couldn't see the correspondent past entry 25. `createCorrespondent` / `createTag` also runtime-validate the parsed response shape instead of relying on `as` type assertions, so an unexpected MCP response is a clear thrown error instead of silently producing `{id: undefined}`.
 
 ### claude-code/channels/workflow-schemas.ts (~430 lines)
 

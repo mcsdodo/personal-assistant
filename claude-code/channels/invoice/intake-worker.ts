@@ -290,6 +290,12 @@ export async function executeInvoiceIntake(
     attributes: {
       "job.id": job.id,
       "job.type": "invoice_intake",
+      // Message identifiers on the top-level span so traces are immediately
+      // self-identifying in Tempo without drilling. See task 48, Issue 4.
+      "email.source": input.email_source,
+      "email.message_id": input.message_id,
+      "email.subject": input.subject ?? "",
+      "email.sender": input.sender ?? "",
     },
   }, async (span: Span) => {
     let outcome = "unknown";
@@ -688,7 +694,7 @@ function downloadInvoice(
 // the adapter through every step site).
 
 function resolveCorrespondent(
-  vendor: string,
+  vendor: string | null,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<CorrespondentInfo> {
@@ -819,6 +825,12 @@ export async function executeScanIntake(
       "job.id": job.id,
       "job.type": "scan_intake",
       "source": "gdrive",
+      // Filename + file_id surfaced on the top-level span so traces are
+      // immediately self-identifying in Tempo without drilling into child
+      // spans. See task 48, Issue 4.
+      "scan.file_id": file_id,
+      "scan.filename": input.filename ?? "",
+      "scan.watch_folder": watch_folder,
       "gdrive.watch_folder": watch_folder,
     },
   }, async (span: Span) => {

@@ -436,35 +436,47 @@ export async function pollCycle(db: Database, channel: Server, wfDb?: Database):
         continue;
       }
 
-      // Create workflow job directly (no channel notification to Claude)
-      const job = createJob(jobDb, {
-        workflowType: "scan_intake",
-        inputJson: JSON.stringify(jobInput),
-        sourceRef: `gdrive:${file.id}`,
-        idempotencyKey: `gdrive:${file.id}`,
-        requiresApproval: false,
-        traceId: getActiveTraceId(),
-      });
-
-      // OTel span — links job creation to the poll cycle trace
-      try {
-        const tracer = getTracer("gdrive-watcher");
-        tracer.startActiveSpan("gdrive-watcher.job_created", {
+      // Start a NEW root span per file so each job gets its own trace_id.
+      // Before task 48 Issue 3, the poll cycle's trace_id was inherited by
+      // every job in the batch, mixing unrelated files into one trace. The
+      // `root: true` option detaches this span from the poll-cycle parent.
+      const perFileTracer = getTracer("gdrive-watcher");
+      let createdJobId: string | null = null;
+      let createdJobState: string = "unknown";
+      await perFileTracer.startActiveSpan(
+        "gdrive-watcher.process_file",
+        {
+          root: true,
           attributes: {
-            "job.id": job.id,
-            "job.type": "scan_intake",
-            "job.state": job.state,
             "gdrive.file_id": file.id,
+            "gdrive.filename": file.name,
             "gdrive.watch_folder": file.watchFolder,
             "gdrive.month_tag": monthTag,
           },
-        }, (span) => {
-          span.setStatus({ code: SpanStatusCode.OK });
-          span.end();
-        });
-      } catch { /* tracing unavailable */ }
+        },
+        (span) => {
+          try {
+            const job = createJob(jobDb, {
+              workflowType: "scan_intake",
+              inputJson: JSON.stringify(jobInput),
+              sourceRef: `gdrive:${file.id}`,
+              idempotencyKey: `gdrive:${file.id}`,
+              requiresApproval: false,
+              traceId: getActiveTraceId(),
+            });
+            createdJobId = job.id;
+            createdJobState = job.state;
+            span.setAttribute("job.id", job.id);
+            span.setAttribute("job.type", "scan_intake");
+            span.setAttribute("job.state", job.state);
+            span.setStatus({ code: SpanStatusCode.OK });
+          } finally {
+            span.end();
+          }
+        },
+      );
 
-      log(`Created job ${job.id} for gdrive:${file.id} (state: ${job.state})`);
+      log(`Created job ${createdJobId} for gdrive:${file.id} (state: ${createdJobState})`);
     }
 
     log(`Processed ${capped.length} new file(s), created jobs directly`);

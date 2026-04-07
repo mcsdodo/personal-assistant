@@ -509,10 +509,12 @@ describe("invoice-worker attachment download + upload", () => {
       // 4. create_correspondent
       () => jsonResponse(rpcResponse({ id: 50, name: "NewVendor" })),
       // NO dedup (order_id is null)
-      // 5. list_tags (derived: ["accounting", "techlab"])
+      // 5. list_tags (derived: ["techlab", "accounting", "2026-03"])
       () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       // 6. create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 88 })),
+      // 6b. create_tag for "2026-03" (month derived from doc_date)
+      () => jsonResponse(rpcResponse({ id: 89 })),
       // 7. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       // 8. resolveStoragePath
@@ -550,10 +552,12 @@ describe("invoice-worker attachment download + upload", () => {
       // 3. list_correspondents → match
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // NO dedup call — order_id is null
-      // 4. list_tags (derived: ["accounting", "techlab"])
+      // 4. list_tags (derived: ["techlab", "accounting", "2026-03"])
       () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       // 5. create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 2 })),
+      // 5b. create_tag for "2026-03"
+      () => jsonResponse(rpcResponse({ id: 3 })),
       // 6. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       // 7. resolveStoragePath
@@ -600,10 +604,12 @@ describe("invoice-worker link download", () => {
       // 3. list_correspondents
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // NO dedup (order_id is null)
-      // 4. list_tags (derived: ["techlab", "accounting"])
+      // 4. list_tags (derived: ["techlab", "accounting", "2026-03"])
       () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       // 5. create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 2 })),
+      // 5b. create_tag for "2026-03"
+      () => jsonResponse(rpcResponse({ id: 3 })),
       // 6. list_document_types
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       // 7. resolveStoragePath
@@ -734,10 +740,12 @@ describe("invoice-worker title building", () => {
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // dedup check (direct Paperless API)
       () => jsonResponse({ results: [] }),
-      // list_tags (derived: ["accounting", "techlab"])
+      // list_tags (derived: ["techlab", "accounting", "2026-03"])
       () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       // create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 2 })),
+      // create_tag for "2026-03"
+      () => jsonResponse(rpcResponse({ id: 3 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       storagePathsMockHandler(),
       () => new Response('"task-uuid"', { status: 200 }),
@@ -760,10 +768,12 @@ describe("invoice-worker title building", () => {
       () => jsonResponse(rpcResponse({ name: "bill.pdf", content_type: "application/pdf", size: 100, content_base64: "X" })),
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
       // no dedup (no order_id)
-      // list_tags (derived: ["accounting", "techlab"])
+      // list_tags (derived: ["techlab", "accounting", "2026-03"])
       () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }])),
       // create_tag for "techlab"
       () => jsonResponse(rpcResponse({ id: 2 })),
+      // create_tag for "2026-03"
+      () => jsonResponse(rpcResponse({ id: 3 })),
       () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
       storagePathsMockHandler(),
       () => new Response('"task-uuid"', { status: 200 }),
@@ -1485,6 +1495,63 @@ describe("executeScanIntake", () => {
     expect(stepNames).toContain("resolve_tags");
     expect(stepNames).toContain("upload");
     expect(stepNames).toContain("set_custom_fields");
+  });
+
+  test("null vendor falls back to BUSINESS_COMPANY_NAME env var", async () => {
+    // Reproduces the 2026-04-07 cestovný príkaz incident (task 48): the
+    // document-classifier returned `vendor: null` for an internal doc (Techlab
+    // travel order), which crashed `create_correspondent(name: null)`. After
+    // the fix, the worker should fall back to BUSINESS_COMPANY_NAME from env
+    // so the pipeline completes with the company as the correspondent.
+    const filePath = join(tmpDir, "cestovny_prikaz.pdf");
+    writeFileSync(filePath, Buffer.from("JVBER-fake-pdf"));
+    process.env.BUSINESS_COMPANY_NAME = "Techlab s.r.o.";
+
+    const input = makeScanInput({
+      file_path: filePath,
+      watch_folder: "techlab/documents",
+    });
+    const job = createRunningScanJob(
+      input,
+      defaultScanClassification({
+        doc_type: "document",
+        vendor: null as unknown as string, // bypass type for test — production sees this too
+        order_id: null,
+        total_amount: null,
+        subtitle: "Cestovný príkaz 02.-03.03.2026",
+      }),
+    );
+
+    mockFetch(
+      // 1. list_correspondents → Techlab matches (env fallback vendor)
+      () => jsonResponse(rpcResponse([{ id: 13, name: "Techlab s.r.o." }])),
+      // 2. list_tags
+      () => jsonResponse(rpcResponse([
+        { id: 11, name: "accounting" },
+        { id: 3, name: "techlab" },
+      ])),
+      // 3. create_tag for "2026-03"
+      () => jsonResponse(rpcResponse({ id: 20 })),
+      // 4. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 6, name: "Document" }])),
+      // 5. resolveStoragePath
+      storagePathsMockHandler(),
+      // 6. post_document
+      () => new Response('"task-uuid-cp"', { status: 200 }),
+      // 7-9. setDocumentCustomFields (no total_amount/order_id → skipped)
+      // NO customFieldsMockHandlers needed — worker skips when both null
+      // 7-9. moveGdriveFile
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("uploaded");
+    expect(output.correspondent).toBe("Techlab s.r.o.");
+    delete process.env.BUSINESS_COMPANY_NAME;
   });
 
   test("detects exact duplicate, completes and moves to processed", async () => {

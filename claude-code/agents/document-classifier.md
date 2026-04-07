@@ -63,7 +63,9 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 ### vendor
 - Extract the full legal company name as printed on the document (e.g., "SLOVNAFT, a.s.", not "Slovnaft"; "Alza.sk s.r.o.", not "Alza")
 - Look for the name near IČO/DIČ/IČ DPH fields — that's the official name
-- If unclear, return `"unknown"`
+- **For internal documents** (`doc_type: "document"`) issued BY the user's own company FOR the user's own company — cestovný príkaz (travel order), dochádzka (attendance record), internal payroll, vacation logs, internal memos — return `"${BUSINESS_COMPANY_NAME}"`. The user's company IS the issuer and the correspondent for these documents; do not leave the vendor unset just because there's no external counterparty.
+- **For internal documents from a different company** (rare — e.g., a payroll slip from a previous employer), extract that other company's name normally.
+- **Never return null.** If genuinely unclear after the rules above, return `"unknown"` as a string — not null, not an empty string.
 
 ### total_amount
 - Extract the final total including VAT (Celkom s DPH, Spolu, Total, SPOLU NA ÚHRADU)
