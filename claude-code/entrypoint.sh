@@ -126,170 +126,27 @@ if [ "$CHANNELS_READY" = "false" ]; then
   exit 1
 fi
 
-# Reconnect HTTP MCPs. Claude Code v2.1.92 has a bug (claude-code#34008)
-# where interactive sessions mark HTTP MCPs as "failed" at startup even when
-# the upstream server is healthy and unauthenticated. The /mcp UI "Reconnect"
-# action fixes them, but the detail menu layout varies per server state, so
-# this function discovers the layout dynamically rather than hardcoding key
-# offsets.
+# NOTE: The /mcp HTTP-MCP "reconnect script" that used to live here has been
+# removed (task 46). It was a workaround for Claude Code SDK bug #34008 where
+# HTTP MCPs were ending up in `△ needs authentication` state at startup. The
+# real root cause turned out to be persistent OAuth Dynamic Client Registration
+# state cached under `mcpOAuth` in `.credentials.json` — the wipe step above
+# is the proper fix and makes the reconnect loop redundant.
 #
-# Strategy:
-#   1. Open /mcp, parse the pane, find the target server's current state.
-#   2. Skip if already ✔ connected.
-#   3. If ◯ disabled → look for "Enable" option; otherwise look for "Reconnect".
-#   4. Compute Down/Up presses from cursor line to target server line.
-#   5. Open detail menu, parse for the target option's number, navigate, Enter.
-#   6. Verify success by re-reading the main menu state, not by chat grep.
-
-# Read the current state of an MCP server from a captured /mcp menu pane.
-# Returns the state word with status icon stripped: "connected", "failed",
-# "disabled", or "" if the server isn't in the pane. Matches a server line:
-# either "❯ <name> · <state>" (cursor line) or "    <name> · <state>" (other),
-# but NOT chat history lines that might happen to mention the server name.
-mcp_parse_state() {
-  local pane=$1
-  local name=$2
-  echo "$pane" \
-    | grep -E "(❯ |    )${name} ·" \
-    | head -1 \
-    | sed -E 's/.*· //' \
-    | tr -d '[:space:]'
-}
-
-# Open /mcp menu and capture pane content. Used by both navigation and
-# verification. Closes any open menu first to ensure clean state.
+# Beyond being redundant, the reconnect loop was actively harmful: it sent
+# `tmux send-keys ... Escape` and `/mcp\n` keystrokes into the live Claude
+# session post-startup, racing with workflow channel pushes. Each Escape
+# arriving while Claude was processing a `classify_email` channel event
+# triggered `[Request interrupted by user]`, leaving invoice_intake jobs
+# stuck in `awaiting_classification` indefinitely. Diagnosed via session jsonl
+# in 2026-04-07 e2e test investigation. See _tasks/46-mcp-oauth-state-cleanup/
+# for the full timeline.
 #
-# IMPORTANT: only single Escape — Claude Code uses Esc-Esc as a Rewind
-# dialog shortcut, which would trap subsequent input. Single Escape closes
-# any open menu without triggering Rewind.
-mcp_open_menu() {
-  tmux send-keys -t claude Escape
-  sleep 0.6
-  tmux send-keys -t claude '/mcp' Enter
-  sleep 3
-  tmux capture-pane -t claude -p
-}
-
-reconnect_mcp() {
-  local name=$1
-  local pane state action target_action_num
-  local cursor_line target_line delta i
-
-  # 1. Open menu and check current state. If the menu didn't actually open
-  #    (e.g. because something else is on screen), retry once.
-  pane=$(mcp_open_menu)
-  if ! echo "$pane" | grep -q "Manage MCP servers"; then
-    tmux send-keys -t claude Escape
-    sleep 1
-    pane=$(mcp_open_menu)
-  fi
-  state=$(mcp_parse_state "$pane" "$name")
-
-  if [ -z "$state" ]; then
-    tmux send-keys -t claude Escape
-    echo "  ✗ ${name} (not found in /mcp menu)"
-    return 1
-  fi
-
-  case "$state" in
-    *connected*)
-      tmux send-keys -t claude Escape
-      echo "  ✓ ${name} (already connected)"
-      return 0
-      ;;
-    *disabled*)
-      action="Enable"
-      ;;
-    *)
-      action="Reconnect"
-      ;;
-  esac
-
-  # 2. Navigate cursor to the target server's line. Compute delta from the
-  #    current menu cursor line to the target server line in the captured pane.
-  #
-  #    IMPORTANT: grep for "❯.*·" not just "❯" — the bare "❯" matches the
-  #    chat prompt indicator at the top of the pane (`❯ /mcp`), which would
-  #    give a wildly wrong line number. The menu cursor is the only `❯` line
-  #    that also contains the `·` separator between server name and state.
-  cursor_line=$(echo "$pane" | grep -n "❯.*·" | head -1 | cut -d: -f1)
-  target_line=$(echo "$pane" | grep -nE "(❯ |    )${name} ·" | head -1 | cut -d: -f1)
-  if [ -z "$cursor_line" ] || [ -z "$target_line" ]; then
-    tmux send-keys -t claude Escape
-    echo "  ✗ ${name} (couldn't locate cursor or target line)"
-    return 1
-  fi
-  delta=$((target_line - cursor_line))
-  if [ "$delta" -gt 0 ]; then
-    for i in $(seq 1 "$delta"); do
-      tmux send-keys -t claude Down
-      sleep 0.15
-    done
-  elif [ "$delta" -lt 0 ]; then
-    for i in $(seq 1 $((-delta))); do
-      tmux send-keys -t claude Up
-      sleep 0.15
-    done
-  fi
-
-  # 3. Open the server detail menu and parse it for the action's option number.
-  tmux send-keys -t claude Enter
-  sleep 2
-  pane=$(tmux capture-pane -t claude -p)
-  target_action_num=$(echo "$pane" | grep -oE "[1-9]\.[[:space:]]+${action}\b" | head -1 | grep -oE '^[1-9]')
-  if [ -z "$target_action_num" ]; then
-    # Single Escape closes the detail menu (returns to main menu).
-    # The next mcp_open_menu call will Escape again to dismiss the main menu.
-    # Avoid chained Escapes — Claude Code's Esc-Esc is a Rewind dialog
-    # shortcut that hijacks subsequent input.
-    tmux send-keys -t claude Escape
-    sleep 0.5
-    echo "  ✗ ${name} (no '${action}' option in detail menu, state was '${state}')"
-    return 1
-  fi
-
-  # 4. Cursor in detail menu starts at item 1; press Down to reach target.
-  for i in $(seq 1 $((target_action_num - 1))); do
-    tmux send-keys -t claude Down
-    sleep 0.15
-  done
-  tmux send-keys -t claude Enter
-
-  # 5. Verify by polling the chat for the success message. After Reconnect
-  #    runs, the detail menu closes and Claude prints "Reconnected to <name>"
-  #    (or "Failed to reconnect to <name>") in the chat. Don't re-open the
-  #    /mcp menu — that seems to race with Claude's action processing.
-  for i in 1 2 3 4 5 6 7 8; do
-    sleep 1
-    if tmux capture-pane -t claude -p -S -8 | grep -q "Reconnected to ${name}"; then
-      echo "  ✓ ${name}"
-      return 0
-    fi
-    if tmux capture-pane -t claude -p -S -8 | grep -q "Failed to reconnect to ${name}"; then
-      echo "  ✗ ${name} (Claude reported failure)"
-      return 1
-    fi
-  done
-
-  echo "  ✗ ${name} (no success/failure message after 8s)"
-  return 1
-}
-
-# Give Claude Code's HTTP MCP layer time to settle. Empirically, attempting
-# Reconnect immediately after startup races with Claude's own background
-# initialization and silently fails — the same key sequence works fine 30s
-# later. The 25s wait here is the difference between "script always fails"
-# and "script always succeeds".
-echo "Waiting for HTTP MCP layer to settle..."
-sleep 25
-
-echo "Reconnecting HTTP MCP servers..."
-reconnect_mcp checker   || true
-reconnect_mcp gmail     || true
-reconnect_mcp outlook   || true
-reconnect_mcp paperless || true
-# Don't exit on reconnect failure — the session is still usable for stdio
-# channels, and gmail may legitimately need OAuth if the token expired.
+# If a future Claude Code SDK regression re-introduces a similar startup
+# brokenness, prefer fixing it on the SDK probe side (cache invalidation,
+# server-side response shape, version pin) rather than re-introducing tmux
+# keystroke navigation. The keystroke approach cannot be made race-free as
+# long as the same tmux session also delivers channel notifications.
 
 echo "Claude Code session started in tmux."
 echo "Use 'docker exec -it <container> tmux attach -t claude' to view."

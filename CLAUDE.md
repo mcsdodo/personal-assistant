@@ -127,7 +127,7 @@ docker exec personal-assistant-claude bun -e '
 docker restart personal-assistant-claude
 ```
 
-After restart, `docker logs personal-assistant-claude` should show all 4 HTTP MCPs as `✓ ... already connected` from the entrypoint reconnect script.
+After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /mcp Enter && sleep 3 && docker exec personal-assistant-claude tmux capture-pane -t claude -p` should show all 4 HTTP MCPs as `✓ connected`. **Do NOT** automate this check from within `entrypoint.sh` — keystroke-based MCP menu navigation against the live session races with workflow channel notification delivery and silently interrupts in-progress jobs. The reconnect script that used to do this was removed in task 46 for exactly that reason.
 
 ## Key Files
 
