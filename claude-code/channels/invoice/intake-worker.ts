@@ -103,13 +103,15 @@ export interface InvoiceIntakeInput {
 export interface InvoiceClassification {
   is_invoice: boolean;
   confidence: "high" | "medium" | "low";
-  vendor: string;
+  /** Null when action=ignore — the classifier has no counterparty for non-invoices. */
+  vendor: string | null;
   doc_type: string;
   is_fuel: boolean;
   owner?: "techlab" | "personal";
   action: string;
   download_strategy: DownloadStrategy | null;
-  strategy_confidence: "high" | "medium" | "low";
+  /** Null when action=ignore — no strategy to have confidence in. */
+  strategy_confidence: "high" | "medium" | "low" | null;
   requires_review: boolean;
   order_id: string | null;
   subtitle: string | null;
@@ -329,8 +331,11 @@ export async function executeInvoiceIntake(
       }
 
       const classification = cachedEmailClass.result as InvoiceClassification;
-      vendorForSpan = classification.vendor;
-      span.setAttribute("invoice.vendor", classification.vendor);
+      // `vendor` is nullable when action=ignore — the classifier has no
+      // counterparty for non-invoices. Coerce to "unknown" for span attributes
+      // and vendorForSpan so downstream observability code doesn't trip on null.
+      vendorForSpan = classification.vendor ?? "unknown";
+      span.setAttribute("invoice.vendor", vendorForSpan);
       span.setAttribute("invoice.download_strategy", String(classification.download_strategy));
 
       // Handle ignore action

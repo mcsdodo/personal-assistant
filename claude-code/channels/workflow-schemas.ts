@@ -236,7 +236,8 @@ export const OWNERS = ["techlab", "personal"] as const;
 export interface EmailClassificationResultSchema {
   is_invoice: boolean;
   confidence: "high" | "medium" | "low";
-  vendor: string;
+  /** Null when action=ignore (non-invoice) — the classifier has no counterparty. */
+  vendor: string | null;
   doc_type?: string;
   is_fuel: boolean;
   owner?: "techlab" | "personal";
@@ -249,7 +250,8 @@ export interface EmailClassificationResultSchema {
     | "browser_required"
     | "manual_review"
     | null;
-  strategy_confidence: "high" | "medium" | "low";
+  /** Null when action=ignore — there's no strategy to have confidence in. */
+  strategy_confidence: "high" | "medium" | "low" | null;
   requires_review: boolean;
   order_id: string | null;
   subtitle?: string | null;
@@ -270,6 +272,10 @@ export interface EmailClassificationResultSchema {
 export function validateEmailClassificationResult(input: unknown): EmailClassificationResultSchema {
   const obj = requireObject("EmailClassificationResult", input);
 
+  // Validate action first — some fields are conditionally nullable when action=ignore.
+  const action = reqEnum("EmailClassificationResult", obj, "action", EMAIL_ACTIONS);
+  const isIgnore = action === "ignore";
+
   // download_strategy: string from the enum, or null when action is ignore
   const ds = obj.download_strategy;
   let download_strategy: EmailClassificationResultSchema["download_strategy"];
@@ -286,21 +292,39 @@ export function validateEmailClassificationResult(input: unknown): EmailClassifi
     );
   }
 
-  return {
-    is_invoice: reqBool("EmailClassificationResult", obj, "is_invoice"),
-    confidence: reqEnum("EmailClassificationResult", obj, "confidence", CONFIDENCE_LEVELS),
-    vendor: reqString("EmailClassificationResult", obj, "vendor"),
-    doc_type: optString("EmailClassificationResult", obj, "doc_type"),
-    is_fuel: reqBool("EmailClassificationResult", obj, "is_fuel"),
-    owner: optEnum("EmailClassificationResult", obj, "owner", OWNERS),
-    action: reqEnum("EmailClassificationResult", obj, "action", EMAIL_ACTIONS),
-    download_strategy,
-    strategy_confidence: reqEnum(
+  // vendor: non-empty string for real invoices; nullable for ignore. Task 48
+  // post-deploy fix — the classifier shouldn't have to invent a vendor for
+  // newsletters, personal emails, etc. that aren't being processed anyway.
+  let vendor: string | null;
+  if (isIgnore && (obj.vendor === null || obj.vendor === undefined)) {
+    vendor = null;
+  } else {
+    vendor = reqString("EmailClassificationResult", obj, "vendor");
+  }
+
+  // strategy_confidence: same treatment — null when action=ignore.
+  let strategy_confidence: EmailClassificationResultSchema["strategy_confidence"];
+  if (isIgnore && (obj.strategy_confidence === null || obj.strategy_confidence === undefined)) {
+    strategy_confidence = null;
+  } else {
+    strategy_confidence = reqEnum(
       "EmailClassificationResult",
       obj,
       "strategy_confidence",
       CONFIDENCE_LEVELS,
-    ),
+    );
+  }
+
+  return {
+    is_invoice: reqBool("EmailClassificationResult", obj, "is_invoice"),
+    confidence: reqEnum("EmailClassificationResult", obj, "confidence", CONFIDENCE_LEVELS),
+    vendor,
+    doc_type: optString("EmailClassificationResult", obj, "doc_type"),
+    is_fuel: reqBool("EmailClassificationResult", obj, "is_fuel"),
+    owner: optEnum("EmailClassificationResult", obj, "owner", OWNERS),
+    action,
+    download_strategy,
+    strategy_confidence,
     requires_review: reqBool("EmailClassificationResult", obj, "requires_review"),
     order_id: nullableString("EmailClassificationResult", obj, "order_id"),
     subtitle: nullableString("EmailClassificationResult", obj, "subtitle", { allowMissing: true }),

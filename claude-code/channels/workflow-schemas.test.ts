@@ -178,6 +178,43 @@ describe("validateEmailClassificationResult", () => {
     expect(out.download_strategy).toBeNull();
   });
 
+  test("accepts null vendor and null strategy_confidence when action=ignore", () => {
+    // When the email-classifier decides a non-invoice (e.g. newsletter,
+    // marketing, personal message), it shouldn't have to invent a vendor
+    // or a strategy_confidence — the rest of the pipeline short-circuits
+    // on action=ignore anyway. See task 48 follow-up (production bug
+    // surfaced after deploy: 3 jobs rejected for null vendor+strategy_confidence
+    // with action=ignore).
+    const out = validateEmailClassificationResult({
+      ...VALID_EMAIL_CLASS,
+      action: "ignore",
+      is_invoice: false,
+      vendor: null,
+      strategy_confidence: null,
+      download_strategy: null,
+      total_amount: null,
+      currency: null,
+      order_id: null,
+    });
+    expect(out.action).toBe("ignore");
+    expect(out.vendor).toBeNull();
+    expect(out.strategy_confidence).toBeNull();
+  });
+
+  test("still rejects null vendor when action=download_and_upload", () => {
+    // Safety: for real invoices, vendor must still be present so the
+    // downstream correspondent resolution has something to fuzzy-match.
+    expectSchemaError(
+      () =>
+        validateEmailClassificationResult({
+          ...VALID_EMAIL_CLASS,
+          action: "download_and_upload",
+          vendor: null,
+        }),
+      { field: "vendor" },
+    );
+  });
+
   test("accepts the additional download strategies (claude_download, browser_required, manual_review)", () => {
     for (const ds of ["claude_download", "known_link", "direct_url", "browser_required", "manual_review"]) {
       const out = validateEmailClassificationResult({ ...VALID_EMAIL_CLASS, download_strategy: ds });
