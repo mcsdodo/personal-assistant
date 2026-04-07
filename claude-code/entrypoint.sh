@@ -157,9 +157,18 @@ fi
 echo "Claude Code session started in tmux."
 echo "Use 'docker exec -it <container> tmux attach -t claude' to view."
 
-# Monitor tmux session + rate-limit watchdog (single loop)
+# Monitor tmux session + rate-limit watchdog + channel liveness (single loop)
 # - Exits if tmux session dies (Docker restart policy kicks in)
 # - Auto-dismisses rate limit TUI prompt so Claude can wait internally
+# - Periodically pgrep's the 5 expected stdio channels. If any channel has
+#   been missing for 2 consecutive ticks (~20s), exits non-zero to trigger
+#   Docker restart. The 2-tick debounce avoids false positives during a
+#   transient channel respawn.
+#   Catches the failure mode where one stdio subprocess dies post-startup
+#   (e.g. port 9465 collision killing email-watcher) while the rest of the
+#   container stays "healthy" and silently stops processing email.
+#   See _tasks/47-pipeline-hardening-followups/ Issue 2 for the post-mortem.
+declare -A MISSING_COUNT
 while tmux has-session -t claude 2>/dev/null; do
   pane_text=$(tmux capture-pane -t claude -p -S -15 2>/dev/null || true)
 
@@ -167,6 +176,20 @@ while tmux has-session -t claude 2>/dev/null; do
     echo "[watchdog] Rate limit prompt detected — selecting 'wait for reset'"
     tmux send-keys -t claude Enter
   fi
+
+  for ch in "${EXPECTED_CHANNELS[@]}"; do
+    if pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
+      MISSING_COUNT[$ch]=0
+    else
+      MISSING_COUNT[$ch]=$(( ${MISSING_COUNT[$ch]:-0} + 1 ))
+      if [ "${MISSING_COUNT[$ch]}" -ge 2 ]; then
+        echo "[watchdog] FATAL: ${ch} missing for ${MISSING_COUNT[$ch]} consecutive checks — triggering container restart"
+        tmux kill-server 2>/dev/null || true
+        exit 1
+      fi
+      echo "[watchdog] WARN: ${ch} missing (count=${MISSING_COUNT[$ch]}/2)"
+    fi
+  done
 
   sleep 10
 done

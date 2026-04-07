@@ -19,7 +19,23 @@ services:
       outlook-mcp:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "tmux has-session -t claude 2>/dev/null && curl -sf http://localhost:9465/health > /dev/null"]
+      # Verify: tmux session alive + email-watcher /health endpoint reachable
+      # + the 3 critical stdio channels are running. The pgrep checks catch
+      # the failure mode where Claude Code's stdio subprocess for a channel
+      # silently dies (e.g. port collision killing email-watcher) — without
+      # them, the container would stay "healthy" while ingest is stopped.
+      # Telegram and file-ops channels are intentionally not in the
+      # healthcheck — pipeline still works without them, and they're caught
+      # by the entrypoint monitor loop's broader liveness check anyway.
+      # See _tasks/47-pipeline-hardening-followups/ Issue 2.
+      test:
+        - CMD-SHELL
+        - >-
+          tmux has-session -t claude 2>/dev/null &&
+          curl -sf http://localhost:9465/health > /dev/null &&
+          pgrep -f "bun run.*email-watcher.ts" > /dev/null &&
+          pgrep -f "bun run.*gdrive-watcher.ts" > /dev/null &&
+          pgrep -f "bun run.*workflow-mcp.ts" > /dev/null
       interval: 30s
       timeout: 10s
       retries: 3
