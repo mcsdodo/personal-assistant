@@ -97,8 +97,12 @@ function createRunningJob(
     sourceRef: `${input.email_source}:${input.message_id}`,
     idempotencyKey: `${input.email_source}:${input.message_id}`,
   });
-  // Simulate claim
-  db.prepare("UPDATE jobs SET state = 'running', started_at = datetime('now') WHERE id = ?").run(
+  // Simulate claim — started_at must use the same ISO 8601 format nowIso() writes
+  // in production (workflow-db.ts claimNextQueuedJob). Schema-default datetime('now')
+  // emits space format and can hide format-mismatch comparison bugs. See CLAUDE.md
+  // "Test fixtures must match production writers".
+  db.prepare("UPDATE jobs SET state = 'running', started_at = ? WHERE id = ?").run(
+    new Date().toISOString(),
     job.id,
   );
   // Seed classification steps (production path: channel roundtrip completed)
@@ -1061,7 +1065,7 @@ describe("invoice-worker channel classification flow", () => {
       sourceRef: `${input.email_source}:${input.message_id}`,
       idempotencyKey: `${input.email_source}:${input.message_id}`,
     });
-    db.prepare("UPDATE jobs SET state = 'running', started_at = datetime('now') WHERE id = ?").run(job.id);
+    db.prepare("UPDATE jobs SET state = 'running', started_at = ? WHERE id = ?").run(new Date().toISOString(), job.id);
     return getJob(db, job.id)!;
   }
 
@@ -1228,7 +1232,8 @@ function createRunningScanJob(
     sourceRef: `gdrive:${input.file_id}`,
     idempotencyKey: `gdrive:${input.file_id}`,
   });
-  db.prepare("UPDATE jobs SET state = 'running', started_at = datetime('now') WHERE id = ?").run(
+  db.prepare("UPDATE jobs SET state = 'running', started_at = ? WHERE id = ?").run(
+    new Date().toISOString(),
     job.id,
   );
   // Seed classification step (production path: channel roundtrip completed)

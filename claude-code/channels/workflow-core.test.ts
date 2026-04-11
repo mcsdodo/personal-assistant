@@ -84,10 +84,18 @@ describe("stale job reclamation", () => {
     else process.env.STALE_JOB_MINUTES = originalEnv;
   });
 
+  // Test fixtures MUST write updated_at in the SAME format that production uses
+  // (ISO 8601 with T and Z suffix, via nowIso() in workflow-db.ts). Using SQLite's
+  // datetime('now','-N minutes') produces space-separated format and hides
+  // string-comparison bugs in reclaimStaleJobs. See CLAUDE.md "Test fixtures
+  // must match production writers".
+  const minutesAgoIso = (minutes: number): string =>
+    new Date(Date.now() - minutes * 60 * 1000).toISOString();
+
   test("reclaims running job stale for over threshold", () => {
     process.env.STALE_JOB_MINUTES = "0"; // 0 minutes = everything is stale
     const job = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
-    db.prepare("UPDATE jobs SET state = 'running', updated_at = datetime('now', '-10 minutes') WHERE id = ?").run(job.id);
+    db.prepare("UPDATE jobs SET state = 'running', updated_at = ? WHERE id = ?").run(minutesAgoIso(10), job.id);
 
     reclaimStaleJobs(db, logger);
 
@@ -99,7 +107,7 @@ describe("stale job reclamation", () => {
   test("reclaims awaiting_classification job stale for over threshold", () => {
     process.env.STALE_JOB_MINUTES = "0";
     const job = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
-    db.prepare("UPDATE jobs SET state = 'awaiting_classification', updated_at = datetime('now', '-10 minutes') WHERE id = ?").run(job.id);
+    db.prepare("UPDATE jobs SET state = 'awaiting_classification', updated_at = ? WHERE id = ?").run(minutesAgoIso(10), job.id);
 
     reclaimStaleJobs(db, logger);
 
@@ -110,7 +118,7 @@ describe("stale job reclamation", () => {
   test("fails stale job after max retries exhausted", () => {
     process.env.STALE_JOB_MINUTES = "0";
     const job = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
-    db.prepare("UPDATE jobs SET state = 'running', retry_count = 3, updated_at = datetime('now', '-10 minutes') WHERE id = ?").run(job.id);
+    db.prepare("UPDATE jobs SET state = 'running', retry_count = 3, updated_at = ? WHERE id = ?").run(minutesAgoIso(10), job.id);
 
     reclaimStaleJobs(db, logger);
 
@@ -122,7 +130,7 @@ describe("stale job reclamation", () => {
   test("does not touch fresh running jobs", () => {
     process.env.STALE_JOB_MINUTES = "5";
     const job = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
-    db.prepare("UPDATE jobs SET state = 'running', updated_at = datetime('now') WHERE id = ?").run(job.id);
+    db.prepare("UPDATE jobs SET state = 'running', updated_at = ? WHERE id = ?").run(new Date().toISOString(), job.id);
 
     reclaimStaleJobs(db, logger);
 
@@ -133,10 +141,10 @@ describe("stale job reclamation", () => {
   test("does not touch queued or completed jobs", () => {
     process.env.STALE_JOB_MINUTES = "0";
     const queuedJob = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
-    db.prepare("UPDATE jobs SET updated_at = datetime('now', '-10 minutes') WHERE id = ?").run(queuedJob.id);
+    db.prepare("UPDATE jobs SET updated_at = ? WHERE id = ?").run(minutesAgoIso(10), queuedJob.id);
 
     const completedJob = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
-    db.prepare("UPDATE jobs SET state = 'completed', updated_at = datetime('now', '-10 minutes') WHERE id = ?").run(completedJob.id);
+    db.prepare("UPDATE jobs SET state = 'completed', updated_at = ? WHERE id = ?").run(minutesAgoIso(10), completedJob.id);
 
     reclaimStaleJobs(db, logger);
 

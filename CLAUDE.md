@@ -423,6 +423,8 @@ docker exec personal-assistant-claude sh -c "env | grep -E 'OTEL|TELEMETRY'"
 
 ## Testing
 
+Unit test rules for bun tests live in `claude-code/channels/CLAUDE.md`. E2E pytest rules for the `tests/` folder live alongside them in `tests/README.md`.
+
 ### E2E Pipeline Tests
 
 `tests/` contains a pytest suite that exercises the full email processing pipeline end-to-end (Gmail, Outlook, download link flows). Tests send real emails, wait for the pipeline to process them, and verify results in Paperless.

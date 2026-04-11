@@ -172,10 +172,15 @@ export async function executeNextJob(
  */
 export function reclaimStaleJobs(db: Database, logger: WorkflowLogger): void {
   const staleMinutes = parseInt(process.env.STALE_JOB_MINUTES ?? "5", 10);
+  // updated_at is wrapped in datetime() to normalize both ISO 8601 (T/Z, written
+  // by nowIso()) and space-separated (schema default) formats to a single
+  // canonical form before lexicographic comparison. Without this, same-date ISO
+  // timestamps ('2026-04-11T...') always sort greater than space-form cutoffs
+  // ('2026-04-11 ...') and the query never matches any row code has ever updated.
   const stale = db.prepare(
     `SELECT id FROM jobs
      WHERE state IN ('running', 'awaiting_classification')
-       AND updated_at < datetime('now', '-' || ? || ' minutes')`
+       AND datetime(updated_at) < datetime('now', '-' || ? || ' minutes')`
   ).all(staleMinutes) as { id: string }[];
 
   for (const { id } of stale) {
