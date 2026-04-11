@@ -4,6 +4,12 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-11 — Stale Job Reclamation Fix
+
+### Fixed
+- **`reclaimStaleJobs` string-comparison format bug** — the query compared `updated_at` (written by `nowIso()` in ISO `T...Z` format) against `datetime('now','-N minutes')` (space-separated format). ASCII `'T'` > `' '` made same-date ISO timestamps always sort greater than cutoffs, so the query matched zero rows and stuck `awaiting_classification` jobs never drained, even after upstream issues were resolved. Wrapped `updated_at` in `datetime()` to normalize both formats before comparison `2f68f50`
+- **Test fixtures for stale reclamation** — the 5 existing `reclaimStaleJobs` tests were false-green because they used the same `datetime('now','-10 minutes')` shortcut that hid the production bug. Switched to `new Date(Date.now() - N*60*1000).toISOString()` fixtures so they match production writers, and added a test-authoring rule in `claude-code/channels/CLAUDE.md` requiring fixtures to match `nowIso()` output for columns production writes via `nowIso()` `2f68f50`
+
 ## 2026-04-01 — Testing, Retry Logic & Architecture Cleanup
 
 ### Added
