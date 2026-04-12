@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## [2026-04-12]
+
+### Added
+- Map `payslip` doc_type to Paperless `Document` type so payslips get correct document type and storage path
+
 ## 2026-04-11 — Stale Job Reclamation Fix
 
 ### Fixed
