@@ -10,6 +10,124 @@ This project was developed as part of a private monorepo. This changelog was gen
 - **`reclaimStaleJobs` string-comparison format bug** — the query compared `updated_at` (written by `nowIso()` in ISO `T...Z` format) against `datetime('now','-N minutes')` (space-separated format). ASCII `'T'` > `' '` made same-date ISO timestamps always sort greater than cutoffs, so the query matched zero rows and stuck `awaiting_classification` jobs never drained, even after upstream issues were resolved. Wrapped `updated_at` in `datetime()` to normalize both formats before comparison `2f68f50`
 - **Test fixtures for stale reclamation** — the 5 existing `reclaimStaleJobs` tests were false-green because they used the same `datetime('now','-10 minutes')` shortcut that hid the production bug. Switched to `new Date(Date.now() - N*60*1000).toISOString()` fixtures so they match production writers, and added a test-authoring rule in `claude-code/channels/CLAUDE.md` requiring fixtures to match `nowIso()` output for columns production writes via `nowIso()` `2f68f50`
 
+## 2026-04-07 — Pipeline Hardening
+
+### Refactored
+- **Paperless adapter unified boundary** — every Paperless operation (CRUD, upload, PATCH, custom fields, task polling) now goes through `paperless-adapter.ts`. Hides the MCP-vs-REST split from callers and adds a private `listAllPages` helper that walks every page of paginated responses — fixes a silent bug where only page 1 was seen, causing documents to end up with `correspondent: null` `6e1e60b` `9a08300`
+- **Worker decomposition** — `intake-worker.ts` split into `invoice/download-service.ts`, `invoice/dedup-service.ts`, `invoice/classification-state.ts`, `invoice/postprocess-service.ts` `15e8ca8` `489d343`
+- **`watcher-runtime.ts`** — shared operational scaffolding for both watchers (health server, MCP client lifecycle, poll loop) `665fcca`
+- **checker-mcp `engine/` package** — `match_invoices.py` split into `models`, `parsing`, `matching`, `client`, `collection` for strict layering and testability `003df8e`
+
+### Added
+- **Typed workflow contract schemas** with runtime validation — `InvoiceIntakeInput`, `ScanIntakeInput`, `EmailClassificationResult`, `DocumentClassificationResult`. Watchers validate on job creation, worker validates on execution, submit_classification validates on write. Throws `WorkflowSchemaError` with schema/field/expected/actual `164676e`
+- **Download cleanup at terminal job states** — files tracked per-job in workflow.db and auto-deleted on `completeJob` / `failJob` / `cancelJob`. Boot-time safety sweep removes orphaned files older than 7 days `e4b1c47`
+- **Continuous channel liveness check** — entrypoint verifies channels stay registered throughout the session, not just at startup; healthcheck uses `pgrep` on channel processes `0d9697d` `da7b29b`
+- **Explicit MCP server attachment for subagents** — the `email-classifier` subagent declares `mcpServers: [gmail, outlook]` in its frontmatter because Claude Code v2.1.92 does not inherit parent MCP tools to subagents by default. Classifier also fetches the email body itself now instead of receiving it pre-parsed `f4b6b55` `4a5a76b`
+
+### Fixed
+- **Strip stale `mcpOAuth` state on container start** — entrypoint wipes `mcpOAuth` from `.credentials.json` every boot. Workaround for [anthropics/claude-code#34008](https://github.com/anthropics/claude-code/issues/34008) where cached OAuth discovery state survives restarts and makes HTTP MCPs show `△ needs authentication` with no real recovery path `11a00eb`
+- **Remove tmux-keystroke MCP reconnect script** — the old reconnect flow used `tmux send-keys` to navigate the `/mcp` menu; it raced with workflow channel notification delivery and silently interrupted in-progress jobs. Replaced by the entrypoint credentials cleanup above `0d5ab28`
+- **Require `sender` in `classify_email`** — watcher must pass sender/subject/received_at in `input_json`; worker injects them from there instead of re-fetching. Real `submit_classification` errors now bubble up instead of being swallowed `03d798d`
+- **Allow null `vendor` and `strategy_confidence` on `action: ignore`** — schema was previously rejecting valid ignore outputs `0fcc5bb`
+- **Watcher-inject classification metadata** — removes a duplicated classification path between watcher and worker `a633c41`
+- **Post-review polish** — dead exports removed, span attrs enriched, error chain tightened `a3575ae`
+
+## 2026-04-06 — Gmail MCP Auth Sidecar & Force Reprocess
+
+### Added
+- **Caddy auth sidecar for gmail-mcp (v2 — internal too)** — Claude's own gmail MCP now goes through the same bearer-token sidecar as any external caller. The sidecar passes `/oauth2callback` through unauthenticated so the Google OAuth flow still works `91a88bb` `cb93ecf`
+- **`force=true` reprocessing now PATCHes existing Paperless docs in place** — under `force: true`, the worker re-runs the full pipeline and PATCHes the existing doc with fresh metadata instead of rejecting on dedup hit. Preserves doc id, PDF, OCR, and thumbnail; emits `outcome: refreshed` and sends a dedicated Telegram notification `0fae894`
+- **LLM-driven invoice accounting period** — `accounting_period` resolution uses the document classifier's `YYYY-MM` output first and falls back to the deterministic chain only when unavailable or invalid. Prometheus counter `invoice_worker_missing_month_tag_total` surfaces fall-through cases for manual tagging `f4843ce`
+- **Claude Code 2.1.92 pinning + self-heal** — entrypoint pins the CLI version, detects missing channels on boot, and disables the claude.ai-hosted MCPs (gmail/gcal proxies) that aren't used by this stack `88dfed2`
+- **Automated HTTP MCP reconnect in entrypoint** — boot-time logic detects HTTP MCPs stuck in "needs authentication" and recovers them without keystroke races `2680406` `994a72f` `d10257a` `64e7203`
+
+### Fixed
+- **Outlook attachment + GDrive download size caps** — both download paths now enforce hard size limits to prevent runaway reads `569ad30`
+- **email-watcher zero backlog emission** — both workflow types always emit a fresh zero when empty, so Prometheus sees live samples instead of stale values `5405d75`
+- **Dashboard metric names** — updated to OTLP canonical form (dropped `_total` suffix after push migration) `7e4bc20`
+
+## 2026-04-05 — OTLP Metric Migration & Test Infra Cleanup
+
+### Changed
+- **email-watcher and gdrive-watcher push metrics via OTLP** instead of exposing a scrape endpoint. Custom workflow metrics (`backlog`, `jobs{state,type}`, `attachments`, `recent_discovered`) flow through the same OTel pipeline as traces `218ffdb` `af1cb59`
+- **Drop `status` field from `emails.db` and `gdrive.db`** — workflow job state in `workflow.db` is now the single source of truth. Watcher tables are a pure audit trail `c0d4364` `7d8b0d4` `2dc8692`
+- **Grafana dashboards rewritten around job-based metrics** — panels use `email_watcher_jobs{state,type}` and `email_watcher_backlog{type}` instead of dead status-based queries `31069ac`
+- **Constant OTel span names** for dashboard TraceQL search (no more interpolated values breaking saved queries) `3febd6c`
+
+### Added
+- **Enriched upload + `set_fields` OTel spans** with correspondent, doc type, storage path, tag IDs, and outcome `c76e12e`
+- **Public docs: design decisions, data contracts, traces, scan flow** for open-source readers `2db27f7`
+
+### Fixed
+- **Link E2E tests** — diacritics in HTML template, dynamic title assertion, unskipped after repairs `9b15f04` `0082de9`
+- **CI test isolation** — `mock.module('./db')` was polluting `db.test.ts`; switched to real SQLite, inlined `openDb` in the test to bypass, fixed `DOWNLOAD_DIR` propagation `a299e28` `ffdbe82` `2a1f4f6`
+- **Replaced SSH-based PDF server with a local Docker container** in E2E fixtures — removes the SSH dependency that broke CI `df3d68e`
+- **outlook-mcp JSON array handling** — return arrays as strings to avoid FastMCP single-element flattening; handle single-element unwrap in attachment paths `5593cbc` `ca53b29`
+- **Remove `retryStuck` paths** in both watchers — workflow jobs handle stuck items now `1e0ffed` `ac1942b`
+
+## 2026-04-04 — Pipeline V2: Worker-as-Orchestrator
+
+Largest architectural change in the public repo to date. Worker now owns the entire invoice/scan pipeline end-to-end; watchers just create jobs; classification is non-blocking via channel roundtrip.
+
+### Added
+- **`awaiting_classification` state + `submit_classification` tool** — worker parks a job and sends a channel notification; Claude runs the haiku subagent and submits the result back via the workflow MCP. Worker resumes on the next poll tick without blocking on Claude `2431dab`
+- **Worker owns classification** — `classify_email` and `classify_document` are driven by the worker via channel notifications instead of happening eagerly in the watcher or orchestrator `e7f8dbb` `b670887`
+- **Step-level resume** — `getCompletedSteps` lets the worker skip already-completed steps on retry, making re-runs idempotent `aa64206`
+- **Paperless storage paths + taxonomy redesign** — invoices and scans routed to storage paths by `owner` (techlab vs personal) and document type. Three-part filter (accounting tag + `Invoice` type + NOT `account-statement`) replaces brittle legacy queries `f903112` `2966ddd`
+- **`force=true` flag for job creation** — replaces the old `create_job` / `retry_job` tools. Reprocessing always follows the same pipeline as automatic processing, no manual inspection path `0b9980c` `cd2070b` `df8377c`
+- **Invoice link persistence** — shared `invoice-links.ts` module used by both email-watcher and `invoice/download-service`. Gmail MCP HTML truncation raised from 20k → 100k to recover links from long HTML emails `3ce12be` `794f0c0`
+- **Stale job detection primitives** — DB-level stale tracking and a 3-tick channel roundtrip E2E test `c217fd3`
+- **Trace context propagation from watchers through jobs to worker** — each job gets its own root span so multi-file incidents don't collapse into a single trace in Tempo `688e0b9`
+- **email-watcher creates `invoice_intake` jobs directly in `workflow.db`** — no round-trip through Claude for new-email detection. Channel notifications are now only used for startup events (`first_start`, `catchup_required`) `7d3519d`
+- **Scan intake migrated to worker-as-orchestrator** — same pattern as email `1302b52`
+
+### Refactored
+- **workflow-mcp converted from HTTP to stdio channel** — channels are subprocesses of Claude Code, so stdio is a natural fit and removes the need for a separate HTTP server `43be7ac`
+- **Pure pipeline functions extracted** to `invoice-pipeline.ts` — `mergeClassifications`, `resolveMonthTag`, `buildTagNames`, `generateTitle`, `getCompletedSteps` — all testable without mocks `760c853`
+- **Simplified job creation API** — `create_invoice_intake_job(email_source, message_id, force?)` replaces the old multi-param constructor `5da8f36`
+- **Removed backward-compat classification path** — only V2 (worker-driven) remains `4ab7487` `068e4f3`
+
+### Fixed
+- **Scan `month_tag` inferred from `doc_date`** (document classifier output) instead of the hard scan date. Classifier's `accounting_period` wins when present `5d3d180`
+- **email-watcher cursor advancement** — don't advance `last_checked` when a poll fails with auth error, preventing silent email loss during outages `86c376f`
+- **email-watcher poll errors reported via OTel span status** (not just logs) so failures are visible in Tempo `a6aa67a`
+- **Download resume + strategy handling** + production flow tests `0d28521` `0afd17b`
+- **Pipeline: fail on missing `owner`** (previously silently accepted null); fuzzy threshold lowered to 0.85 to catch EN/SK vendor variants; retry instructions clarified `aa2e087`
+
+### Tests
+- **E2E tests poll `workflow.db` instead of email status** — matches the new architecture where workflow.db is the source of truth `60331ac`
+- **Direct watcher job creation + idempotency tests** for both email-watcher and gdrive-watcher `1833185` `686e22d`
+
+## 2026-04-03 — Security Hardening & `file-ops` MCP
+
+### Added
+- **`file-ops` MCP** — scoped file operations for `/workspace/downloads/` replace dangerous Bash wildcards in Claude's allowlist. Exposes `download_file`, `delete_file`, `list_files`, `decrypt_pdf`, `read_base64`, `get_env` behind a strict path prefix `9201046`
+- **Caddy auth sidecar for gmail-mcp (initial)** — removes direct LAN exposure; the upstream MCP is now only reachable through Caddy with a bearer token on `/mcp*`, while `/oauth2callback` stays public for the Google OAuth flow `5e7b3cc` `bb4e0f2`
+- **Zero-fill metric gauges** — `emitWithDefaults` helper ensures `recent_discovered_total`, `backlog`, etc. always emit samples for every source/type, even when zero, preventing stale Prometheus values during idle periods `a95dbe5` `cc20743` `b52861d`
+
+### Fixed
+- **Watchtower exclusion label** — use the correct `com.centurylinklabs.watchtower.enable: "false"` form, increase poll interval to 6h `7bd18a6`
+- **`file-ops` startup guard** — `import.meta.main` guard prevents the MCP from running when imported as a library `43a69e1`
+- **Bash(ls) allow rule removed** — `list_files` MCP tool covers the legitimate use case `b2feb63`
+
+### Docs
+- **Public docs use `.lan` placeholders** — matches the infrastructure the stack is actually designed for `55f9eef`
+
+## 2026-04-02 — Classification Tracing & Setup Guide
+
+### Added
+- **Classification step tracing** — `classify_email` and `classify_document` get their own OTel spans, merged into the email workflow dashboard `263fd5d` `336512c`
+- **Vendor + outcome on trace span names** — final upload spans carry vendor and outcome attributes so Tempo can filter by them without TraceQL interpolation `bd93468`
+- **Comprehensive setup guide** — covers OAuth, Telegram bot pairing, HA token, deployment, and local dev with the `local` profile `1b41a31` `ff460a5`
+- **Rate-limit watchdog in entrypoint** — detects Anthropic API rate limits and restarts the session before the channel state goes dead `bd7f402`
+
+### Fixed
+- **Pipeline: fail on missing owner**, lower fuzzy threshold to 0.85, tighten retry instructions `aa2e087`
+- **Tempo datasource UID** in observability config (was pointing at the local-dev UID in production) `792abac`
+
+### Docs
+- **Mandatory documentation updates after implementation** — CLAUDE.md policy `a15c4a3`
+
 ## 2026-04-01 — Testing, Retry Logic & Architecture Cleanup
 
 ### Added
