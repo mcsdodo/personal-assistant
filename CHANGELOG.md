@@ -4,6 +4,23 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-12 — Payslip Classification
+
+### Added
+- **`doc_type: "payslip"`** — the document-classifier now recognizes Slovak *výplatný lístok / výplatná páska / mzdový list / vyúčtovanie mzdy / odmena konateľa* and English *payslip / pay stub / wage slip* as a first-class document kind, distinct from invoice/receipt/document `e681e88`
+- **`resolveOwner(rawOwner, docType)`** in `invoice-pipeline.ts` — doc_type-aware owner resolver for the **email intake path**. Enforces "payslip → personal" regardless of what the classifier's business-identifier check produced. Applied once in `intake-worker.ts` before both `buildTagNames` and `resolveStoragePathId`, so tags and storage path always agree on the authoritative owner. The GDrive scan path is intentionally not touched — folder choice remains authoritative there `19dacab` `1c582a9`
+- **`payslip → Document`** mapping in `DOC_TYPE_TO_PAPERLESS` so payslips get the generic Paperless document type and land in the `Personal Documents` storage path `99a5ee6`
+
+### Fixed
+- **Doc #416 misfiled as techlab business expense** — payslip email from the external bookkeeper (`cervenakova@dst.sk`, subject "vyúčtovanie odmeny konateľa za 03/2026") was classified as a regular invoice and tagged `[techlab, 2026-03]` because the classifier's business-identifier check matched on the Techlab s.r.o. header. Post-fix classifier returns `doc_type: payslip`, the resolver forces `owner: personal`, and tags resolve to `[personal, 2026-03]`. Doc #416 was patched directly via Paperless API (force-reprocess uploaded a duplicate that Paperless's content dedup silently dropped). Audit trail in `_tasks/_done/55-payslip-classification/04-trace.md`.
+- **Telegram notification used raw classifier owner instead of resolved owner** — the notification at `intake-worker.ts:634` was passing `merged.owner` (the raw value) instead of the post-`resolveOwner` resolved value. For payslips where the classifier returns `techlab`, the notification would misleadingly show `techlab` while the document was correctly filed as `personal` `3fc8ae5`
+
+### Changed
+- **`document-classifier.md` vendor rule** no longer lists "internal payroll" as a techlab-internal doc example — that was misleading. Individual payslips are now `doc_type: payslip` with the employer as vendor `e681e88`
+
+### Tests
+- 8 new unit tests in `invoice-pipeline.test.ts` (7 for `resolveOwner`, 1 for `buildTagNames` payslip pin). Total bun channels suite: 484/484 green (1103 expect() calls).
+
 ## 2026-04-11 — Stale Job Reclamation Fix
 
 ### Fixed

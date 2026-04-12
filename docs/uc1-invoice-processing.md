@@ -188,7 +188,7 @@ The invoice-worker uploads documents directly to the Paperless HTTP API, **not**
 **Steps:**
 1. **Resolve correspondent** — match vendor name to existing Paperless correspondent (case-insensitive + Jaro-Winkler 0.85), create if missing (Paperless MCP `list_correspondents` / `create_correspondent`)
 2. **Resolve tags** — derive tags from the `owner` field set by the document-classifier (see owner-aware logic below), create missing tags (Paperless MCP `list_tags` / `create_tag`)
-3. **Resolve document type** — map `doc_type` to Paperless type (invoice → "Invoice", receipt → "Receipt", credit_note → "Credit Note", account_statement → "Account Statement", document → "Document") (Paperless MCP `list_document_types`)
+3. **Resolve document type** — map `doc_type` to Paperless type (invoice → "Invoice", receipt → "Invoice", credit_note → "Invoice", account_statement → "Document", document → "Document", payslip → "Document") (Paperless MCP `list_document_types`)
 4. **Build title** — priority: `{vendor} - {order_id}` → `{vendor} - {subtitle}` → `{vendor} - {subject/filename}` → `{vendor} - invoice/scan`
 5. **Upload** — direct HTTP `POST /api/documents/post_document/` with base64-decoded multipart body, correspondent, tags, type. Returns a `task_uuid`.
 6. **Custom fields** — poll `GET /api/tasks/?task_id={uuid}` until consumption succeeds and a doc id is known, then `PATCH /api/documents/{doc_id}/` with custom fields (total_amount, order_id)
@@ -197,8 +197,10 @@ The invoice-worker uploads documents directly to the Paperless HTTP API, **not**
 
 Tags are derived deterministically by `buildTagNames()` in `invoice-pipeline.ts:185`. Both pipelines (email and GDrive scan) call the same function — there is **no separate per-source tag logic**. The only difference is where `owner` comes from:
 
-- **Email pipeline** — `owner` comes from the document-classifier (`techlab` or `personal`). The classifier inspects the PDF for business identifiers (company name, VAT/IČO/DIČ, license plates, "Podnikateľský účet"). If `owner` is missing, the job fails with `missing_owner` — this prevents silent mis-tagging when the classifier didn't run.
+- **Email pipeline** — raw `owner` comes from the document-classifier (`techlab` or `personal`). The classifier inspects the PDF for business identifiers, which is *inference* and can misfire (e.g., a payslip from your own company always has the employer header + IČO and would otherwise be tagged `techlab`). The raw value is then passed through `resolveOwner(rawOwner, docType)` in the same file, which applies one doc_type-aware rule: `doc_type === "payslip" → owner = "personal"`. `resolveOwner` is called once before both `buildTagNames` and `resolveStoragePathId`, so tags and storage path always agree. If the classifier is missing an `owner` field, the email job still fails fast with `missing_owner`.
 - **GDrive scan pipeline** — `owner` comes from the watch folder's first segment (`watch_folder.split("/")[0]`). For `watch_folder=techlab/invoicing` the owner is `techlab`. The classifier's `owner` field is ignored on this path because the operator's folder choice is authoritative.
+
+**Payslips (email path only):** `doc_type=payslip` from the email path forces owner to `personal` via `resolveOwner`, so the final tags are `[personal, YYYY-MM]` — no `accounting`, no `techlab`, even if the classifier's raw owner field said `techlab`. This keeps payslips out of the `checker-mcp` matching pipeline (which filters on `accounting`). A payslip scanned via GDrive is NOT overridden — folder choice wins.
 
 Both then go through the same `buildTagNames(...)` rules:
 

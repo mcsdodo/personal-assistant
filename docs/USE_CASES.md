@@ -39,6 +39,7 @@ Detailed documentation: [`uc1-invoice-processing.md`](./uc1-invoice-processing.m
 | 1.6 | [Alert on duplicate detection](./uc1-invoice-processing.md#uc-16-approval-gates) | DONE |
 | 1.7 | [Query invoice status](./uc1-invoice-processing.md#uc-17-query-invoice-status) | DONE |
 | 1.8 | Google Drive scan + email PDF auto-upload | DONE |
+| 1.9 | Personal income documents (payslips) routed to personal, not techlab | DONE |
 
 ## UC-1A: Email Workflow Observability
 
