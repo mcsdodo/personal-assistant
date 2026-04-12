@@ -55,6 +55,7 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 ### doc_type
 - `invoice` — formal invoice (faktúra, daňový doklad, proforma faktúra). Classify as `invoice` if ANY of these are true: (1) document contains our company credentials: "${BUSINESS_COMPANY_NAME}", "${BUSINESS_CRN}", "${BUSINESS_TAX_IDS}" — always an invoice, no exceptions; (2) document title/header contains "Faktúra", "Invoice", "Daňový doklad", or has a structured invoice layout with invoice number, buyer/seller sections, and VAT breakdown. It does NOT matter whether the buyer is our company or a personal purchase — if the document is an invoice, classify it as `invoice`. The `owner` field below handles the business vs personal distinction.
 - `receipt` — POS receipt (pokladničný blok) from retail/fuel station, parking ticket, highway toll vignette. Typically a narrow thermal print format without formal buyer/seller sections.
+- `payslip` — výplatný lístok / výplatná páska / mzdový list / vyúčtovanie mzdy / odmena konateľa (Slovak); payslip / pay stub / wage slip / salary statement (English). A document reporting compensation paid to an individual (employee, konateľ/director, contractor). Structure: employer header + named individual as recipient + breakdown of hrubá mzda / odvody (zdravotné + sociálne) / daň / čistá mzda. May be issued by the user's own company (self-employment, konateľ) or by an external employer (rare — previous job). **A payslip is always a personal income record for the named individual, regardless of who issued it.** Do NOT classify as `invoice` even though it has an amount and the user's company name — use `payslip`.
 - `credit_note` — dobropis, refund document
 - `account_statement` — bank statement (výpis z účtu)
 - `document` — worklogs (dochádzka), vacation logs, travel orders (cestovný príkaz), business trip logs, contracts, attendance records — non-monetary documents
@@ -63,7 +64,8 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 ### vendor
 - Extract the full legal company name as printed on the document (e.g., "SLOVNAFT, a.s.", not "Slovnaft"; "Alza.sk s.r.o.", not "Alza")
 - Look for the name near IČO/DIČ/IČ DPH fields — that's the official name
-- **For internal documents** (`doc_type: "document"`) issued BY the user's own company FOR the user's own company — cestovný príkaz (travel order), dochádzka (attendance record), internal payroll, vacation logs, internal memos — return `"${BUSINESS_COMPANY_NAME}"`. The user's company IS the issuer and the correspondent for these documents; do not leave the vendor unset just because there's no external counterparty.
+- **For internal documents** (`doc_type: "document"`) issued BY the user's own company FOR the user's own company — cestovný príkaz (travel order), dochádzka (attendance record), vacation logs, internal memos — return `"${BUSINESS_COMPANY_NAME}"`. The user's company IS the issuer and the correspondent for these documents; do not leave the vendor unset just because there's no external counterparty.
+- **For payslips** (`doc_type: "payslip"`), the vendor is the **issuing employer**. If the employer is the user's own company (self-employment, konateľ compensation), return `"${BUSINESS_COMPANY_NAME}"`. If it's an external employer (e.g., a payslip from a previous job), return that company's name as printed on the document. The correspondent is always the employer — never the named employee.
 - **For internal documents from a different company** (rare — e.g., a payroll slip from a previous employer), extract that other company's name normally.
 - **Never return null.** If genuinely unclear after the rules above, return `"unknown"` as a string — not null, not an empty string.
 
@@ -88,7 +90,7 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 ### order_id
 - Extract THIS document's own number — the number in the header/title, not a referenced document number
 - For credit notes: use the credit note number (e.g. "Opravný daňový doklad - 6401551319"), NOT the original invoice number it references
-- If `doc_type` is `"receipt"`, `"account_statement"`, or `"document"`: always return `null` — no exceptions
+- If `doc_type` is `"receipt"`, `"account_statement"`, `"document"`, or `"payslip"`: always return `null` — no exceptions
 - Examples: "FV2026001234", "OBJ-583481365", "5000009409"
 - Return `null` if not found
 
@@ -99,6 +101,7 @@ Short label (max 40 chars) for document title building. Used when `order_id` is 
 - For attendance records (dochádzka): include month, e.g. `"Dochádzka marec 2026"`
 - For contracts: include counterparty, e.g. `"Zmluva - ABC s.r.o."`
 - For bank statements: include period, e.g. `"Výpis 03/2026"`
+- For payslips: include period, e.g. `"Výplatný lístok 03/2026"` or `"Odmena konateľa 03/2026"` (use the Slovak term that matches the document's own header)
 - For parking/toll receipts without order_id: include location/date, e.g. `"Parkovanie Bratislava 25.03.2026"`
 - Return `null` if nothing useful can be extracted beyond what vendor already captures
 
@@ -110,7 +113,9 @@ Short label (max 40 chars) for document title building. Used when `order_id` is 
 ### owner
 Determines whether this document belongs to the business entity or is personal.
 
-**Business identifiers** — if ANY of these appear ANYWHERE on the document, return `"techlab"`:
+**Payslip short-circuit:** if `doc_type === "payslip"`, return `"personal"` **unconditionally** and skip the business-identifier check below. A payslip is by definition a personal income record for the named individual, and the employer's name + IČO will always appear on it — the business-identifier check would incorrectly return `techlab`.
+
+**Business identifiers** — if ANY of these appear ANYWHERE on the document (and doc_type is NOT `payslip`), return `"techlab"`:
 - Company name on buyer/recipient side: ${BUSINESS_COMPANY_NAME}
   (Match fuzzy — ignore spacing/punctuation differences, e.g., "Techlab s.r.o." matches "Techlab s. r. o.")
 - Tax/VAT ID on buyer/recipient side: ${BUSINESS_TAX_IDS}
