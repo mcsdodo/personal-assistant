@@ -4,6 +4,7 @@ import {
   resolveMonthTag,
   validMonthTag,
   parseServicePeriodStart,
+  resolveOwner,
   buildTagNames,
   generateTitle,
   type EmailClassification,
@@ -312,6 +313,38 @@ describe("resolveMonthTag", () => {
         docDate: "2026-04-06",
       }),
     ).toBe("2026-04");
+  });
+});
+
+// ── resolveOwner ─────────────────────────────────────────────────────────
+
+describe("resolveOwner", () => {
+  test("payslip always resolves to personal, even if raw owner is techlab", () => {
+    expect(resolveOwner("techlab", "payslip")).toBe("personal");
+  });
+
+  test("payslip with null raw owner resolves to personal", () => {
+    expect(resolveOwner(null, "payslip")).toBe("personal");
+  });
+
+  test("payslip with undefined raw owner resolves to personal", () => {
+    expect(resolveOwner(undefined, "payslip")).toBe("personal");
+  });
+
+  test("invoice keeps techlab owner", () => {
+    expect(resolveOwner("techlab", "invoice")).toBe("techlab");
+  });
+
+  test("invoice keeps personal owner", () => {
+    expect(resolveOwner("personal", "invoice")).toBe("personal");
+  });
+
+  test("unknown raw owner falls back to personal for non-payslip", () => {
+    expect(resolveOwner("weird", "invoice")).toBe("personal");
+  });
+
+  test("null doc_type with techlab raw owner returns techlab", () => {
+    expect(resolveOwner("techlab", null)).toBe("techlab");
   });
 });
 

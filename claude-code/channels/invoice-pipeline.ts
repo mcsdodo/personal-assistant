@@ -92,6 +92,38 @@ export function validMonthTag(s: string | null | undefined): string | null {
   return s;
 }
 
+// ── resolveOwner ────────────────────────────────────────────────────────
+
+/**
+ * Resolve the canonical owner for a document, given a raw owner guess and
+ * the document's classified type.
+ *
+ * This is the single point of enforcement for document-kind → owner rules
+ * that short-circuit raw owner inputs. Called by the intake worker BEFORE
+ * `buildTagNames` and `resolveStoragePathId` so both downstream decisions
+ * use the same authoritative value.
+ *
+ * Rules:
+ * - `doc_type === "payslip"` → always `"personal"`. A payslip is a personal
+ *   income record for the named individual regardless of which company
+ *   issued it. The business-identifier check in the document-classifier
+ *   would otherwise misfire because the employer's name + IČO appear on
+ *   every payslip.
+ * - Otherwise: return `"techlab"` iff `rawOwner === "techlab"`, else
+ *   `"personal"`. Matches the pre-existing `buildTagNames` default.
+ *
+ * Extend this function when new personal-income doc types are introduced
+ * (dividend voucher, interest statement, brokerage statement). Do NOT
+ * scatter rules across callers.
+ */
+export function resolveOwner(
+  rawOwner: string | null | undefined,
+  docType: string | null | undefined,
+): "techlab" | "personal" {
+  if (docType === "payslip") return "personal";
+  return rawOwner === "techlab" ? "techlab" : "personal";
+}
+
 /** Convert an ISO date string (or any Date-parseable string) to a validated `YYYY-MM` tag. */
 function monthFromDate(s: string | null | undefined): string | null {
   if (!s) return null;
