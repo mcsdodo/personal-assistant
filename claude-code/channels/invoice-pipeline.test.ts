@@ -412,6 +412,20 @@ describe("buildTagNames", () => {
     );
     expect(tags).toContain("2026-04");
   });
+
+  test("payslip doc_type with personal owner emits [personal, month] — no accounting tag", () => {
+    // buildTagNames is expected to receive the already-resolved owner
+    // (post-resolveOwner). Verifies that with owner=personal + doc_type=payslip,
+    // no `accounting` tag leaks through, which would otherwise pull the
+    // doc into checker-mcp matching.
+    const tags = buildTagNames(
+      { owner: "personal", doc_type: "payslip", is_fuel: false },
+      "2026-03",
+    );
+    expect(tags).toEqual(["personal", "2026-03"]);
+    expect(tags).not.toContain("accounting");
+    expect(tags).not.toContain("techlab");
+  });
 });
 
 // ── generateTitle ───────────────────────────────────────────────────────
