@@ -68,6 +68,7 @@ import {
   mergeClassifications,
   parseServicePeriodStart,
   resolveMonthTag,
+  resolveOwner,
 } from "../invoice-pipeline";
 import {
   validateInvoiceIntakeInput,
@@ -519,8 +520,8 @@ export async function executeInvoiceIntake(
 
       // Step 4: Resolve tags — derived deterministically from merged classification
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-      const owner = merged.owner;
-      if (!owner) {
+      const rawOwner = merged.owner;
+      if (!rawOwner) {
         const msg = "Missing owner field — document-classifier did not return owner.";
         failJob(db, job.id, { code: "missing_owner", message: msg });
         logger.log(`Job ${job.id} failed: missing owner`);
@@ -529,6 +530,13 @@ export async function executeInvoiceIntake(
         span.setStatus({ code: SpanStatusCode.ERROR, message: msg });
         return;
       }
+
+      // Single-point owner resolution: payslip → personal, regardless of
+      // what the classifier's business-identifier check produced. See
+      // invoice-pipeline.ts resolveOwner for the rule.
+      const owner = resolveOwner(rawOwner, merged.doc_type);
+      span.setAttribute("invoice.owner.raw", rawOwner);
+      span.setAttribute("invoice.owner.resolved", owner);
 
       const allTagNames = buildTagNames(
         { owner, doc_type: merged.doc_type, is_fuel: merged.is_fuel },
@@ -540,7 +548,7 @@ export async function executeInvoiceIntake(
       // Step 5: Resolve document type
       const documentTypeId = await resolveDocumentType(merged.doc_type, logger, registry);
 
-      // Step 5b: Resolve storage path
+      // Step 5b: Resolve storage path (uses the SAME resolved owner as tags)
       const storagePathId = await resolveStoragePath(owner, merged.doc_type, logger, registry);
 
       // Step 6: Upload to Paperless — or PATCH the existing doc if force-refresh.
