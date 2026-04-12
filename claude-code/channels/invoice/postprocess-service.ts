@@ -57,6 +57,7 @@ const DOC_TYPE_TO_PAPERLESS: Record<string, string> = {
   account_statement: "Document",
   document: "Document",
   statement: "Document",
+  payslip: "Document",
   other: "Document",
 };
 
