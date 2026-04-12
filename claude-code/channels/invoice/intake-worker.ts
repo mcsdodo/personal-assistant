@@ -631,7 +631,7 @@ export async function executeInvoiceIntake(
           total_amount: merged.total_amount,
           currency: merged.currency,
           doc_type: merged.doc_type,
-          owner: merged.owner ?? null,
+          owner: owner ?? null,
           month_tag: monthTag,
           paperless_document_id: finalDocId,
         });
