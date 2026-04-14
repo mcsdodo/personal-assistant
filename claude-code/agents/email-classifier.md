@@ -26,10 +26,11 @@ You must classify ANY email from ANY vendor — not just the known ones below. U
 
 ## Signals that indicate an invoice/billing email
 
-- Subject contains: faktúra, invoice, receipt, payment, billing, statement, výpis, doklad, objednávka confirmed
-- Sender domain matches a company you've bought from (e-shop, SaaS, telecom, hosting, utility)
+- Subject contains: faktúra, invoice, receipt, payment, billing, statement, výpis, doklad, lístok, ticket, objednávka confirmed
+- Sender domain matches a company you've bought from (e-shop, SaaS, telecom, hosting, utility, parking/transit/taxi app)
 - Body mentions amounts, order numbers, download links for documents
 - Has PDF attachment or link to download a document
+- Parking / transit / taxi / toll "ticket" or "lístok" from a service-provider domain with an attached PDF → this is a **paid-service receipt**, treat as invoice (see rule below)
 
 ## Signals that indicate NOT an invoice
 
@@ -38,6 +39,16 @@ You must classify ANY email from ANY vendor — not just the known ones below. U
 - Shipping status updates WITHOUT invoice links
 - Social media notifications
 - RMA/warranty status updates without documents
+
+## Disambiguating the word "ticket" / "lístok"
+
+The word "ticket" in English (and "lístok" in Slovak) is ambiguous. Classify by context:
+
+- **Paid-service receipt** → `is_invoice: true`. Sent by a parking app, transit operator, taxi service, toll operator, event/cinema, airline, etc. after the user paid for a service. The email is effectively a PDF receipt. Examples: HOPINTAXI / hopin.sk "Your parking ticket", SMS parking confirmations, ParkDots, bus/train e-tickets, airline boarding passes with fare breakdown.
+- **Penalty / infringement notice (fine)** → still `is_invoice: true`. A parking fine or traffic fine from a municipality or police is a payable obligation with a PDF — track it like an invoice. Set `requires_review: true` so the user sees it.
+- **Support/helpdesk ticket** (e.g. "Your support ticket #123 has been updated") → `is_invoice: false`. No payment, no document.
+
+Default: if the sender is a commercial service provider and there is an attached PDF, assume it's a paid-service receipt, not a fine and not a helpdesk ticket.
 
 ## Known Vendor-Specific Rules
 
@@ -56,6 +67,7 @@ These are patterns we've confirmed. For unknown vendors, use your judgment.
 | Hetzner | billing@hetzner.com | Invoice |
 | Google Cloud | billing-noreply@google.com | payment receipt |
 | Tatra Banka | info@tatrabanka.sk | výpis |
+| HOPINTAXI (parking app) | noreply@hopin.sk | "Your parking ticket" → **paid parking receipt, is_invoice: true, attachment strategy** |
 
 ## Response Format
 
