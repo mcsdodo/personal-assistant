@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-14 — Parking-Ticket Classification
+
+### Fixed
+- **HOPINTAXI parking receipts misclassified as non-invoices** — email-classifier read subject "Your parking ticket" from `noreply@hopin.sk` as a municipal infringement notice and returned `is_invoice: false, action: ignore`, so the PDF never reached Paperless. Added a "Disambiguating the word 'ticket' / 'lístok'" section to `email-classifier.md` that distinguishes paid-service receipts (parking/transit/taxi/toll — `is_invoice: true`) from penalty/fine notices (`is_invoice: true` + `requires_review: true`) from support/helpdesk tickets (`is_invoice: false`). Added HOPINTAXI (`noreply@hopin.sk`) to the known-vendors table.
+
 ## 2026-04-12 — Payslip Classification
 
 ### Added
