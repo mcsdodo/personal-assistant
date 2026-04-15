@@ -1889,6 +1889,70 @@ describe("executeScanIntake", () => {
     expect(output.tags).not.toContain("2026-03");
   });
 
+  // Regression: the Telegram notification used classification.owner (the
+  // classifier's raw guess) instead of watch_folder-derived owner (the source
+  // of truth for scan intake). A fuel receipt scanned into techlab/accounting
+  // would be tagged "techlab" in Paperless but the notification said "personal"
+  // because the classifier couldn't link the vehicle to the business.
+  test("notification owner matches watch_folder owner, not classifier owner", async () => {
+    const filePath = join(tmpDir, "fuel_receipt.pdf");
+    writeFileSync(filePath, Buffer.from("JVBER-fake-fuel"));
+
+    // watch_folder says techlab, classifier says personal — tags must win
+    const input = makeScanInput({
+      file_path: filePath,
+      watch_folder: "techlab/accounting",
+      month_tag: "2026-04",
+    });
+    const job = createRunningScanJob(input, defaultScanClassification({
+      vendor: "24h oil s.r.o.",
+      total_amount: 79.32,
+      is_fuel: true,
+      owner: "personal",  // classifier's wrong guess
+      order_id: null,
+      subtitle: "Diesel nákup 15.04.2026",
+      doc_date: "2026-04-15",
+    }));
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 20, name: "24h oil s.r.o." }])),
+      // NO dedup (order_id is null)
+      // 2. list_tags
+      () => jsonResponse(rpcResponse([
+        { id: 3, name: "techlab" },
+        { id: 11, name: "accounting" },
+        { id: 4, name: "fuel" },
+      ])),
+      // 3. create_tag for "2026-04"
+      () => jsonResponse(rpcResponse({ id: 54 })),
+      // 4. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 3, name: "receipt" }])),
+      // 5. resolveStoragePath
+      storagePathsMockHandler(),
+      // 6. post_document
+      () => new Response('"task-uuid-fuel"', { status: 200 }),
+      // 7-9. setDocumentCustomFields
+      ...customFieldsMockHandlers(426),
+      // 10-12. moveGdriveFile
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.tags).toContain("techlab");
+    expect(output.tags).not.toContain("personal");
+
+    // The key assertion: notification must show "techlab" (from watch_folder),
+    // not "personal" (from classifier)
+    expect(notifyCalls).toHaveLength(1);
+    expect(notifyCalls[0]).toContain("techlab");
+    expect(notifyCalls[0]).not.toContain("personal");
+  });
+
   test("month_tag falls back to scan date when doc_date is null", async () => {
     const filePath = join(tmpDir, "nodocdate_scan.pdf");
     writeFileSync(filePath, Buffer.from("JVBER-fake-pdf"));

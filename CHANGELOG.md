@@ -4,6 +4,16 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-15 — Scan Notification Owner Mismatch
+
+### Fixed
+- **Telegram notification showed classifier's `owner` instead of watch_folder owner for scan intake** — when a scanned document in `techlab/accounting` was classified as `owner: "personal"` by the document-classifier (e.g. fuel receipt without business identifiers), Paperless correctly received `techlab` tags (derived from the watch folder), but the Telegram notification used the raw classifier output and displayed "personal". The notification now uses `scanTagOwner` (from `watch_folder.split("/")[0]`) consistently with the tag derivation. Added regression test.
+
+## 2026-04-14 — Checker Web UI: One-Click Accounting ZIP
+
+### Added
+- **`GET /zip?month=YYYY-MM` on the checker web UI** — downloads all Paperless documents tagged with the `accounting` tag **and** the requested `YYYY-MM` month tag as a single ZIP. Resolves both tag IDs, queries `/api/documents/?tags__id__all=<acc>,<month>` for the ID list, then POSTs `/api/documents/bulk_download/` (`content=archive`, `compression=deflated`) and streams the ZIP back to the browser as `YYYY-MM-accounting.zip`. Rendered as a `[zip]` link next to every month header on the matching view.
+
 ## 2026-04-14 — Parking-Ticket Classification
 
 ### Fixed

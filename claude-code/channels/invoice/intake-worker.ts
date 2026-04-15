@@ -1068,7 +1068,7 @@ export async function executeScanIntake(
           total_amount: classification.total_amount,
           currency: classification.currency,
           doc_type: classification.doc_type,
-          owner: classification.owner ?? null,
+          owner: scanTagOwner,
           month_tag: resolvedMonthTag,
           paperless_document_id: finalDocId,
         });
