@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, request as req
+from flask import Flask, Response, request as req, stream_with_context
 
 from engine.client import PaperlessClient
 from engine.collection import collect_month, collect_pl, filter_resolved_unmatched
@@ -135,6 +135,82 @@ def index():
     return render_page(results, totals, list(reversed(months)))
 
 
+@app.route("/zip")
+def zip_accounting():
+    load_dotenv(Path(__file__).parent / ".env")
+    if not os.getenv("PAPERLESS_API_TOKEN"):
+        load_dotenv(Path(__file__).parent.parent / ".env")
+    token = os.getenv("PAPERLESS_API_TOKEN")
+    if not token:
+        return (
+            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_API_TOKEN not set</pre>",
+            500,
+        )
+    if not PAPERLESS_URL:
+        return (
+            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_URL not set</pre>",
+            500,
+        )
+
+    month = req.args.get("month", "")
+    if not re.match(r"^\d{4}-\d{2}$", month):
+        return (
+            "<pre style='color:#f85149;background:#0d1117;padding:2em'>month query param required, format YYYY-MM</pre>",
+            400,
+        )
+
+    client = PaperlessClient(PAPERLESS_URL, token)
+    accounting_tag = client.get_tag_id(ACCOUNTING_TAG_NAME)
+    if accounting_tag is None:
+        return (
+            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{ACCOUNTING_TAG_NAME}' not found</pre>",
+            500,
+        )
+    month_tag = client.get_tag_id(month)
+    if month_tag is None:
+        return (
+            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{_esc(month)}' not found</pre>",
+            404,
+        )
+
+    docs = client.get_documents(tags__id__all=f"{accounting_tag},{month_tag}")
+    ids = [d["id"] for d in docs]
+    if not ids:
+        return (
+            f"<pre style='color:#8b949e;background:#0d1117;padding:2em'>No documents tagged '{_esc(month)}' + '{ACCOUNTING_TAG_NAME}'</pre>",
+            404,
+        )
+
+    upstream = client.session.post(
+        f"{PAPERLESS_URL.rstrip('/')}/api/documents/bulk_download/",
+        json={"documents": ids, "content": "archive", "compression": "deflated"},
+        stream=True,
+    )
+    if upstream.status_code != 200:
+        body = upstream.text[:500]
+        upstream.close()
+        return (
+            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Paperless returned {upstream.status_code}: {_esc(body)}</pre>",
+            502,
+        )
+
+    filename = f"{month}-accounting.zip"
+
+    def generate():
+        try:
+            for chunk in upstream.iter_content(chunk_size=65536):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def render_page(results, totals, months_display):
     sections = []
     for m in results:
@@ -145,7 +221,13 @@ def render_page(results, totals, months_display):
             hdr_html = f'<a href="{PAPERLESS_URL}/documents/{hdr_id}/details" target="_blank">{_esc(m["header"])}</a>'
         else:
             hdr_html = _esc(m["header"])
-        sections.append(f'<div class="mh">{hdr_html}</div>')
+        month_ym = m.get("month")
+        zip_html = (
+            f' <a class="zip" href="/zip?month={_esc(month_ym)}" title="Download ZIP of accounting docs tagged {_esc(month_ym)}">[zip]</a>'
+            if month_ym
+            else ""
+        )
+        sections.append(f'<div class="mh">{hdr_html}{zip_html}</div>')
         for r in m["rows"]:
             cls = r["status"]
             date_s = (r["date"] or "").ljust(10)
@@ -194,6 +276,8 @@ h1{{color:#58a6ff;font-size:15px;font-weight:600}}
 .info{{color:#484f58;margin-bottom:1.2em;font-size:12px}}
 .mh{{color:#e2e4e8;font-weight:bold;margin-top:1.4em;margin-bottom:.2em;font-size:13px}}
 .mh a{{color:inherit;text-decoration:none}}.mh a:hover{{text-decoration:underline}}
+.mh a.zip{{color:#58a6ff;font-weight:normal;margin-left:.6em}}
+.mh a.zip:hover{{text-decoration:underline}}
 .r{{white-space:pre;padding:1px 0}}
 .r.ok{{color:#3fb950}}
 .r.manual,.r.pending{{color:#d29922}}
