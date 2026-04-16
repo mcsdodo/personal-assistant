@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildSuggestedActions,
   mergeClassifications,
   resolveMonthTag,
   validMonthTag,
@@ -7,6 +8,7 @@ import {
   resolveOwner,
   buildTagNames,
   generateTitle,
+  UNKNOWN_FIELDS,
   type EmailClassification,
 } from "./invoice-pipeline";
 
@@ -451,5 +453,54 @@ describe("generateTitle", () => {
     const longSubject = "A".repeat(100);
     const result = generateTitle("V", null, null, longSubject);
     expect(result).toBe(`V - ${"A".repeat(80)}`);
+  });
+});
+
+// ── UNKNOWN_FIELDS + buildSuggestedActions ──────────────────────────────
+
+describe("UNKNOWN_FIELDS", () => {
+  test("includes the fields the classifier may return as unknown", () => {
+    expect(UNKNOWN_FIELDS).toContain("owner");
+    expect(UNKNOWN_FIELDS).toContain("doc_type");
+    expect(UNKNOWN_FIELDS).toContain("total_amount");
+    expect(UNKNOWN_FIELDS).toContain("doc_date");
+    expect(UNKNOWN_FIELDS).toContain("supply_date");
+    expect(UNKNOWN_FIELDS).toContain("service_period");
+    expect(UNKNOWN_FIELDS).toContain("accounting_period");
+  });
+});
+
+describe("buildSuggestedActions", () => {
+  test("owner unknown emits owner buttons + skip", () => {
+    const actions = buildSuggestedActions(["owner"], { doc_type: "invoice" });
+    expect(actions).toEqual(["set:owner=personal", "set:owner=techlab", "skip"]);
+  });
+
+  test("doc_type unknown emits doc_type buttons + skip", () => {
+    const actions = buildSuggestedActions(["doc_type"], { doc_type: null });
+    expect(actions).toEqual([
+      "set:doc_type=invoice",
+      "set:doc_type=receipt",
+      "set:doc_type=account_statement",
+      "skip",
+    ]);
+  });
+
+  test("owner + doc_type both unknown emits both button sets + skip", () => {
+    const actions = buildSuggestedActions(["owner", "doc_type"], {});
+    expect(actions).toContain("set:owner=personal");
+    expect(actions).toContain("set:owner=techlab");
+    expect(actions).toContain("set:doc_type=invoice");
+    expect(actions).toContain("skip");
+  });
+
+  test("unrelated unknown (e.g. total_amount) still emits skip", () => {
+    const actions = buildSuggestedActions(["total_amount"], { doc_type: "invoice" });
+    expect(actions).toEqual(["skip"]);
+  });
+
+  test("empty unknown list still emits skip (defensive)", () => {
+    const actions = buildSuggestedActions([], {});
+    expect(actions).toEqual(["skip"]);
   });
 });

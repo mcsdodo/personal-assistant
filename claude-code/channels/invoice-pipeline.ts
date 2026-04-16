@@ -257,6 +257,55 @@ export function generateTitle(
   return `${vendor} - invoice`;
 }
 
+// ── Unknown field detection + guidance actions ─────────────────────────
+
+/**
+ * Fields the classifier is permitted to mark as `"unknown"`. The intake
+ * worker scans the merged classification for these fields after the
+ * document-classifier returns and pauses the job if any are unknown.
+ *
+ * Keep this list in sync with the permissive-`"unknown"` additions in
+ * `workflow-schemas.ts` (task 57, Task 1.2).
+ */
+export const UNKNOWN_FIELDS: string[] = [
+  "owner",
+  "doc_type",
+  "total_amount",
+  "doc_date",
+  "supply_date",
+  "service_period",
+  "accounting_period",
+];
+
+/**
+ * Build a suggested-action list for the Telegram guidance prompt given
+ * the classifier's missing fields. The worker surfaces these as button
+ * vocabulary so the user can patch the unknowns with a single tap.
+ *
+ * Rules:
+ *   - `owner` unknown → `set:owner=personal`, `set:owner=techlab`
+ *   - `doc_type` unknown → three doc-type buttons
+ *   - always finish with `skip` so the user can abort without patching
+ */
+export function buildSuggestedActions(
+  unknownFields: string[],
+  _classification: { doc_type?: string | null },
+): string[] {
+  const actions: string[] = [];
+  if (unknownFields.includes("owner")) {
+    actions.push("set:owner=personal", "set:owner=techlab");
+  }
+  if (unknownFields.includes("doc_type")) {
+    actions.push(
+      "set:doc_type=invoice",
+      "set:doc_type=receipt",
+      "set:doc_type=account_statement",
+    );
+  }
+  actions.push("skip");
+  return actions;
+}
+
 // ── Step resume ─────────────────────────────────────────────────────────
 
 import { getJobEvents } from "./workflow-db";

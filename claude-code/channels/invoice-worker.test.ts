@@ -20,6 +20,7 @@ import {
   getJob,
   getJobEvents,
   openWorkflowDb,
+  setJobState,
   type JobRow,
 } from "./workflow-db";
 
@@ -2052,5 +2053,194 @@ describe("executeScanIntake", () => {
     expect(downloadCompleted).toBeDefined();
     const recorded = JSON.parse(downloadCompleted!.payload_json ?? "{}");
     expect(recorded.size).toBe(payload.length);
+  });
+});
+
+// ── Trigger A — classifier returns "unknown" ────────────────────────────
+//
+// When the document-classifier is allowed to answer "I don't know" for a
+// required field (owner / doc_type / dates), the worker must stop and
+// ask the user via the guidance protocol (task 57). These tests pin the
+// exact pause + resume behaviour for the email pipeline.
+
+describe("invoice-worker trigger A (classifier unknown)", () => {
+  test("classifier returns owner='unknown' → job pauses in awaiting_user_guidance", async () => {
+    const filePath = join(tmpDir, "trigger_a.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ vendor: "Alza.sk s.r.o." }),
+      defaultDocClassification({
+        owner: "unknown" as unknown as string,
+        vendor: "Alza.sk s.r.o.",
+        total_amount: 142.30,
+        doc_date: "2026-04-12",
+        notes: "no IČO printed; buyer name only 'Jozef Lacny'",
+      }),
+    );
+
+    // No fetch mocks — worker must pause before touching Paperless.
+    mockFetch();
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const reloaded = getJob(db, job.id)!;
+    expect(reloaded.state).toBe("awaiting_user_guidance");
+
+    const events = getJobEvents(db, job.id);
+    const guidance = events.find((e) => e.event_type === "guidance_request");
+    expect(guidance).toBeDefined();
+    const payload = JSON.parse(guidance!.payload_json!);
+    expect(payload.reason).toBe("classifier_unknown");
+    expect(payload.missing_fields).toEqual(["owner"]);
+    expect(payload.context.filename).toBe("trigger_a.pdf");
+    expect(payload.context.sender).toBe("noreply@alza.sk");
+    expect(payload.context.subject).toBe("Your invoice FA2026030001");
+    expect(payload.context.classifier_notes).toMatch(/no IČO/);
+    expect(payload.suggested_actions).toContain("set:owner=personal");
+    expect(payload.suggested_actions).toContain("set:owner=techlab");
+  });
+
+  test("classifier returns doc_type='unknown' → pause with missing_fields=[doc_type]", async () => {
+    const filePath = join(tmpDir, "trigger_a_doctype.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification(),
+      defaultDocClassification({
+        doc_type: "unknown",
+        notes: "document layout unrecognised",
+      }),
+    );
+
+    mockFetch();
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
+    const evt = getJobEvents(db, job.id).find((e) => e.event_type === "guidance_request");
+    expect(evt).toBeDefined();
+    const payload = JSON.parse(evt!.payload_json!);
+    expect(payload.missing_fields).toEqual(["doc_type"]);
+    expect(payload.suggested_actions).toContain("set:doc_type=invoice");
+  });
+
+  test("classifier returns non-unknown values → worker proceeds normally", async () => {
+    // Regression guard: ensure the new pause check doesn't false-positive on
+    // the happy path (every field is a real value, not "unknown").
+    const filePath = join(tmpDir, "happy.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
+      () => new Response('"task-uuid"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    expect(getJob(db, job.id)!.state).toBe("completed");
+  });
+
+  test("resume after patch: merged classification applies user-supplied owner", async () => {
+    const filePath = join(tmpDir, "resume_patch.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    // Seed a job as if it already paused (owner=unknown) and guidance arrived.
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification(),
+      defaultDocClassification({
+        owner: "unknown" as unknown as string,
+        notes: "owner unclear — no IČO",
+      }),
+    );
+
+    // Prior pause (bookkeeping for observability).
+    addJobEvent(db, job.id, "guidance_request", {
+      step: "post_classification",
+      reason: "classifier_unknown",
+      missing_fields: ["owner"],
+      suggested_actions: ["set:owner=personal", "set:owner=techlab", "skip"],
+      context: { filename: "resume_patch.pdf" },
+    });
+    // User supplied owner=personal via provide_guidance.
+    addJobEvent(db, job.id, "guidance_applied", {
+      action: "patch",
+      patch: { owner: "personal" },
+      decrypt_password_provided: false,
+    });
+    setJobState(db, job.id, "queued");
+    // Mimic queued → running transition before executeInvoiceIntake runs.
+    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
+    const runningJob = getJob(db, job.id)!;
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      // After the patch, owner=personal → tag list should contain "personal"
+      () => jsonResponse(rpcResponse([
+        { id: 8, name: "personal" },
+        { id: 7, name: "2026-03" },
+      ])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
+      () => new Response('"task-uuid"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.tags).toContain("personal");
+    expect(output.tags).not.toContain("techlab");
+  });
+
+  test("resume does not re-pause (guidance_applied consumed once)", async () => {
+    // If a job that was patched gets another tick, the patched owner is
+    // already in the merged classification (from the first consumption) and
+    // the worker must not pause again on the stale unknown signal.
+    const filePath = join(tmpDir, "consume_once.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification(),
+      defaultDocClassification({
+        owner: "unknown" as unknown as string,
+        notes: "unclear",
+      }),
+    );
+    addJobEvent(db, job.id, "guidance_applied", {
+      action: "patch",
+      patch: { owner: "techlab" },
+      decrypt_password_provided: false,
+    });
+    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
+    const runningJob = getJob(db, job.id)!;
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
+      () => new Response('"task-uuid"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+
+    expect(getJob(db, job.id)!.state).toBe("completed");
   });
 });

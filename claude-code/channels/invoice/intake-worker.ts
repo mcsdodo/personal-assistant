@@ -31,10 +31,12 @@ import {
   failJob,
   getJobEvents,
   parseJobJson,
+  pauseForGuidance,
   recordDownloadedFile,
   requestJobApproval,
   scheduleRetry,
   shouldRetry,
+  type JobEventRow,
   type JobRow,
 } from "../workflow-db";
 import type { PaperlessFieldRegistry } from "../paperless-fields";
@@ -62,6 +64,7 @@ import {
 import { readFileAsDownload } from "../download-helper";
 import { formatNotification, type NotifyFn } from "../telegram-notify";
 import {
+  buildSuggestedActions,
   buildTagNames,
   generateTitle,
   getCompletedSteps,
@@ -69,6 +72,7 @@ import {
   parseServicePeriodStart,
   resolveMonthTag,
   resolveOwner,
+  UNKNOWN_FIELDS,
 } from "../invoice-pipeline";
 import {
   validateInvoiceIntakeInput,
@@ -235,6 +239,67 @@ const correspondentsCounter = meter.createCounter("invoice_worker_correspondents
 const missingMonthTagCounter = meter.createCounter("invoice_worker_missing_month_tag_total", {
   description: "Documents uploaded without a valid YYYY-MM accounting period (operator must tag manually)",
 });
+
+// ── Guidance resume helpers ────────────────────────────────────────────
+//
+// When a user answers a `guidance_request`, `provide_guidance` writes a
+// `guidance_applied` event (patch payload or retry marker) and flips the
+// job back to `queued`. On next tick the worker runs again from the top
+// of `executeInvoiceIntake` / `executeScanIntake`; it must:
+//
+//   1. Find the most recent `guidance_applied` event that has NOT been
+//      consumed yet (no matching `guidance_applied_consumed` event
+//      with the same event id after it).
+//   2. Apply `patch` to the merged classification (Trigger A resume)
+//      or force the classify_document step to re-run (`retry`).
+//   3. Write a `guidance_applied_consumed` event so subsequent ticks
+//      don't double-apply.
+//
+// Using a `guidance_applied_consumed` marker is simpler than rewriting
+// the `guidance_applied` row — sqlite rows are append-only here and
+// consumption is a boolean-per-event, not a state modification.
+interface GuidanceApplied {
+  eventId: number;
+  action: "patch" | "retry" | "skip" | "fail";
+  patch?: Record<string, unknown>;
+}
+
+/**
+ * Return the most recent unconsumed `guidance_applied` event, or null
+ * if every guidance_applied has been consumed (or none exist). The
+ * "unconsumed" signal is a `guidance_applied_consumed` event whose
+ * `source_event_id` payload field equals the guidance_applied's row
+ * id. Walk events in reverse chronological order and return the first
+ * guidance_applied that is NOT referenced by a later consumed marker.
+ */
+function findUnconsumedGuidance(events: JobEventRow[]): GuidanceApplied | null {
+  const consumedIds = new Set<number>();
+  for (const e of events) {
+    if (e.event_type !== "guidance_applied_consumed") continue;
+    try {
+      const p = JSON.parse(e.payload_json ?? "{}");
+      if (typeof p.source_event_id === "number") consumedIds.add(p.source_event_id);
+    } catch { /* ignore malformed */ }
+  }
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.event_type !== "guidance_applied") continue;
+    if (consumedIds.has(e.id)) continue;
+    try {
+      const p = JSON.parse(e.payload_json ?? "{}");
+      const action = p.action;
+      if (action === "patch" || action === "retry") {
+        return { eventId: e.id, action, patch: p.patch ?? undefined };
+      }
+      // skip/fail are applied by provide_guidance directly (completeJob/failJob);
+      // the worker should never re-run these jobs, so ignore.
+      return null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 let counterSeeded = false;
 function seedCounterFromDb(db: import("bun:sqlite").Database): void {
@@ -427,9 +492,76 @@ export async function executeInvoiceIntake(
       }
 
       // Merge doc classification into email classification
-      const docResult = cachedDocClassification.result as Partial<InvoiceClassification>;
-      const merged = mergeClassifications(classification, docResult);
+      const docResult = cachedDocClassification.result as Partial<InvoiceClassification> & Record<string, unknown>;
+      const mergedClassification: Partial<InvoiceClassification> & Record<string, unknown> = {
+        ...mergeClassifications(classification, docResult),
+      };
+      // Carry forward doc-only fields (doc_date, supply_date, service_period,
+      // accounting_period, accounting_period_reasoning, notes) that
+      // mergeClassifications doesn't know about but Trigger A / month_tag
+      // derivation below rely on.
+      for (const k of Object.keys(docResult)) {
+        if (!(k in mergedClassification)) {
+          mergedClassification[k] = docResult[k];
+        }
+      }
+
+      // Trigger A resume — apply the most recent unconsumed `guidance_applied`
+      // event. For `patch`, merge the user-supplied fields into the cached
+      // classification so downstream steps see the real owner/doc_type/etc.
+      // For `retry`, we consume the marker and fall through; the plan calls
+      // for re-running classify, which at worst produces another unknown.
+      // Emitting `guidance_applied_consumed` immediately prevents double-apply
+      // on subsequent ticks.
+      const allEvents = getJobEvents(db, job.id);
+      const unconsumed = findUnconsumedGuidance(allEvents);
+      if (unconsumed) {
+        if (unconsumed.action === "patch" && unconsumed.patch) {
+          Object.assign(mergedClassification, unconsumed.patch);
+          logger.log(`Applied guidance patch to classification: ${JSON.stringify(unconsumed.patch)}`);
+        } else if (unconsumed.action === "retry") {
+          logger.log(`guidance_applied action=retry — consumed marker, continuing with cached classification`);
+        }
+        addJobEvent(db, job.id, "guidance_applied_consumed", {
+          source_event_id: unconsumed.eventId,
+        });
+      }
+
+      const merged = mergedClassification as InvoiceClassification;
       logger.log(`Merged doc classification (owner=${merged.owner})`);
+
+      // Trigger A: classifier returned `"unknown"` for at least one required
+      // field. Pause the job and ask the user via Telegram. Task 57, Trigger A.
+      const unknownFields = UNKNOWN_FIELDS.filter(
+        (f) => (mergedClassification as Record<string, unknown>)[f] === "unknown",
+      );
+      if (unknownFields.length > 0) {
+        pauseForGuidance(db, job.id, {
+          step: "post_classification",
+          reason: "classifier_unknown",
+          missing_fields: unknownFields,
+          suggested_actions: buildSuggestedActions(unknownFields, {
+            doc_type: (mergedClassification.doc_type as string | null | undefined) ?? null,
+          }),
+          context: {
+            filename: file.filename,
+            sender: classification.sender,
+            subject: classification.subject,
+            vendor: mergedClassification.vendor ?? null,
+            total_amount: mergedClassification.total_amount ?? null,
+            doc_date: (mergedClassification as Record<string, unknown>).doc_date ?? null,
+            classifier_notes:
+              ((mergedClassification as Record<string, unknown>).notes as string | undefined) ?? null,
+          },
+        });
+        logger.log(
+          `Job ${job.id} paused (classifier_unknown: ${unknownFields.join(", ")})`,
+        );
+        outcome = "awaiting_user_guidance";
+        span.setAttribute("invoice.outcome", "awaiting_user_guidance");
+        span.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
 
       // Step 3.5: Derive month_tag from classification metadata.
       // Document-classifier is the authority — its `accounting_period` reflects
