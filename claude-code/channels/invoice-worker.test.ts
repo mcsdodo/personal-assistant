@@ -2058,6 +2058,125 @@ describe("executeScanIntake", () => {
   });
 });
 
+// ── Scan pipeline: triggers A+B (task 2.5) ──────────────────────────────
+
+describe("scan-worker trigger A (classifier unknown)", () => {
+  test("classifier returns owner='unknown' → scan job pauses in awaiting_user_guidance", async () => {
+    const filePath = join(tmpDir, "scan_trigger_a.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeScanInput({ file_path: filePath });
+    const job = createRunningScanJob(
+      input,
+      defaultScanClassification({
+        owner: "unknown" as unknown as string,
+        notes: "no IČO visible",
+      } as unknown as Partial<ScanClassification>),
+    );
+
+    // No fetch mocks — worker must pause before Paperless.
+    mockFetch();
+
+    await executeScanIntake(db, job, logger, registry, notify);
+
+    const reloaded = getJob(db, job.id)!;
+    expect(reloaded.state).toBe("awaiting_user_guidance");
+
+    const events = getJobEvents(db, job.id);
+    const guidance = events.find((e) => e.event_type === "guidance_request");
+    expect(guidance).toBeDefined();
+    const payload = JSON.parse(guidance!.payload_json!);
+    expect(payload.reason).toBe("classifier_unknown");
+    expect(payload.missing_fields).toEqual(["owner"]);
+    expect(payload.context.filename).toBe("scan_trigger_a.pdf");
+    expect(payload.suggested_actions).toContain("set:owner=personal");
+  });
+
+  test("scan resume after patch: patched owner applied, job completes", async () => {
+    const filePath = join(tmpDir, "scan_resume.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeScanInput({ file_path: filePath, watch_folder: "personal/receipts" });
+    const job = createRunningScanJob(
+      input,
+      defaultScanClassification({
+        doc_type: "unknown",
+        notes: "unclear layout",
+      }),
+    );
+    addJobEvent(db, job.id, "guidance_applied", {
+      action: "patch",
+      patch: { doc_type: "invoice" },
+      decrypt_password_provided: false,
+    });
+    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
+    const runningJob = getJob(db, job.id)!;
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([{ id: 8, name: "personal" }, { id: 7, name: "2026-03" }])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
+      () => new Response('"task-uuid"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, runningJob, logger, registry, notify);
+
+    expect(getJob(db, job.id)!.state).toBe("completed");
+  });
+});
+
+describe("scan-worker trigger B (encrypted PDF)", () => {
+  test("encrypted PDF after tryDecrypt → scan job pauses, classifier never called", async () => {
+    const decryptSpy = spyOn(downloadHelper, "tryDecrypt").mockImplementation(() => {});
+    const isEncSpy = spyOn(downloadHelper, "isPdfEncrypted").mockImplementation(() => true);
+    try {
+      const filePath = join(tmpDir, "scan_locked.pdf");
+      writeFileSync(filePath, Buffer.from("%PDF-1.4 encrypted"));
+      const input = makeScanInput({ file_path: filePath });
+      // Create job WITHOUT seeding classify_document — worker must pause
+      // before classifier runs.
+      const job = createJob(db, {
+        workflowType: "scan_intake",
+        inputJson: JSON.stringify(input),
+        sourceRef: `gdrive:${input.file_id}`,
+        idempotencyKey: `gdrive:${input.file_id}`,
+      });
+      db.prepare("UPDATE jobs SET state = 'running', started_at = ? WHERE id = ?").run(
+        new Date().toISOString(),
+        job.id,
+      );
+      const runningJob = getJob(db, job.id)!;
+
+      mockFetch();
+
+      await executeScanIntake(db, runningJob, logger, registry, notify);
+
+      expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
+      const evt = getJobEvents(db, job.id).find((e) => e.event_type === "guidance_request");
+      expect(evt).toBeDefined();
+      const payload = JSON.parse(evt!.payload_json!);
+      expect(payload.reason).toBe("encrypted_pdf");
+
+      // classify_document step_started must NOT have been emitted.
+      const events = getJobEvents(db, job.id);
+      const docStarted = events.find(
+        (e) =>
+          e.event_type === "step_started" &&
+          JSON.parse(e.payload_json ?? "{}").step === "classify_document",
+      );
+      expect(docStarted).toBeUndefined();
+
+      expect(decryptSpy).toHaveBeenCalled();
+      expect(isEncSpy).toHaveBeenCalled();
+    } finally {
+      decryptSpy.mockRestore();
+      isEncSpy.mockRestore();
+    }
+  });
+});
+
 // ── Trigger A — classifier returns "unknown" ────────────────────────────
 //
 // When the document-classifier is allowed to answer "I don't know" for a

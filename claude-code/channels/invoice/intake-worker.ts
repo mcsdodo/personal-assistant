@@ -1109,6 +1109,37 @@ export async function executeScanIntake(
         });
       }
 
+      // Step 1.1-1.3: Decrypt + Trigger B pause (task 57). Scan path mirrors
+      // the email path — tryDecrypt, honour any user-supplied password from
+      // guidance_password, then pause if still encrypted.
+      downloadHelper.tryDecrypt(filePath);
+      applyGuidancePassword(db, job.id, filePath, logger);
+      if (downloadHelper.isPdfEncrypted(filePath)) {
+        pauseForGuidance(db, job.id, {
+          step: "decrypt_pdf",
+          reason: "encrypted_pdf",
+          missing_fields: [],
+          suggested_actions: [
+            "skip",
+            "set:owner=personal,doc_type=account_statement",
+            "set:owner=techlab,doc_type=account_statement",
+            "send_password",
+            "retry",
+          ],
+          context: {
+            filename: file.filename,
+            watch_folder,
+            classifier_notes:
+              "PDF is encrypted; decrypt failed (no password configured or wrong password).",
+          },
+        });
+        logger.log(`Job ${job.id} paused: encrypted_pdf (scan)`);
+        outcome = "awaiting_user_guidance";
+        span.setAttribute("invoice.outcome", "awaiting_user_guidance");
+        span.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
+
       // Step 2: Document classification via channel
       const cachedDocClassification = completedSteps.get("classify_document");
       if (!cachedDocClassification?.result) {
@@ -1130,9 +1161,60 @@ export async function executeScanIntake(
         return;
       }
 
-      const classification = cachedDocClassification.result as ScanClassification;
+      const cachedClassification = cachedDocClassification.result as ScanClassification &
+        Record<string, unknown>;
+      // Apply any pending `guidance_applied` patch so the user's choices
+      // override the classifier's "unknown" (scan Trigger A resume). Make a
+      // shallow copy so we don't mutate the cached event payload in place.
+      const classification: ScanClassification & Record<string, unknown> = { ...cachedClassification };
+      const scanEvents = getJobEvents(db, job.id);
+      const scanUnconsumed = findUnconsumedGuidance(scanEvents);
+      if (scanUnconsumed) {
+        if (scanUnconsumed.action === "patch" && scanUnconsumed.patch) {
+          Object.assign(classification, scanUnconsumed.patch);
+          logger.log(`Applied guidance patch to scan classification: ${JSON.stringify(scanUnconsumed.patch)}`);
+        } else if (scanUnconsumed.action === "retry") {
+          logger.log(`guidance_applied action=retry (scan) — consumed marker, continuing`);
+        }
+        addJobEvent(db, job.id, "guidance_applied_consumed", {
+          source_event_id: scanUnconsumed.eventId,
+        });
+      }
+
       vendorForSpan = classification.vendor;
       span.setAttribute("invoice.vendor", classification.vendor);
+
+      // Trigger A (scan): classifier returned `"unknown"` for a required
+      // field. Pause for user guidance before any Paperless work.
+      const scanUnknownFields = UNKNOWN_FIELDS.filter(
+        (f) => (classification as Record<string, unknown>)[f] === "unknown",
+      );
+      if (scanUnknownFields.length > 0) {
+        pauseForGuidance(db, job.id, {
+          step: "post_classification",
+          reason: "classifier_unknown",
+          missing_fields: scanUnknownFields,
+          suggested_actions: buildSuggestedActions(scanUnknownFields, {
+            doc_type: (classification.doc_type as string | null | undefined) ?? null,
+          }),
+          context: {
+            filename: file.filename,
+            watch_folder,
+            vendor: classification.vendor ?? null,
+            total_amount: classification.total_amount ?? null,
+            doc_date: (classification as Record<string, unknown>).doc_date ?? null,
+            classifier_notes:
+              ((classification as Record<string, unknown>).notes as string | undefined) ?? null,
+          },
+        });
+        logger.log(
+          `Job ${job.id} paused (classifier_unknown scan: ${scanUnknownFields.join(", ")})`,
+        );
+        outcome = "awaiting_user_guidance";
+        span.setAttribute("invoice.outcome", "awaiting_user_guidance");
+        span.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
 
       // Derive month_tag — document-classifier's reasoned accounting_period wins.
       // GDrive scan creation date is only the *last* fallback (a scanned invoice
