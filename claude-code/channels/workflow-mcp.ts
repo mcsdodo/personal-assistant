@@ -24,6 +24,7 @@ import {
   setJobState,
   submitClassification,
   sweepOrphanedDownloads,
+  type JobRow,
 } from "./workflow-db";
 
 import { initTracing, createLogger, getTracer, remoteParentContext, SpanStatusCode } from "./tracing";
@@ -170,6 +171,68 @@ async function workerTick(): Promise<void> {
     await executeNextJob(db, { log }, fieldRegistry, notifyTelegram, mcp);
   } finally {
     workerBusy = false;
+  }
+}
+
+// ── Stale guidance sweep (task 57 Phase 4.1) ─────────────────────────
+//
+// Jobs paused in `awaiting_user_guidance` shouldn't sit forever. Two
+// tiers:
+//   * REMINDER_HOURS (24h): nudge the user via notifyFn so they know
+//     they owe the queue an answer. State is unchanged.
+//   * TIMEOUT_HOURS  (72h): give up — fail the job with a `timed_out`
+//     error so the queue doesn't leak paused jobs indefinitely.
+//
+// Timestamps are compared using ISO 8601 bound as a parameter. Do NOT
+// use `datetime('now', '-N hours')` inline in SQL — production writes
+// `updated_at` via `nowIso()` and the two formats are not string-
+// comparable (see channels/CLAUDE.md, workflow-core.ts reclaim bug).
+
+export const GUIDANCE_REMINDER_HOURS = 24;
+export const GUIDANCE_TIMEOUT_HOURS = 72;
+
+export function sweepStaleGuidance(
+  dbInstance: import("bun:sqlite").Database,
+  notifyFn: NotifyFn,
+): void {
+  const now = Date.now();
+  const reminderCutoffIso = new Date(
+    now - GUIDANCE_REMINDER_HOURS * 3600 * 1000,
+  ).toISOString();
+  const timeoutCutoffIso = new Date(
+    now - GUIDANCE_TIMEOUT_HOURS * 3600 * 1000,
+  ).toISOString();
+
+  // Tier 1: timeout — fail jobs parked > 72h.
+  const stale = dbInstance
+    .prepare(
+      `SELECT * FROM jobs
+       WHERE state = 'awaiting_user_guidance'
+         AND updated_at < ?`,
+    )
+    .all(timeoutCutoffIso) as JobRow[];
+  for (const job of stale) {
+    failJob(dbInstance, job.id, {
+      code: "timed_out",
+      reason: `paused for >${GUIDANCE_TIMEOUT_HOURS}h with no guidance`,
+    });
+  }
+
+  // Tier 2: reminder — nudge for jobs in the 24h–72h window. Only the
+  // paused jobs that are NOT yet old enough to time out count here.
+  const needsReminder = dbInstance
+    .prepare(
+      `SELECT * FROM jobs
+       WHERE state = 'awaiting_user_guidance'
+         AND updated_at < ?
+         AND updated_at >= ?`,
+    )
+    .all(reminderCutoffIso, timeoutCutoffIso) as JobRow[];
+  if (needsReminder.length > 0) {
+    const remainingH = GUIDANCE_TIMEOUT_HOURS - GUIDANCE_REMINDER_HOURS;
+    void notifyFn(
+      `⏰ ${needsReminder.length} job(s) awaiting your guidance — auto-cancel in ${remainingH}h.`,
+    );
   }
 }
 
@@ -595,6 +658,19 @@ async function main(): Promise<void> {
       log(`Worker tick failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }, WORKFLOW_POLL_MS);
+
+  // Stale-guidance sweep: nudge the user at 24h, auto-fail at 72h.
+  // Runs every 60s — cheap (a couple of indexed SELECTs against jobs)
+  // and decoupled from the fast worker-tick cadence. See task 57 Phase 4.1.
+  setInterval(() => {
+    try {
+      sweepStaleGuidance(db, notifyTelegram);
+    } catch (err) {
+      log(
+        `Stale-guidance sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }, 60_000);
 }
 
 if (import.meta.main) {

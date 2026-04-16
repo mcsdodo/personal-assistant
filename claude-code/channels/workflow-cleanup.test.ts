@@ -32,10 +32,12 @@ import {
   getJob,
   getJobEvents,
   openWorkflowDb,
+  pauseForGuidance,
   recordDownloadedFile,
   scheduleRetry,
   sweepOrphanedDownloads,
 } from "./workflow-db";
+import { sweepStaleGuidance } from "./workflow-mcp";
 
 let tmpDir: string;
 let downloadDir: string;
@@ -242,5 +244,122 @@ describe("sweepOrphanedDownloads", () => {
     // Only the file is scanned, not the directory
     expect(result.scanned).toBe(1);
     expect(result.deleted).toBe(1);
+  });
+});
+
+// ── sweepStaleGuidance (72h auto-cancel + 24h reminder) ───────────────
+//
+// Task 57 Phase 4.1: jobs paused in `awaiting_user_guidance` shouldn't
+// sit forever. If the user hasn't responded within 24h, nudge them.
+// If they haven't responded within 72h, give up — fail the job with
+// a `timed_out` error so the queue doesn't leak paused jobs.
+
+function backdateUpdatedAt(jobId: string, hoursAgo: number): void {
+  // Use ISO format bound as a parameter — must match production's
+  // nowIso() writer format. See channels/CLAUDE.md for the rationale.
+  const iso = new Date(Date.now() - hoursAgo * 3600 * 1000).toISOString();
+  db.prepare("UPDATE jobs SET updated_at = ? WHERE id = ?").run(iso, jobId);
+}
+
+function makePausedJob(): string {
+  const job = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
+  pauseForGuidance(db, job.id, {
+    step: "classify_document",
+    reason: "classifier_unknown",
+    missing_fields: ["vendor"],
+    suggested_actions: ["skip", "fail"],
+    context: {},
+  });
+  return job.id;
+}
+
+describe("sweepStaleGuidance", () => {
+  test("fails a paused job older than 72h with code=timed_out", () => {
+    const jobId = makePausedJob();
+    backdateUpdatedAt(jobId, 73);
+
+    const notifyCalls: string[] = [];
+    const notifyFn = async (msg: string) => {
+      notifyCalls.push(msg);
+    };
+    sweepStaleGuidance(db, notifyFn);
+
+    const job = getJob(db, jobId)!;
+    expect(job.state).toBe("failed");
+    const err = JSON.parse(job.error_json!);
+    expect(err.code).toBe("timed_out");
+    expect(err.reason).toContain("72h");
+    // Timeout path does NOT send a reminder — the reminder is only for
+    // the 24h–72h window.
+    expect(notifyCalls).toHaveLength(0);
+  });
+
+  test("sends a reminder for a paused job in the 24h–72h window and leaves state unchanged", () => {
+    const jobId = makePausedJob();
+    backdateUpdatedAt(jobId, 25);
+
+    const notifyCalls: string[] = [];
+    const notifyFn = async (msg: string) => {
+      notifyCalls.push(msg);
+    };
+    sweepStaleGuidance(db, notifyFn);
+
+    // Still parked — reminder does not flip state.
+    const job = getJob(db, jobId)!;
+    expect(job.state).toBe("awaiting_user_guidance");
+
+    expect(notifyCalls).toHaveLength(1);
+    expect(notifyCalls[0]).toContain("1 job(s) awaiting your guidance");
+  });
+
+  test("does nothing for a paused job < 24h old", () => {
+    const jobId = makePausedJob();
+    backdateUpdatedAt(jobId, 5);
+
+    const notifyCalls: string[] = [];
+    const notifyFn = async (msg: string) => {
+      notifyCalls.push(msg);
+    };
+    sweepStaleGuidance(db, notifyFn);
+
+    const job = getJob(db, jobId)!;
+    expect(job.state).toBe("awaiting_user_guidance");
+    expect(notifyCalls).toHaveLength(0);
+  });
+
+  test("reminder aggregates count across multiple jobs in the window", () => {
+    const a = makePausedJob();
+    const b = makePausedJob();
+    const c = makePausedJob();
+    backdateUpdatedAt(a, 30);
+    backdateUpdatedAt(b, 48);
+    backdateUpdatedAt(c, 5); // not stale yet — not counted
+
+    const notifyCalls: string[] = [];
+    const notifyFn = async (msg: string) => {
+      notifyCalls.push(msg);
+    };
+    sweepStaleGuidance(db, notifyFn);
+
+    expect(notifyCalls).toHaveLength(1);
+    expect(notifyCalls[0]).toContain("2 job(s) awaiting your guidance");
+    expect(getJob(db, a)!.state).toBe("awaiting_user_guidance");
+    expect(getJob(db, b)!.state).toBe("awaiting_user_guidance");
+    expect(getJob(db, c)!.state).toBe("awaiting_user_guidance");
+  });
+
+  test("only considers jobs in awaiting_user_guidance — queued/running stale jobs are ignored", () => {
+    // A queued job backdated >72h must NOT be failed by this sweep.
+    const queued = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
+    backdateUpdatedAt(queued.id, 100);
+
+    const notifyCalls: string[] = [];
+    const notifyFn = async (msg: string) => {
+      notifyCalls.push(msg);
+    };
+    sweepStaleGuidance(db, notifyFn);
+
+    expect(getJob(db, queued.id)!.state).toBe("queued");
+    expect(notifyCalls).toHaveLength(0);
   });
 });
