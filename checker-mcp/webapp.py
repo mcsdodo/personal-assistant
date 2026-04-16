@@ -183,7 +183,12 @@ def zip_accounting():
 
     upstream = client.session.post(
         f"{PAPERLESS_URL.rstrip('/')}/api/documents/bulk_download/",
-        json={"documents": ids, "content": "archive", "compression": "deflated"},
+        json={
+            "documents": ids,
+            "content": "archive",
+            "compression": "deflated",
+            "follow_formatting": True,
+        },
         stream=True,
     )
     if upstream.status_code != 200:
