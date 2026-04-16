@@ -233,6 +233,43 @@ def paperless_find_by_title(substring: str) -> dict | None:
     return None
 
 
+def paperless_find_by_title_full(substring: str) -> dict | None:
+    """Find first Paperless document whose title contains substring and
+    return the raw document dict *plus* resolved `correspondent_name`,
+    `tag_names`, `document_type_name`, and `storage_path_name` fields.
+
+    `paperless_documents()` (above) filters to a minimal shape that drops
+    storage-path info; task 57's E2E flow needs to assert on
+    `storage_path_name`, so we keep that here as a separate helper rather
+    than widening the existing minimal shape (which other tests rely on).
+    """
+    docs = paperless_get("documents", page_size=100, ordering="-added")
+    correspondents = {
+        c["id"]: c["name"]
+        for c in paperless_get("correspondents", page_size=100)["results"]
+    }
+    tags = {t["id"]: t["name"] for t in paperless_get("tags", page_size=100)["results"]}
+    doc_types = {
+        dt["id"]: dt["name"]
+        for dt in paperless_get("document_types", page_size=100)["results"]
+    }
+    storage_paths = {
+        sp["id"]: sp["name"]
+        for sp in paperless_get("storage_paths", page_size=100)["results"]
+    }
+
+    for d in docs["results"]:
+        if substring in (d.get("title") or ""):
+            return {
+                **d,
+                "correspondent_name": correspondents.get(d.get("correspondent")),
+                "tag_names": sorted(tags.get(t, str(t)) for t in d.get("tags", [])),
+                "document_type_name": doc_types.get(d.get("document_type")),
+                "storage_path_name": storage_paths.get(d.get("storage_path")),
+            }
+    return None
+
+
 def paperless_wipe():
     """Delete all documents, correspondents, tags, and document types."""
     h = _paperless_headers()
@@ -387,6 +424,125 @@ def poll_job_completion(
         f"Job matching source_ref '{source_ref_contains}' did not reach terminal state "
         f"within {timeout}s. Last rows: {rows}"
     )
+
+
+def poll_job_state(
+    source_ref_contains: str,
+    state: str,
+    timeout: int = 180,
+    poll_interval: int = 5,
+) -> dict:
+    """Poll workflow DB until a job matching source_ref reaches the given state.
+
+    Unlike `poll_job_completion` this accepts *any* state (including the
+    non-terminal `awaiting_user_guidance`). Returns the raw row dict as
+    stored in `workflow.db` so callers can inspect `id`, `state`,
+    `source_ref`, `output_json`, etc.
+
+    Raises TimeoutError if the state isn't reached within the timeout.
+    """
+    deadline = time.time() + timeout
+    rows: list[dict] = []
+
+    while time.time() < deadline:
+        rows = workflow_db_query(
+            f"SELECT id,state,workflow_type,source_ref,output_json "
+            f'FROM jobs WHERE source_ref LIKE \\"%{source_ref_contains}%\\" '
+            f"ORDER BY created_at DESC LIMIT 1"
+        )
+        if rows and rows[0].get("state") == state:
+            return rows[0]
+        time.sleep(poll_interval)
+
+    raise TimeoutError(
+        f"Job matching source_ref '{source_ref_contains}' did not reach state "
+        f"'{state}' within {timeout}s. Last rows: {rows}"
+    )
+
+
+def get_job_events(job_id: str) -> list[dict]:
+    """Return the ordered event trail for a job from workflow.db.
+
+    Each row is `{id, event_type, payload_json, created_at}`. The caller
+    is responsible for `json.loads(payload_json)` on entries they care
+    about — payloads are stored as opaque JSON blobs to match the
+    production schema (see `channels/workflow-db.ts`).
+    """
+    return workflow_db_query(
+        f'SELECT id,event_type,payload_json,created_at FROM job_events '
+        f'WHERE job_id = \\"{job_id}\\" ORDER BY created_at ASC, id ASC'
+    )
+
+
+def call_provide_guidance(job_id: str, guidance: dict) -> None:
+    """Simulate a `provide_guidance` MCP tool call against a paused job.
+
+    The workflow MCP is a stdio channel (no HTTP endpoint), so tests can't
+    hit it via `requests`. Instead we exec a bun one-liner inside the
+    `personal-assistant-claude` container that imports the exported
+    `handleProvideGuidance` from `/app/channels/workflow-mcp.ts` and
+    invokes it against the live `workflow.db`. This matches the side
+    effects the real MCP tool would produce (adds `guidance_applied`
+    event, flips job state from `awaiting_user_guidance` → `queued`,
+    stores any `decrypt_password` under a separate `guidance_password`
+    event so passwords don't leak into regular audit logs).
+
+    The worker's next `workerTick()` picks up the requeued job and
+    resumes the pipeline.
+    """
+    import json
+    import shlex
+
+    # Build a bun script that opens the workflow DB, calls
+    # handleProvideGuidance, and closes the DB. We use single-quotes
+    # around the payload so JSON stays intact, and interpolate via
+    # JSON.parse at the other end to avoid TS-template pitfalls.
+    guidance_json = json.dumps(guidance)
+    payload_json = json.dumps({"job_id": job_id, "guidance": guidance})
+
+    script = (
+        'import{openWorkflowDb}from"/app/channels/workflow-db.ts";'
+        'import{handleProvideGuidance}from"/app/channels/workflow-mcp.ts";'
+        f"const payload=JSON.parse({json.dumps(payload_json)});"
+        'const db=openWorkflowDb("/data/email-watcher/workflow.db");'
+        "try{handleProvideGuidance(db,payload);"
+        'console.log(JSON.stringify({ok:true,job_id:payload.job_id}));'
+        "}catch(e){"
+        'console.log(JSON.stringify({ok:false,error:(e&&e.message)||String(e)}));'
+        "process.exit(1);"
+        "}finally{db.close();}"
+    )
+
+    # Use a heredoc-style invocation so quoting survives the shell layer.
+    # Bash -lc keeps env and pipe behaviour sane on Linux containers.
+    cmd = (
+        f"bun -e {shlex.quote(script)}"
+    )
+    result = subprocess.run(
+        ["docker", "exec", CONTAINER, "sh", "-c", cmd],
+        capture_output=True,
+        timeout=30,
+    )
+    stdout = result.stdout.decode("utf-8", errors="replace").strip()
+    stderr = result.stderr.decode("utf-8", errors="replace").strip()
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"provide_guidance failed (rc={result.returncode}) "
+            f"for job {job_id} with guidance {guidance_json}.\n"
+            f"stdout: {stdout}\nstderr: {stderr}"
+        )
+    # Best-effort parse for observability; don't fail the test if the
+    # container printed extra noise (e.g. bun warnings to stdout).
+    try:
+        last_line = stdout.splitlines()[-1]
+        parsed = json.loads(last_line)
+        if not parsed.get("ok"):
+            raise RuntimeError(
+                f"provide_guidance returned ok=false: {parsed.get('error')}"
+            )
+    except (IndexError, json.JSONDecodeError):
+        # Non-JSON stdout with rc=0 — trust the exit code.
+        pass
 
 
 # ---------------------------------------------------------------------------
