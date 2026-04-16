@@ -59,10 +59,11 @@ The workflow MCP adds durable background-job primitives:
 - `create_invoice_intake_job(email_source, message_id, force?)` — create an invoice processing job. The worker handles the full pipeline (classification, download, upload). Set `force=true` to reprocess: the worker re-runs the full pipeline AND, if the document is already in Paperless, PATCHes it in place with the fresh metadata (preserves doc id, PDF, OCR). Outcome is `refreshed` instead of `uploaded`. No approval gate under force.
 - `create_scan_intake_job(file_id, watch_folder, month_tag, filename?, force?)` — create a scan processing job. The worker handles classification via channel, download, and upload. Set `force=true` to reprocess (same in-place PATCH semantics as above for already-uploaded scans).
 - `get_job(job_id)` — fetch job by ID
-- `list_jobs(state?, workflow_type?, limit?)` — list recent jobs
+- `list_jobs(state?, workflow_type?, limit?)` — list recent jobs. Pass `state="awaiting_user_guidance"` to find jobs currently paused waiting for user guidance (used by the routing rules in "Guidance routing for paused jobs" below).
 - `get_job_events(job_id)` — full event history for a job
 - `approve_job(job_id, approved_by?, note?)` — approve a paused job
 - `cancel_job(job_id, reason?)` — cancel a queued, running, or awaiting_approval job (cannot cancel failed/completed)
+- `provide_guidance(job_id, guidance)` — resume a job paused in `awaiting_user_guidance`. `guidance.action` is one of `skip | retry | fail | patch`. See "Guidance routing for paused jobs" below for how to translate Telegram replies into this call.
 
 The workflow worker drives the full invoice pipeline deterministically:
 - Requests email classification via channel (you run the haiku subagent)
@@ -129,6 +130,53 @@ The workflow worker sends classification requests via channel when it needs LLM 
 2. Invoke the `document-classifier` subagent with the file path. Before invoking, replace `${...}` placeholders with business identifier env vars (use `get_env` on file-ops MCP for `BUSINESS_COMPANY_NAME`, `BUSINESS_TAX_IDS`, `BUSINESS_CRN`, `BUSINESS_LICENSE_PLATES`).
 3. Call `submit_classification(job_id, step="classify_document", result=<classifier output>)` on the workflow tools
 4. The worker picks up the result on the next poll tick and continues the pipeline
+
+## Guidance routing for paused jobs
+
+The worker pauses a job in `awaiting_user_guidance` when the classifier returned `"unknown"` for a required field, or when a hard pre-classification error (encrypted PDF, malformed classifier output after retries) makes it unsafe to continue guessing. When it pauses, the worker sends a Telegram prompt describing the stuck document and waits for your reply. Your job is to translate the user's next Telegram message into a single `provide_guidance(job_id, guidance)` call.
+
+### Step 1: Query pending jobs
+
+When a Telegram message arrives that isn't a recognised command (not `/mcp`, not something already handled by another section above), **always start by calling `list_jobs(state="awaiting_user_guidance")`** to see what's paused. Three cases:
+
+- **Zero paused jobs** — the message isn't guidance. Handle it per "General behavior" (respond conversationally, use Slovak if the user did) or route to other sections above.
+- **Exactly one paused job** — stack-discipline fallback: treat the message as guidance for that job. This is the primary v1 path; single-operator deployment makes it safe to assume the user's next reply targets the only stuck job.
+- **Multiple paused jobs** — ask the user which one, listing `[/1] [/2] [/3]` with one-line context per job (filename + reason), then wait for `/1` / `/2` / ... before proceeding.
+
+Use `get_job_events(job_id)` on the target job to read the `guidance_request` event — it carries `reason`, `missing_fields`, `context.filename`, `context.sender`, `context.subject`, and `context.classifier_notes`. You need this context to parse free-form replies correctly (e.g. "period 03/2026" → `month_tag: "2026-03"` only makes sense if you know the doc's time window).
+
+### Step 2: Map the reply to a `provide_guidance` call
+
+**Slash commands** — direct pass-throughs, no NL parsing:
+
+| User types | Call |
+|---|---|
+| `/skip` | `provide_guidance(job_id, { action: "skip" })` |
+| `/retry` | `provide_guidance(job_id, { action: "retry" })` |
+| `/cancel` or `/fail` | `provide_guidance(job_id, { action: "fail" })` |
+| `/personal` | `provide_guidance(job_id, { action: "patch", patch: { owner: "personal" } })` |
+| `/techlab` | `provide_guidance(job_id, { action: "patch", patch: { owner: "techlab" } })` |
+| `/password <value>` | `provide_guidance(job_id, { action: "patch", decrypt_password: "<value>" })` |
+
+**Free-form replies** — parse the natural-language message into the same guidance shape. Examples (accept Slovak or English; the bot's buttons are English for compactness but replies can be in either language):
+
+- "personal, period 03/2026" → `{ action: "patch", patch: { owner: "personal", month_tag: "2026-03" } }`
+- "password is mojeheslo123" / "heslo je mojeheslo123" → `{ action: "patch", decrypt_password: "mojeheslo123" }`
+- "this is a duplicate of #418, skip it" / "duplikát #418, preskoč" → `{ action: "skip", user_note: "duplicate of #418" }`
+- "techlab, but the doc_date should be 2026-03-31, not 2026-04-01" → `{ action: "patch", patch: { owner: "techlab", doc_date: "2026-03-31" } }`
+
+Rules for parsing:
+- If the user mentions a value for a field listed in `missing_fields`, include it in `patch`.
+- If the user asks to drop the job ("skip", "preskoč", "drop it", "ignore"), use `action: "skip"` with a short `user_note` capturing their reasoning.
+- If the user asks to retry ("try again", "skús znova") without providing new info, use `action: "retry"`.
+- If the user asks to cancel / abandon ("zruš", "cancel", "fail it"), use `action: "fail"`.
+- If the message contains a password (often after "password is", "heslo je", or in response to an encrypted-PDF prompt), route it via `decrypt_password` — **never** put password material into `patch`, and never repeat it back in your own Telegram replies. The workflow MCP stores it under a separate `guidance_password` event so it doesn't land in normal audit logs.
+- If the user mixes several things ("techlab, password is XYZ, doc_date 2026-03-31"), combine them into one call: `{ action: "patch", patch: { owner: "techlab", doc_date: "2026-03-31" }, decrypt_password: "XYZ" }`.
+- If the reply is ambiguous or doesn't obviously match any action, ask a clarifying question via Telegram rather than guessing. A confident wrong patch is worse than a round-trip.
+
+### Step 3: Confirm back
+
+After the `provide_guidance` call succeeds, send a short Telegram confirmation: the action taken plus the job id (e.g. `✓ patched job a3f9... as personal, resumed` or `✓ skipped job 8bc1...`). Keep it in the same language the user used. Never echo a password back, even partially.
 
 ## When asked about invoices or matching
 
