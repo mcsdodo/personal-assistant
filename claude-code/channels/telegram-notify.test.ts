@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatNotification } from "./telegram-notify";
+import { formatGuidanceRequest, formatNotification } from "./telegram-notify";
 
 describe("formatNotification", () => {
   test("uploaded — all fields present", () => {
@@ -143,5 +143,45 @@ describe("formatNotification", () => {
       owner: "personal",
       month_tag: "2026-03",
     })).toBe("🔄  Alza | 53.78 EUR | invoice | personal | 2026-03 (refreshed)");
+  });
+});
+
+describe("formatGuidanceRequest", () => {
+  test("encrypted_pdf reason includes filename, sender, and decrypt-failed note", () => {
+    const msg = formatGuidanceRequest({
+      job_id: "abc123",
+      reason: "encrypted_pdf",
+      context: {
+        filename: "mKonto_c_0157_za_2026-03.pdf",
+        sender: "kontakt@mbank.sk",
+        subject: "mBank – Mesačný výpis z účtu",
+        classifier_notes: "PDF is encrypted; decrypt failed",
+      },
+      suggested_actions: ["skip", "set:owner=personal,doc_type=account_statement", "send_password"],
+    });
+    expect(msg).toContain("🤔");
+    expect(msg).toContain("mKonto_c_0157_za_2026-03.pdf");
+    expect(msg).toContain("kontakt@mbank.sk");
+    expect(msg).toContain("encrypted");
+    expect(msg).toContain("/skip");
+  });
+
+  test("classifier_unknown reason shows missing fields and notes", () => {
+    const msg = formatGuidanceRequest({
+      job_id: "def456",
+      reason: "classifier_unknown",
+      missing_fields: ["owner"],
+      context: {
+        filename: "invoice.pdf",
+        vendor: "Alza.sk s.r.o.",
+        total_amount: 142.30,
+        classifier_notes: "no IČO printed",
+      },
+      suggested_actions: ["set:owner=personal", "set:owner=techlab", "skip"],
+    });
+    expect(msg).toContain("Owner unclear");
+    expect(msg).toContain("no IČO");
+    expect(msg).toContain("/personal");
+    expect(msg).toContain("/techlab");
   });
 });
