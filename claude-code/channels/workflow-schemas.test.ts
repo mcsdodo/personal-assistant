@@ -319,13 +319,6 @@ describe("validateDocumentClassificationResult", () => {
     );
   });
 
-  test("rejects owner='unknown'", () => {
-    expectSchemaError(
-      () => validateDocumentClassificationResult({ ...VALID_DOC_CLASS, owner: "unknown" }),
-      { field: "owner" },
-    );
-  });
-
   test("rejects total_amount as string", () => {
     expectSchemaError(
       () => validateDocumentClassificationResult({ ...VALID_DOC_CLASS, total_amount: "100" }),
@@ -338,6 +331,41 @@ describe("validateDocumentClassificationResult", () => {
     const out = validateDocumentClassificationResult(rest);
     expect(out.vendor).toBe("Anthropic, PBC");
     expect(out.supply_date).toBeNull();
+  });
+});
+
+// ── DocumentClassificationResult unknown values ───────────────────────
+
+describe("DocumentClassificationResult unknown values", () => {
+  const baseValid = {
+    doc_type: "invoice", vendor: "X", total_amount: 1, currency: "EUR",
+    is_fuel: false, confidence: "high", order_id: null, subtitle: null,
+    owner: "personal", doc_date: "2026-01-01", supply_date: null,
+    service_period: null, accounting_period: "2026-01",
+    accounting_period_reasoning: "doc_date in Jan",
+    notes: null,
+  };
+
+  test("owner can be 'unknown' when notes explains it", () => {
+    const r = { ...baseValid, owner: "unknown", notes: "no IČO printed; buyer name only" };
+    expect(() => validateDocumentClassificationResult(r)).not.toThrow();
+  });
+
+  test("doc_type can be 'unknown' when notes explains it", () => {
+    const r = { ...baseValid, doc_type: "unknown", notes: "blank pages, encrypted" };
+    expect(() => validateDocumentClassificationResult(r)).not.toThrow();
+  });
+
+  test("rejects 'unknown' without notes", () => {
+    const r = { ...baseValid, owner: "unknown", notes: null };
+    expect(() => validateDocumentClassificationResult(r))
+      .toThrow(/notes required when any field is "unknown"/);
+  });
+
+  test("rejects 'unknown' with empty notes", () => {
+    const r = { ...baseValid, owner: "unknown", notes: "  " };
+    expect(() => validateDocumentClassificationResult(r))
+      .toThrow(/notes required when any field is "unknown"/);
   });
 });
 

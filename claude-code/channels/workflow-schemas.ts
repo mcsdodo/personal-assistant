@@ -29,14 +29,14 @@ export class WorkflowSchemaError extends Error {
     public readonly expected: string,
     public readonly got: unknown,
     public readonly context?: Record<string, unknown>,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; message?: string },
   ) {
     const gotDesc = describe(got);
     const ctx = context ? ` ${JSON.stringify(context)}` : "";
-    super(
-      `${schemaName}: invalid field '${field}' — expected ${expected}, got ${gotDesc}${ctx}`,
-      options,
-    );
+    const base =
+      options?.message ??
+      `${schemaName}: invalid field '${field}' — expected ${expected}, got ${gotDesc}${ctx}`;
+    super(base, options?.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = "WorkflowSchemaError";
   }
 }
@@ -233,6 +233,14 @@ export const CONFIDENCE_LEVELS = ["high", "medium", "low"] as const;
 
 export const OWNERS = ["techlab", "personal"] as const;
 
+/**
+ * Owners accepted by the document classifier. "unknown" is allowed when the
+ * classifier cannot determine ownership from the document (e.g. no IČO
+ * printed, buyer name only) — the worker pauses the job and requests user
+ * guidance instead of guessing. See task 57.
+ */
+export const DOC_OWNERS = ["techlab", "personal", "unknown"] as const;
+
 export interface EmailClassificationResultSchema {
   is_invoice: boolean;
   confidence: "high" | "medium" | "low";
@@ -343,10 +351,10 @@ export function validateEmailClassificationResult(input: unknown): EmailClassifi
 export interface DocumentClassificationResultSchema {
   doc_type: string;
   vendor: string;
-  total_amount: number | null;
+  total_amount: number | "unknown" | null;
   currency: string | null;
   is_fuel: boolean;
-  owner: "techlab" | "personal";
+  owner: "techlab" | "personal" | "unknown";
   confidence: "high" | "medium" | "low";
   order_id: string | null;
   subtitle: string | null;
@@ -355,31 +363,129 @@ export interface DocumentClassificationResultSchema {
   service_period?: string | null;
   accounting_period?: string | null;
   accounting_period_reasoning?: string | null;
+  /**
+   * Free-form explanation written by the classifier. Required (non-empty)
+   * whenever any other UNKNOWN_CAPABLE_FIELDS entry is set to the string
+   * literal `"unknown"`. See task 57 — the worker uses this to craft the
+   * Telegram guidance prompt that asks the user for help.
+   */
+  notes?: string | null;
+}
+
+/**
+ * Fields in DocumentClassificationResult that may take the literal string
+ * `"unknown"` when the classifier cannot determine them. See task 57.
+ */
+const UNKNOWN_CAPABLE_FIELDS = [
+  "owner",
+  "doc_type",
+  "total_amount",
+  "doc_date",
+  "supply_date",
+  "service_period",
+  "accounting_period",
+] as const;
+
+/**
+ * Accept either the normal validator output or the literal string
+ * `"unknown"`. Used for doc_type (non-empty string otherwise) and the
+ * date/period fields (nullable string otherwise).
+ */
+function stringOrUnknown(
+  name: string,
+  obj: Record<string, unknown>,
+  field: string,
+  opts: { allowNull?: boolean; allowMissing?: boolean } = {},
+): string | null {
+  if (!(field in obj)) {
+    if (opts.allowMissing) return null;
+    throw new WorkflowSchemaError(name, field, "string | null", undefined);
+  }
+  const v = obj[field];
+  if (v === "unknown") return "unknown";
+  if (v === null || v === undefined) {
+    if (opts.allowNull) return null;
+    throw new WorkflowSchemaError(name, field, "non-empty string", v);
+  }
+  if (typeof v !== "string" || v.length === 0) {
+    throw new WorkflowSchemaError(name, field, opts.allowNull ? "string | null" : "non-empty string", v);
+  }
+  return v;
+}
+
+/**
+ * Accept `number`, `null`, or the literal string `"unknown"`. Matches the
+ * task 57 "unknown values" contract for total_amount.
+ */
+function numberOrUnknown(
+  name: string,
+  obj: Record<string, unknown>,
+  field: string,
+): number | "unknown" | null {
+  if (!(field in obj)) {
+    throw new WorkflowSchemaError(name, field, 'number | null | "unknown"', undefined);
+  }
+  const v = obj[field];
+  if (v === "unknown") return "unknown";
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    throw new WorkflowSchemaError(name, field, 'number | null | "unknown"', v);
+  }
+  return v;
 }
 
 export function validateDocumentClassificationResult(input: unknown): DocumentClassificationResultSchema {
   const obj = requireObject("DocumentClassificationResult", input);
-  return {
-    doc_type: reqString("DocumentClassificationResult", obj, "doc_type"),
+  const result: DocumentClassificationResultSchema = {
+    doc_type: stringOrUnknown("DocumentClassificationResult", obj, "doc_type") as string,
     vendor: reqString("DocumentClassificationResult", obj, "vendor"),
-    total_amount: nullableNumber("DocumentClassificationResult", obj, "total_amount"),
+    total_amount: numberOrUnknown("DocumentClassificationResult", obj, "total_amount"),
     currency: nullableString("DocumentClassificationResult", obj, "currency"),
     is_fuel: reqBool("DocumentClassificationResult", obj, "is_fuel"),
-    owner: reqEnum("DocumentClassificationResult", obj, "owner", OWNERS),
+    owner: reqEnum("DocumentClassificationResult", obj, "owner", DOC_OWNERS),
     confidence: reqEnum("DocumentClassificationResult", obj, "confidence", CONFIDENCE_LEVELS),
     order_id: nullableString("DocumentClassificationResult", obj, "order_id"),
     subtitle: nullableString("DocumentClassificationResult", obj, "subtitle"),
-    doc_date: nullableString("DocumentClassificationResult", obj, "doc_date"),
-    supply_date: nullableString("DocumentClassificationResult", obj, "supply_date", { allowMissing: true }),
-    service_period: nullableString("DocumentClassificationResult", obj, "service_period", { allowMissing: true }),
-    accounting_period: nullableString("DocumentClassificationResult", obj, "accounting_period", { allowMissing: true }),
+    doc_date: stringOrUnknown("DocumentClassificationResult", obj, "doc_date", { allowNull: true }),
+    supply_date: stringOrUnknown("DocumentClassificationResult", obj, "supply_date", {
+      allowNull: true,
+      allowMissing: true,
+    }),
+    service_period: stringOrUnknown("DocumentClassificationResult", obj, "service_period", {
+      allowNull: true,
+      allowMissing: true,
+    }),
+    accounting_period: stringOrUnknown("DocumentClassificationResult", obj, "accounting_period", {
+      allowNull: true,
+      allowMissing: true,
+    }),
     accounting_period_reasoning: nullableString(
       "DocumentClassificationResult",
       obj,
       "accounting_period_reasoning",
       { allowMissing: true },
     ),
+    notes: nullableString("DocumentClassificationResult", obj, "notes", { allowMissing: true }),
   };
+
+  // Cross-field check: if any UNKNOWN_CAPABLE field resolved to the literal
+  // "unknown", notes must be a non-empty string explaining why. The worker
+  // uses this text to craft the Telegram guidance prompt (task 57).
+  const hasUnknown = UNKNOWN_CAPABLE_FIELDS.some(
+    (f) => (result as unknown as Record<string, unknown>)[f] === "unknown",
+  );
+  if (hasUnknown && (!result.notes || !result.notes.trim())) {
+    throw new WorkflowSchemaError(
+      "DocumentClassificationResult",
+      "notes",
+      "non-empty string",
+      result.notes,
+      undefined,
+      { message: 'DocumentClassificationResult: notes required when any field is "unknown"' },
+    );
+  }
+
+  return result;
 }
 
 // ── Step dispatch ─────────────────────────────────────────────────────
