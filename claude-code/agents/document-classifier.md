@@ -17,7 +17,7 @@ You will receive a file path. Use the Read tool to read the PDF/image file — t
 
 Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text.
 
-**You MUST return EXACTLY these 14 fields — no more, no fewer:**
+**You MUST return EXACTLY these 15 fields — no more, no fewer:**
 
 ```json
 {
@@ -34,21 +34,24 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
   "supply_date": "2026-04-06",
   "service_period": "2026-04-06/2026-05-06",
   "accounting_period": "2026-04",
-  "accounting_period_reasoning": "Subscription invoice issued Apr 6 covering Apr 6 – May 6 service period. Per Slovak VAT § 19, tax point is the supply date (Apr 6). Period starts in April → 2026-04."
+  "accounting_period_reasoning": "Subscription invoice issued Apr 6 covering Apr 6 – May 6 service period. Per Slovak VAT § 19, tax point is the supply date (Apr 6). Period starts in April → 2026-04.",
+  "notes": null
 }
 ```
 
 **STRICT RULES:**
-- Return ALL 14 fields every time. Never omit any field.
-- Do NOT add extra fields (no `description`, `notes`, `doc_number`, or anything else).
+- Return ALL 15 fields every time. Never omit any field.
+- Do NOT add extra fields (no `description`, `doc_number`, or anything else beyond the 15 listed).
 - `confidence` must be a string: `"high"`, `"medium"`, or `"low"` — never a number.
 - `is_fuel` must be a boolean — never omit it.
-- `total_amount` must be a number or `null` — never omit it.
-- `owner` must be `"techlab"` or `"personal"` — never null, never omit.
-- `doc_date`, `supply_date` — `"YYYY-MM-DD"` or `null`.
+- `total_amount` must be a number, `null`, or `"unknown"` — never omit it. Use `"unknown"` ONLY when the document is genuinely unreadable (encrypted, blank, illegible). When you use `"unknown"`, you MUST populate `notes` with a short explanation.
+- `owner` must be `"techlab"`, `"personal"`, or `"unknown"` — never null, never omit. Use `"unknown"` ONLY when the document is genuinely unreadable (encrypted, blank pages, illegible scan, missing/torn buyer section). When you use `"unknown"`, you MUST populate `notes` with a short explanation.
+- `doc_type` must be one of the enum values below or `"unknown"` — never omit. Use `"unknown"` ONLY when the document is genuinely unreadable. When you use `"unknown"`, you MUST populate `notes` with a short explanation.
+- `doc_date`, `supply_date` — `"YYYY-MM-DD"`, `null`, or `"unknown"`. Use `"unknown"` ONLY when the date is visibly unreadable (encrypted, torn, illegible) — NOT when it's simply absent (use `null` for that). When you use `"unknown"`, you MUST populate `notes` with a short explanation.
 - `service_period` — ISO 8601 interval `"YYYY-MM-DD/YYYY-MM-DD"` or `null`.
-- `accounting_period` — `"YYYY-MM"` or `null`. **This is your reasoned answer**, see decision rules below.
-- `accounting_period_reasoning` — short string explaining HOW you chose the accounting_period (cite which date you used and why), or `null` only if `accounting_period` is also null.
+- `accounting_period` — `"YYYY-MM"`, `null`, or `"unknown"`. **This is your reasoned answer**, see decision rules below. Use `"unknown"` ONLY when the document is unreadable; use `null` when it's readable but the dates genuinely don't support a period. When you use `"unknown"`, you MUST populate `notes` with a short explanation.
+- `accounting_period_reasoning` — short string explaining HOW you chose the accounting_period (cite which date you used and why), or `null` only if `accounting_period` is also null/unknown.
+- `notes` — short string (<200 chars) or `null`. REQUIRED (non-null, non-empty) whenever any of `owner`, `doc_type`, `total_amount`, `doc_date`, `supply_date`, `accounting_period` is `"unknown"`. Otherwise set to `null`.
 
 ## Classification Rules
 
@@ -133,6 +136,18 @@ Important:
 - For license plates: match **anywhere** on the document (parking tickets, toll receipts have no buyer section — the plate IS the identifier).
 - A personal name appearing alongside a company name does NOT make it personal — the company name takes precedence.
 - Empty IČO/DIČ/IČ DPH fields (as on personal invoices) are NOT a match — they confirm the absence of business identifiers.
+
+### When to use `"unknown"`
+
+Use `"unknown"` only when the document is genuinely unreadable for that field. Examples:
+- PDF is encrypted; pages render as blank or garbled.
+- Scan is illegible (out of focus, very low contrast, torn).
+- The relevant section is missing (e.g. `owner: "unknown"` if the buyer block is cropped out).
+- Two values conflict and you cannot choose (e.g. `doc_date: "unknown"` if the header says one date and the footer says another).
+
+Do NOT use `"unknown"` as a hedge when you have a reasonable read. A confident `"personal"` or `"techlab"` is better than `"unknown"` on a clearly-personal or clearly-business invoice.
+
+When you return `"unknown"` for any field, the `notes` field MUST contain a short (<200 char) explanation of why. Example: `"PDF rendered as blank pages, possibly encrypted"`. The notes are shown to the user when the system asks for guidance.
 
 ### doc_date
 The document's issue date as `"YYYY-MM-DD"`. Extract from the document header.

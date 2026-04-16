@@ -85,14 +85,15 @@ Always respond with ONLY this JSON (no markdown, no explanation):
   "requires_review": false,
   "order_id": "583481365",
   "total_amount": 156.68,
-  "currency": "EUR"
+  "currency": "EUR",
+  "notes": null
 }
 ```
 
 Fields:
 - `is_invoice`: boolean (true for invoices, credit notes, receipts, statements)
 - `confidence`: "high" (clear invoice signals) | "medium" (likely but unsure) | "low" (probably not)
-- `vendor`: company name from the email sender/footer. Use the most complete name available (e.g., "Alza.sk s.r.o." from footer rather than just "Alza" from sender). If only a short name is visible, use that.
+- `vendor`: company name from the email sender/footer. Use the most complete name available (e.g., "Alza.sk s.r.o." from footer rather than just "Alza" from sender). If only a short name is visible, use that. If the sender is genuinely unidentifiable (e.g., garbled/encrypted headers, completely empty from/footer), return `"unknown"` and populate `notes` with a short explanation.
 - `is_fuel`: boolean — true if this is a fuel/gas station receipt or invoice (for kniha-jazd integration later)
 - `action`: "download_and_upload" | "notify_user" | "ignore"
 - `download_strategy`: how to retrieve the invoice document:
@@ -102,12 +103,24 @@ Fields:
   - `"direct_url"` — email body contains a direct download URL to a PDF/document
   - `"browser_required"` — document can only be accessed through a web portal login
   - `"manual_review"` — cannot determine download strategy; needs human review
+  - `"unknown"` — email is genuinely unreadable (garbled body, encrypted content you cannot see through) and you cannot pick any of the above. When you use `"unknown"`, you MUST populate `notes` with a short explanation. Prefer `"manual_review"` over `"unknown"` when the email is readable but the strategy is just ambiguous.
   - `null` — not an invoice (action is "ignore")
 - `strategy_confidence`: "high" | "medium" | "low" — how certain you are about the download strategy
 - `requires_review`: boolean — true if the case needs human review before processing (unknown vendor, low confidence, ambiguous)
 - `order_id`: extracted order/reference/invoice number if present, null otherwise
 - `total_amount`: float amount if visible in subject/body (e.g., "156,68 €" → 156.68), null if unknown. Return `null` if currency is NOT EUR — we only track EUR amounts
 - `currency`: "EUR", "USD", "CZK", etc. if amount found, null otherwise
+- `notes`: short string (<200 chars) or `null`. REQUIRED (non-null, non-empty) whenever `vendor` or `download_strategy` is `"unknown"`. Otherwise set to `null`.
+
+## When to use `"unknown"`
+
+Use `"unknown"` on `vendor` or `download_strategy` only when the email is genuinely unreadable for that field. Examples:
+- The sender address and footer are garbled or missing entirely (`vendor: "unknown"`).
+- The email body is encrypted/unrenderable and you cannot see any content to choose a download strategy (`download_strategy: "unknown"`).
+
+Do NOT use `"unknown"` as a hedge when you have a reasonable read. A confident `"Alza.sk s.r.o."` is better than `"unknown"` on a clearly-Alza email. For readable-but-ambiguous download paths, prefer `"manual_review"` — that already signals human judgment needed without triggering the stuck-classifier pause.
+
+When you return `"unknown"` for any field, `notes` MUST contain a short (<200 char) explanation of why. Example: `"sender header blank, body rendered as encrypted binary"`. The notes are shown to the user when the system asks for guidance.
 
 ## Download Strategy Rules
 
