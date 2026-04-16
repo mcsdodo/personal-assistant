@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatGuidanceRequest, formatNotification } from "./telegram-notify";
+import { buildGuidanceReplyMarkup, formatGuidanceRequest, formatNotification } from "./telegram-notify";
 
 describe("formatNotification", () => {
   test("uploaded — all fields present", () => {
@@ -183,5 +183,90 @@ describe("formatGuidanceRequest", () => {
     expect(msg).toContain("no IČO");
     expect(msg).toContain("/personal");
     expect(msg).toContain("/techlab");
+  });
+});
+
+describe("buildGuidanceReplyMarkup", () => {
+  test("classifier_unknown — owner choices paired, skip on its own row", () => {
+    const markup = buildGuidanceReplyMarkup({
+      job_id: "def45678-aaaa-bbbb-cccc-111122223333",
+      suggested_actions: ["skip", "set:owner=personal", "set:owner=techlab"],
+    });
+    expect(markup).toEqual({
+      inline_keyboard: [
+        [
+          { text: "Personal", callback_data: "g:def45678:set:owner=personal" },
+          { text: "Techlab", callback_data: "g:def45678:set:owner=techlab" },
+        ],
+        [
+          { text: "Skip", callback_data: "g:def45678:skip" },
+        ],
+      ],
+    });
+  });
+
+  test("encrypted_pdf — full Trigger B action list renders and pairs combos", () => {
+    const markup = buildGuidanceReplyMarkup({
+      job_id: "abc123de-aaaa-bbbb-cccc-111122223333",
+      suggested_actions: [
+        "send_password",
+        "set:owner=personal,doc_type=account_statement",
+        "set:owner=techlab,doc_type=account_statement",
+        "skip",
+        "retry",
+      ],
+    });
+    expect(markup).toEqual({
+      inline_keyboard: [
+        [
+          { text: "Send password", callback_data: "g:abc123de:send_password" },
+        ],
+        [
+          { text: "Personal+statement", callback_data: "g:abc123de:set:owner=personal,doc_type=account_statement" },
+          { text: "Techlab+statement", callback_data: "g:abc123de:set:owner=techlab,doc_type=account_statement" },
+        ],
+        [
+          { text: "Skip", callback_data: "g:abc123de:skip" },
+          { text: "Retry", callback_data: "g:abc123de:retry" },
+        ],
+      ],
+    });
+  });
+
+  test("every callback_data stays under the 64-byte Telegram limit", () => {
+    // Longest plausible action in v1 is the combo
+    // "set:owner=personal,doc_type=account_statement" (45 chars) plus
+    // "g:<8-char-prefix>:" prefix (11 chars) = 56 bytes.
+    const markup = buildGuidanceReplyMarkup({
+      job_id: "ffffffff-eeee-dddd-cccc-111122223333",
+      suggested_actions: [
+        "set:owner=personal,doc_type=account_statement",
+        "set:owner=techlab,doc_type=account_statement",
+        "send_password",
+        "skip",
+        "retry",
+        "fail",
+      ],
+    });
+    for (const row of markup.inline_keyboard) {
+      for (const btn of row) {
+        // Buffer.byteLength counts UTF-8 bytes, matching Telegram's 1..64 bytes rule.
+        const bytes = Buffer.byteLength(btn.callback_data, "utf8");
+        expect(bytes).toBeGreaterThan(0);
+        expect(bytes).toBeLessThanOrEqual(64);
+      }
+    }
+  });
+
+  test("unknown/unmappable actions are dropped rather than rendered blank", () => {
+    const markup = buildGuidanceReplyMarkup({
+      job_id: "11112222-aaaa-bbbb-cccc-111122223333",
+      suggested_actions: ["set:weird_field=42", "skip"],
+    });
+    expect(markup.inline_keyboard).toEqual([
+      [
+        { text: "Skip", callback_data: "g:11112222:skip" },
+      ],
+    ]);
   });
 });
