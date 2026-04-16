@@ -36,6 +36,7 @@ import {
   requestJobApproval,
   scheduleRetry,
   shouldRetry,
+  type GuidanceRequestPayload,
   type JobEventRow,
   type JobRow,
 } from "../workflow-db";
@@ -63,7 +64,7 @@ import {
 } from "./postprocess-service";
 import * as downloadHelper from "../download-helper";
 import { readFileAsDownload } from "../download-helper";
-import { formatNotification, type NotifyFn } from "../telegram-notify";
+import { formatGuidanceRequest, formatNotification, type NotifyFn } from "../telegram-notify";
 import {
   buildSuggestedActions,
   buildTagNames,
@@ -344,6 +345,35 @@ function applyGuidancePassword(
   }
 }
 
+/**
+ * Pause a job for user guidance AND send a Telegram prompt in one shot.
+ * Task 3.2: wraps `pauseForGuidance` so the worker never forgets to notify
+ * when it parks a job in `awaiting_user_guidance`. Notification failures
+ * are swallowed — the DB state (job + guidance_request event) is the
+ * source of truth, telegram is best-effort.
+ *
+ * TODO(task 3.2): if `NotifyFn` gains a `message_id` return type later,
+ * capture it here and update the `guidance_request` event's payload_json
+ * with `telegram_message_id` so inline-keyboard callbacks can edit the
+ * original message. The current signature is `(msg: string) => Promise<void>`
+ * so we have no id to record.
+ */
+async function pauseAndNotify(
+  db: import("bun:sqlite").Database,
+  jobId: string,
+  payload: GuidanceRequestPayload,
+  notify: NotifyFn | undefined,
+): Promise<void> {
+  pauseForGuidance(db, jobId, payload);
+  if (!notify) return;
+  const formatted = formatGuidanceRequest({ job_id: jobId, ...payload });
+  await notify(formatted).catch(() => {
+    // Notification failed; the job is still correctly parked in
+    // `awaiting_user_guidance` and the `guidance_request` event carries
+    // the full payload for observability.
+  });
+}
+
 let counterSeeded = false;
 function seedCounterFromDb(db: import("bun:sqlite").Database): void {
   if (counterSeeded) return;
@@ -528,7 +558,7 @@ export async function executeInvoiceIntake(
       // decrypt attempts, we have no classifier output to trust. Pause the
       // job and ask the user for the password (or permission to skip).
       if (downloadHelper.isPdfEncrypted(filePath)) {
-        pauseForGuidance(db, job.id, {
+        await pauseAndNotify(db, job.id, {
           step: "decrypt_pdf",
           reason: "encrypted_pdf",
           missing_fields: [],
@@ -546,7 +576,7 @@ export async function executeInvoiceIntake(
             classifier_notes:
               "PDF is encrypted; decrypt failed (no password configured or wrong password).",
           },
-        });
+        }, notify);
         logger.log(`Job ${job.id} paused: encrypted_pdf`);
         outcome = "awaiting_user_guidance";
         span.setAttribute("invoice.outcome", "awaiting_user_guidance");
@@ -620,7 +650,7 @@ export async function executeInvoiceIntake(
         (f) => (mergedClassification as Record<string, unknown>)[f] === "unknown",
       );
       if (unknownFields.length > 0) {
-        pauseForGuidance(db, job.id, {
+        await pauseAndNotify(db, job.id, {
           step: "post_classification",
           reason: "classifier_unknown",
           missing_fields: unknownFields,
@@ -637,7 +667,7 @@ export async function executeInvoiceIntake(
             classifier_notes:
               ((mergedClassification as Record<string, unknown>).notes as string | undefined) ?? null,
           },
-        });
+        }, notify);
         logger.log(
           `Job ${job.id} paused (classifier_unknown: ${unknownFields.join(", ")})`,
         );
@@ -1115,7 +1145,7 @@ export async function executeScanIntake(
       downloadHelper.tryDecrypt(filePath);
       applyGuidancePassword(db, job.id, filePath, logger);
       if (downloadHelper.isPdfEncrypted(filePath)) {
-        pauseForGuidance(db, job.id, {
+        await pauseAndNotify(db, job.id, {
           step: "decrypt_pdf",
           reason: "encrypted_pdf",
           missing_fields: [],
@@ -1132,7 +1162,7 @@ export async function executeScanIntake(
             classifier_notes:
               "PDF is encrypted; decrypt failed (no password configured or wrong password).",
           },
-        });
+        }, notify);
         logger.log(`Job ${job.id} paused: encrypted_pdf (scan)`);
         outcome = "awaiting_user_guidance";
         span.setAttribute("invoice.outcome", "awaiting_user_guidance");
@@ -1190,7 +1220,7 @@ export async function executeScanIntake(
         (f) => (classification as Record<string, unknown>)[f] === "unknown",
       );
       if (scanUnknownFields.length > 0) {
-        pauseForGuidance(db, job.id, {
+        await pauseAndNotify(db, job.id, {
           step: "post_classification",
           reason: "classifier_unknown",
           missing_fields: scanUnknownFields,
@@ -1206,7 +1236,7 @@ export async function executeScanIntake(
             classifier_notes:
               ((classification as Record<string, unknown>).notes as string | undefined) ?? null,
           },
-        });
+        }, notify);
         logger.log(
           `Job ${job.id} paused (classifier_unknown scan: ${scanUnknownFields.join(", ")})`,
         );

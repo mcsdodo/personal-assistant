@@ -2521,3 +2521,78 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
 });
+
+// ── Task 3.2 — Telegram notification on pause ───────────────────────────
+//
+// When the worker pauses a job via pauseForGuidance (Trigger A or Trigger
+// B, email or scan path), it must also send a Telegram message to the
+// user via notifyFn so they know to respond. These tests assert the
+// notify side-effect; the pause-state/guidance_request tests above
+// already cover DB correctness.
+
+describe("worker sends Telegram notification on pause (task 3.2)", () => {
+  test("Trigger A (classifier_unknown, email) notifies user with filename", async () => {
+    const filePath = join(tmpDir, "notify_trigger_a.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ vendor: "Alza.sk s.r.o." }),
+      defaultDocClassification({
+        owner: "unknown" as unknown as string,
+        vendor: "Alza.sk s.r.o.",
+        notes: "no IČO printed",
+      }),
+    );
+
+    mockFetch();
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
+    expect(notifyCalls.length).toBeGreaterThanOrEqual(1);
+    const msg = notifyCalls[notifyCalls.length - 1];
+    expect(msg).toContain("Need guidance");
+    expect(msg).toContain("notify_trigger_a.pdf");
+  });
+
+  test("Trigger B (encrypted PDF, email) notifies user with filename", async () => {
+    const decryptSpy = spyOn(downloadHelper, "tryDecrypt").mockImplementation(() => {});
+    const isEncSpy = spyOn(downloadHelper, "isPdfEncrypted").mockImplementation(() => true);
+    try {
+      const filePath = join(tmpDir, "notify_trigger_b.pdf");
+      writeFileSync(filePath, Buffer.from("%PDF-1.4 encrypted"));
+      const input = makeInput({ file_path: filePath });
+      const job = createJob(db, {
+        workflowType: "invoice_intake",
+        inputJson: JSON.stringify(input),
+        sourceRef: `${input.email_source}:${input.message_id}`,
+        idempotencyKey: `${input.email_source}:${input.message_id}`,
+      });
+      db.prepare("UPDATE jobs SET state = 'running', started_at = ? WHERE id = ?").run(
+        new Date().toISOString(),
+        job.id,
+      );
+      addJobEvent(db, job.id, "step_completed", {
+        step: "classify_email",
+        result: defaultEmailClassification({ sender: "kontakt@mbank.sk", subject: "mBank – výpis" }),
+      });
+      const runningJob = getJob(db, job.id)!;
+
+      mockFetch();
+
+      await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+
+      expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
+      expect(notifyCalls.length).toBeGreaterThanOrEqual(1);
+      const msg = notifyCalls[notifyCalls.length - 1];
+      expect(msg).toContain("Need guidance");
+      expect(msg).toContain("notify_trigger_b.pdf");
+      void decryptSpy;
+      void isEncSpy;
+    } finally {
+      decryptSpy.mockRestore();
+      isEncSpy.mockRestore();
+    }
+  });
+});
