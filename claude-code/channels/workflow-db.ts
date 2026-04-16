@@ -10,6 +10,7 @@ export type JobState =
   | "retryable"
   | "awaiting_approval"
   | "awaiting_classification"
+  | "awaiting_user_guidance"
   | "completed"
   | "failed"
   | "cancelled";
@@ -311,6 +312,20 @@ export function approveJob(
   if (result.changes === 0) return false;
   addJobEvent(db, jobId, "approved", { approved_by: approvedBy ?? null, note: note ?? null });
   return true;
+}
+
+/**
+ * Low-level state setter. Most transitions should go through dedicated
+ * helpers (completeJob, failJob, approveJob, requestClassification,
+ * pauseForGuidance). This exists for state machine plumbing that doesn't
+ * yet have a higher-level wrapper.
+ */
+export function setJobState(db: Database, jobId: string, state: JobState): boolean {
+  const timestamp = nowIso();
+  const result = db
+    .prepare(`UPDATE jobs SET state = ?, updated_at = ? WHERE id = ?`)
+    .run(state, timestamp, jobId);
+  return result.changes > 0;
 }
 
 export function cancelJob(db: Database, jobId: string, reason?: string | null): boolean {

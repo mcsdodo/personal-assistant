@@ -18,7 +18,15 @@ import {
   listJobs,
   openWorkflowDb,
   requestJobApproval,
+  setJobState,
 } from "./workflow-db";
+
+// Local helper — mints an isolated DB for tests that prefer a self-contained
+// setup over the describe-scoped `db` fixture.
+function openTestWorkflowDb(): Database {
+  const dir = mkdtempSync(join(tmpdir(), "workflow-db-helper-"));
+  return openWorkflowDb(join(dir, "workflow.db"));
+}
 
 let tmpDir: string;
 let db: Database;
@@ -114,5 +122,13 @@ describe("workflow-db", () => {
 
     expect(cancelJob(db, job.id, "no longer needed")).toBe(true);
     expect(getJob(db, job.id)?.state).toBe("cancelled");
+  });
+
+  test("awaiting_user_guidance is a valid JobState", () => {
+    const db = openTestWorkflowDb();
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    setJobState(db, job.id, "awaiting_user_guidance");
+    const reloaded = getJob(db, job.id);
+    expect(reloaded?.state).toBe("awaiting_user_guidance");
   });
 });
