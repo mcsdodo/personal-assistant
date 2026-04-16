@@ -14,11 +14,14 @@ import {
   addJobEvent,
   approveJob,
   cancelJob,
+  completeJob,
   createJob,
+  failJob,
   getJob,
   getJobEvents,
   listJobs,
   openWorkflowDb,
+  setJobState,
   submitClassification,
   sweepOrphanedDownloads,
 } from "./workflow-db";
@@ -59,6 +62,105 @@ function text(value: unknown): { type: "text"; text: string } {
 let db: Database;
 let workerBusy = false;
 let fieldRegistry: PaperlessFieldRegistry;
+
+/**
+ * Guidance payload accepted by the `provide_guidance` MCP tool. See
+ * the tool registration below for the input schema. Actions:
+ *
+ * - `skip`  — user decides the job should complete without doing any
+ *   remaining work. Job transitions to `completed` with `outcome:
+ *   "skipped"`.
+ * - `fail`  — user cancels the job. Job transitions to `failed` with
+ *   `code: "user_cancelled"`.
+ * - `retry` — re-run the step that paused without a payload patch.
+ * - `patch` — re-run with a payload patch (e.g. classification
+ *   overrides). The worker picks up the `guidance_applied` event on
+ *   the next tick and merges the patch.
+ *
+ * `decrypt_password` is NEVER stored inside the `guidance_applied`
+ * event — it goes into a separate `guidance_password` event so
+ * password material doesn't leak into regular audit logs. The
+ * `guidance_applied` event only records `decrypt_password_provided:
+ * boolean` so operators can see a password was handed over without
+ * seeing the value.
+ */
+export interface Guidance {
+  action: "skip" | "retry" | "fail" | "patch";
+  patch?: Record<string, unknown>;
+  decrypt_password?: string;
+  user_note?: string;
+}
+
+/**
+ * Handle a `provide_guidance` MCP tool call. Exported for unit tests
+ * and to keep the dispatch switch thin. Throws on caller errors (job
+ * not found, job not in `awaiting_user_guidance`) so the MCP request
+ * handler catch-block can surface them as `isError: true`.
+ */
+export function handleProvideGuidance(
+  dbInstance: Database,
+  args: { job_id: string; guidance: Guidance },
+): void {
+  const job = getJob(dbInstance, args.job_id);
+  if (!job) throw new Error(`Job not found: ${args.job_id}`);
+  if (job.state !== "awaiting_user_guidance") {
+    throw new Error(
+      `Job ${args.job_id} not in awaiting_user_guidance (state=${job.state})`,
+    );
+  }
+
+  const { guidance } = args;
+
+  switch (guidance.action) {
+    case "skip":
+      addJobEvent(dbInstance, job.id, "guidance_applied", {
+        action: "skip",
+        user_note: guidance.user_note ?? null,
+      });
+      completeJob(dbInstance, job.id, {
+        outcome: "skipped",
+        reason: guidance.user_note ?? null,
+      });
+      break;
+
+    case "fail":
+      addJobEvent(dbInstance, job.id, "guidance_applied", {
+        action: "fail",
+        user_note: guidance.user_note ?? null,
+      });
+      failJob(dbInstance, job.id, {
+        code: "user_cancelled",
+        reason: guidance.user_note ?? null,
+      });
+      break;
+
+    case "retry":
+    case "patch":
+      addJobEvent(dbInstance, job.id, "guidance_applied", {
+        action: guidance.action,
+        patch: guidance.patch ?? null,
+        decrypt_password_provided: Boolean(guidance.decrypt_password),
+        user_note: guidance.user_note ?? null,
+      });
+      // Sensitive password material goes into its own event so it
+      // never lands in the normal guidance_applied audit trail.
+      if (guidance.decrypt_password) {
+        addJobEvent(dbInstance, job.id, "guidance_password", {
+          password: guidance.decrypt_password,
+        });
+      }
+      setJobState(dbInstance, job.id, "queued");
+      break;
+
+    default: {
+      // Exhaustiveness check — tool schema's enum constrains the
+      // action, but guard at runtime in case an older client calls
+      // the tool with something unexpected.
+      const exhaustive: never = guidance.action;
+      throw new Error(`Unknown guidance action: ${String(exhaustive)}`);
+    }
+  }
+}
 
 async function workerTick(): Promise<void> {
   if (workerBusy) return;
@@ -206,6 +308,31 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ["job_id", "step", "result"],
+      },
+    },
+    {
+      name: "provide_guidance",
+      description:
+        "Resume a job paused in awaiting_user_guidance with user input. " +
+        "Action is one of: skip, retry, fail, patch. " +
+        "`patch` re-queues the job with a payload patch the worker merges on pickup; " +
+        "`decrypt_password` is stored under a separate, sensitive guidance_password event.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          job_id: { type: "string" },
+          guidance: {
+            type: "object",
+            properties: {
+              action: { type: "string", enum: ["skip", "retry", "fail", "patch"] },
+              patch: { type: "object" },
+              decrypt_password: { type: "string" },
+              user_note: { type: "string" },
+            },
+            required: ["action"],
+          },
+        },
+        required: ["job_id", "guidance"],
       },
     },
   ],
@@ -384,6 +511,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [text(`Error: job ${jobId} cannot accept submit_classification (state=${j.state}, expected awaiting_classification with matching step_started)`)], isError: true };
         }
         return { content: [text({ success: true, job_id: jobId, step })] };
+      }
+
+      case "provide_guidance": {
+        const jobId = args?.job_id as string;
+        const guidance = args?.guidance as Guidance | undefined;
+        if (!jobId || !guidance || !guidance.action) {
+          return {
+            content: [text("Error: job_id and guidance.action are required")],
+            isError: true,
+          };
+        }
+        handleProvideGuidance(db, { job_id: jobId, guidance });
+        return { content: [text({ success: true, job_id: jobId, action: guidance.action })] };
       }
 
       default:

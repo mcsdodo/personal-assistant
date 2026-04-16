@@ -13,7 +13,9 @@ import {
   claimNextQueuedJob,
   requestClassification,
   submitClassification,
+  setJobState,
 } from "./workflow-db";
+import { handleProvideGuidance } from "./workflow-mcp";
 
 let tmpDir: string;
 let db: Database;
@@ -329,5 +331,93 @@ describe("submitClassification metadata merge", () => {
     const stored = getStoredResult(job.id);
     // No watcher metadata, Claude's values flow through
     expect(stored.sender).toBe("test@alza.sk");
+  });
+});
+
+// ── provide_guidance MCP tool (task 57 / Task 1.4) ─────────────────────
+//
+// The tool resumes a job paused in `awaiting_user_guidance`. It is the
+// single entry point for all four actions (skip/retry/fail/patch). The
+// dispatch wrapper below mirrors the switch in workflow-mcp.ts so the
+// test exercises the exact same handler code-path callers will hit.
+
+interface CallToolResult {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+}
+
+function setupWorkflowMcp() {
+  async function callTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<CallToolResult> {
+    try {
+      switch (name) {
+        case "provide_guidance": {
+          handleProvideGuidance(db, args as any);
+          return { content: [{ type: "text", text: JSON.stringify({ success: true }) }] };
+        }
+        default:
+          return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+      }
+    } catch (err) {
+      return {
+        content: [
+          { type: "text", text: err instanceof Error ? err.message : String(err) },
+        ],
+        isError: true,
+      };
+    }
+  }
+  return { db, callTool };
+}
+
+function extractText(result: CallToolResult): string {
+  return result.content.map((c) => c.text).join("\n");
+}
+
+describe("provide_guidance", () => {
+  test("skip action transitions awaiting_user_guidance → completed with outcome=skipped", async () => {
+    const { db, callTool } = setupWorkflowMcp();
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    setJobState(db, job.id, "awaiting_user_guidance");
+
+    const result = await callTool("provide_guidance", {
+      job_id: job.id, guidance: { action: "skip", user_note: "duplicate of #418" },
+    });
+    expect(result.isError).toBeFalsy();
+
+    const reloaded = getJob(db, job.id);
+    expect(reloaded?.state).toBe("completed");
+    const output = JSON.parse(reloaded!.output_json!);
+    expect(output.outcome).toBe("skipped");
+  });
+
+  test("patch action stores guidance event + transitions to queued", async () => {
+    const { db, callTool } = setupWorkflowMcp();
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    setJobState(db, job.id, "awaiting_user_guidance");
+
+    await callTool("provide_guidance", {
+      job_id: job.id,
+      guidance: { action: "patch", patch: { owner: "personal" } },
+    });
+
+    const reloaded = getJob(db, job.id);
+    expect(reloaded?.state).toBe("queued");
+    const events = getJobEvents(db, job.id);
+    const applied = events.find(e => e.event_type === "guidance_applied");
+    expect(JSON.parse(applied!.payload_json!).patch).toEqual({ owner: "personal" });
+  });
+
+  test("rejects guidance for job not in awaiting_user_guidance", async () => {
+    const { db, callTool } = setupWorkflowMcp();
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    // job is queued, not paused
+    const result = await callTool("provide_guidance", {
+      job_id: job.id, guidance: { action: "skip" },
+    });
+    expect(result.isError).toBe(true);
+    expect(extractText(result)).toMatch(/not in awaiting_user_guidance/);
   });
 });
