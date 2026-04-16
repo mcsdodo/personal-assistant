@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
-import { readFileAsDownload, tryDecrypt } from "./download-helper";
+import { isPdfEncrypted, readFileAsDownload, tryDecrypt, tryDecryptWithPassword } from "./download-helper";
 
 /** Resolve bun executable path cross-platform. */
 const BUN_EXE = process.platform === "win32"
@@ -181,6 +181,142 @@ describe("tryDecrypt", () => {
       stderr: "pipe",
     });
 
+    const stderr = result.stderr.toString().trim();
+    if (result.exitCode !== 0) {
+      throw new Error(`Subprocess test failed (exit ${result.exitCode}):\n${stderr}`);
+    }
+  });
+});
+
+// ── isPdfEncrypted ─────────────────────────────────────────────────────
+//
+// Thin wrapper around `qpdf --is-encrypted`. Exit 0 = encrypted, non-zero
+// = not encrypted (or qpdf missing, or path broken — we treat all these
+// as "not encrypted" so the pipeline keeps moving).
+
+describe("isPdfEncrypted", () => {
+  test("returns false when qpdf throws (e.g. qpdf missing or file missing)", () => {
+    // No qpdf on the Windows dev machine → execSync throws → helper returns
+    // false. Safer default than true; Trigger B pause only fires when the
+    // PDF is genuinely locked and we detect it.
+    expect(isPdfEncrypted("/nonexistent/file.pdf")).toBe(false);
+  });
+
+  test("exit code 0 from qpdf → returns true (subprocess with mocked execSync)", async () => {
+    // Subprocess pattern copied from the tryDecrypt tests — required
+    // because bun:test `mock.module` only intercepts imports in the same
+    // test run that sets up the mock.
+    const helperPath = join(tmpDir, "is-encrypted-true.test.ts");
+    const dlHelperPath = DOWNLOAD_HELPER_PATH;
+    writeFileSync(helperPath, [
+      `import { mock, test, expect } from "bun:test";`,
+      ``,
+      `mock.module("child_process", () => ({`,
+      `  execSync: (_cmd: string, _opts?: any) => Buffer.from(""),`,
+      `}));`,
+      ``,
+      `const { isPdfEncrypted } = await import("${dlHelperPath}");`,
+      ``,
+      `test("encrypted", () => {`,
+      `  expect(isPdfEncrypted("/dummy/path.pdf")).toBe(true);`,
+      `});`,
+    ].join("\n"));
+
+    const result = Bun.spawnSync([BUN_EXE, "test", helperPath], {
+      cwd: import.meta.dir,
+      env: { ...process.env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stderr = result.stderr.toString().trim();
+    if (result.exitCode !== 0) {
+      throw new Error(`Subprocess test failed (exit ${result.exitCode}):\n${stderr}`);
+    }
+  });
+
+  test("exit code 2 from qpdf → returns false (subprocess with mocked execSync)", async () => {
+    const helperPath = join(tmpDir, "is-encrypted-false.test.ts");
+    const dlHelperPath = DOWNLOAD_HELPER_PATH;
+    writeFileSync(helperPath, [
+      `import { mock, test, expect } from "bun:test";`,
+      ``,
+      `mock.module("child_process", () => ({`,
+      `  execSync: (_cmd: string, _opts?: any) => {`,
+      `    const err: any = new Error("exit 2");`,
+      `    err.status = 2;`,
+      `    throw err;`,
+      `  },`,
+      `}));`,
+      ``,
+      `const { isPdfEncrypted } = await import("${dlHelperPath}");`,
+      ``,
+      `test("not encrypted", () => {`,
+      `  expect(isPdfEncrypted("/dummy/path.pdf")).toBe(false);`,
+      `});`,
+    ].join("\n"));
+
+    const result = Bun.spawnSync([BUN_EXE, "test", helperPath], {
+      cwd: import.meta.dir,
+      env: { ...process.env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stderr = result.stderr.toString().trim();
+    if (result.exitCode !== 0) {
+      throw new Error(`Subprocess test failed (exit ${result.exitCode}):\n${stderr}`);
+    }
+  });
+});
+
+// ── tryDecryptWithPassword ─────────────────────────────────────────────
+
+describe("tryDecryptWithPassword", () => {
+  test("no-op when password is empty", () => {
+    const pdfContent = Buffer.from("%PDF-1.4 fake content");
+    const filePath = join(tmpDir, "noop.pdf");
+    writeFileSync(filePath, pdfContent);
+
+    tryDecryptWithPassword(filePath, "");
+
+    const after = readFileSync(filePath);
+    expect(after.equals(pdfContent)).toBe(true);
+  });
+
+  test("calls qpdf --decrypt with supplied password when file is encrypted", async () => {
+    const helperPath = join(tmpDir, "decrypt-with-password.test.ts");
+    const targetPdf = join(tmpDir, "encrypted.pdf");
+    writeFileSync(targetPdf, Buffer.from("%PDF-1.4 encrypted"));
+    const dlHelperPath = DOWNLOAD_HELPER_PATH;
+    const pdfPath = JSON.stringify(targetPdf.replace(/\\/g, "/"));
+    writeFileSync(helperPath, [
+      `import { mock, test, expect } from "bun:test";`,
+      ``,
+      `const calls: string[][] = [];`,
+      `mock.module("child_process", () => ({`,
+      `  execSync: (cmd: string, _opts?: any) => {`,
+      `    calls.push([cmd]);`,
+      `    return Buffer.from("");`,
+      `  },`,
+      `}));`,
+      ``,
+      `const { tryDecryptWithPassword } = await import("${dlHelperPath}");`,
+      ``,
+      `test("decrypts with provided password", () => {`,
+      `  tryDecryptWithPassword(${pdfPath}, "userPassword123");`,
+      `  expect(calls.length).toBe(2);`,
+      `  expect(calls[0][0]).toInclude("qpdf --is-encrypted");`,
+      `  expect(calls[1][0]).toInclude("qpdf --password=");`,
+      `  expect(calls[1][0]).toInclude("userPassword123");`,
+      `  expect(calls[1][0]).toInclude("--decrypt");`,
+      `});`,
+    ].join("\n"));
+
+    const result = Bun.spawnSync([BUN_EXE, "test", helperPath], {
+      cwd: import.meta.dir,
+      env: { ...process.env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const stderr = result.stderr.toString().trim();
     if (result.exitCode !== 0) {
       throw new Error(`Subprocess test failed (exit ${result.exitCode}):\n${stderr}`);

@@ -302,6 +302,48 @@ function findUnconsumedGuidance(events: JobEventRow[]): GuidanceApplied | null {
   return null;
 }
 
+/**
+ * Apply the most recent unconsumed `guidance_password` event, if any:
+ * call `tryDecryptWithPassword` and scrub the password off the event row
+ * so it doesn't linger in the audit trail. Idempotent — subsequent ticks
+ * see an empty payload and skip.
+ *
+ * Scrub strategy: UPDATE payload_json to `'{}'` on the event's id. We
+ * don't delete the row because the audit trail should still show that a
+ * password was handed over (matching the `decrypt_password_provided:
+ * true` flag on guidance_applied). The password value itself is removed.
+ */
+function applyGuidancePassword(
+  db: import("bun:sqlite").Database,
+  jobId: string,
+  filePath: string,
+  logger: WorkerLogger,
+): void {
+  const events = getJobEvents(db, jobId);
+  // findLast: walk in reverse for the most recent event with a non-empty payload.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.event_type !== "guidance_password") continue;
+    let payload: { password?: string };
+    try {
+      payload = JSON.parse(e.payload_json ?? "{}");
+    } catch {
+      return;
+    }
+    if (!payload.password) return; // already scrubbed, nothing to do
+    try {
+      downloadHelper.tryDecryptWithPassword(filePath, payload.password);
+      logger.log(`Job ${jobId}: applied user-supplied password for decrypt`);
+    } finally {
+      // Scrub regardless of decrypt outcome — the password should NEVER
+      // linger in the audit row. If decrypt failed, Trigger B below fires
+      // again and the user can re-supply.
+      db.prepare("UPDATE job_events SET payload_json = '{}' WHERE id = ?").run(e.id);
+    }
+    return;
+  }
+}
+
 let counterSeeded = false;
 function seedCounterFromDb(db: import("bun:sqlite").Database): void {
   if (counterSeeded) return;
@@ -473,9 +515,44 @@ export async function executeInvoiceIntake(
 
       // Step 1.1: Try to decrypt the PDF if it's password-protected.
       // No-op when BANK_PDF_PASSWORD is unset or the file isn't encrypted.
-      // Closes the gap between the email and GDrive paths (task 57). Task 2.4
-      // adds the encrypted-PDF guidance pause on top of this hook.
+      // Closes the gap between the email and GDrive paths (task 57).
       downloadHelper.tryDecrypt(filePath);
+
+      // Step 1.2: Resume-decrypt with a user-supplied password, if the
+      // provide_guidance tool wrote one to a `guidance_password` event. The
+      // password is consumed and the event payload is scrubbed so it never
+      // lingers in the audit trail. Task 57, Trigger B resume.
+      applyGuidancePassword(db, job.id, filePath, logger);
+
+      // Step 1.3: Trigger B — if the PDF is still encrypted after both
+      // decrypt attempts, we have no classifier output to trust. Pause the
+      // job and ask the user for the password (or permission to skip).
+      if (downloadHelper.isPdfEncrypted(filePath)) {
+        pauseForGuidance(db, job.id, {
+          step: "decrypt_pdf",
+          reason: "encrypted_pdf",
+          missing_fields: [],
+          suggested_actions: [
+            "skip",
+            "set:owner=personal,doc_type=account_statement",
+            "set:owner=techlab,doc_type=account_statement",
+            "send_password",
+            "retry",
+          ],
+          context: {
+            filename: file.filename,
+            sender: classification.sender,
+            subject: classification.subject,
+            classifier_notes:
+              "PDF is encrypted; decrypt failed (no password configured or wrong password).",
+          },
+        });
+        logger.log(`Job ${job.id} paused: encrypted_pdf`);
+        outcome = "awaiting_user_guidance";
+        span.setAttribute("invoice.outcome", "awaiting_user_guidance");
+        span.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
 
       // Step 1.5: Document classification via channel (non-blocking)
       const cachedDocClassification = completedSteps.get("classify_document");

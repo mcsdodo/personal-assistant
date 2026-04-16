@@ -2240,6 +2240,130 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
     }
   });
 
+  test("Trigger B: encrypted PDF after tryDecrypt → pause for guidance, no classifier call", async () => {
+    // Spy tryDecrypt to a no-op (BANK_PDF_PASSWORD empty); spy isPdfEncrypted
+    // to return true. The worker must pause at `decrypt_pdf` step BEFORE
+    // document classification so the classifier never sees the locked file.
+    const decryptSpy = spyOn(downloadHelper, "tryDecrypt").mockImplementation(() => {});
+    const isEncSpy = spyOn(downloadHelper, "isPdfEncrypted").mockImplementation(() => true);
+    try {
+      const filePath = join(tmpDir, "locked_statement.pdf");
+      writeFileSync(filePath, Buffer.from("%PDF-1.4 encrypted"));
+      const input = makeInput({ file_path: filePath });
+      // Seed ONLY classify_email — classify_document must NOT have been called.
+      const job = createJob(db, {
+        workflowType: "invoice_intake",
+        inputJson: JSON.stringify(input),
+        sourceRef: `${input.email_source}:${input.message_id}`,
+        idempotencyKey: `${input.email_source}:${input.message_id}`,
+      });
+      db.prepare("UPDATE jobs SET state = 'running', started_at = ? WHERE id = ?").run(
+        new Date().toISOString(),
+        job.id,
+      );
+      addJobEvent(db, job.id, "step_completed", {
+        step: "classify_email",
+        result: defaultEmailClassification({ sender: "kontakt@mbank.sk", subject: "mBank – výpis" }),
+      });
+      const runningJob = getJob(db, job.id)!;
+
+      // No fetch mocks — the worker must not reach Paperless (classifier never runs).
+      mockFetch();
+
+      await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+
+      const updated = getJob(db, job.id)!;
+      expect(updated.state).toBe("awaiting_user_guidance");
+
+      const events = getJobEvents(db, job.id);
+      const guidance = events.find((e) => e.event_type === "guidance_request");
+      expect(guidance).toBeDefined();
+      const payload = JSON.parse(guidance!.payload_json!);
+      expect(payload.reason).toBe("encrypted_pdf");
+      expect(payload.step).toBe("decrypt_pdf");
+      expect(payload.suggested_actions).toContain("send_password");
+      expect(payload.suggested_actions).toContain("skip");
+      expect(payload.context.filename).toBe("locked_statement.pdf");
+
+      // The document-classifier step_started must NOT have been emitted.
+      const docStarted = events.find(
+        (e) =>
+          e.event_type === "step_started" &&
+          JSON.parse(e.payload_json ?? "{}").step === "classify_document",
+      );
+      expect(docStarted).toBeUndefined();
+
+      // tryDecrypt was called (task 2.3); isPdfEncrypted was called to gate.
+      expect(decryptSpy).toHaveBeenCalled();
+      expect(isEncSpy).toHaveBeenCalled();
+    } finally {
+      decryptSpy.mockRestore();
+      isEncSpy.mockRestore();
+    }
+  });
+
+  test("Trigger B resume: guidance_password event triggers tryDecryptWithPassword and scrubs password", async () => {
+    // After the user supplies a password via provide_guidance, the worker
+    // picks the job back up, invokes tryDecryptWithPassword with the secret,
+    // and scrubs the password event so it doesn't linger in the audit trail.
+    const decryptSpy = spyOn(downloadHelper, "tryDecrypt").mockImplementation(() => {});
+    const decryptPwSpy = spyOn(downloadHelper, "tryDecryptWithPassword").mockImplementation(() => {});
+    // After running the password decrypt, the PDF is no longer encrypted.
+    const isEncSpy = spyOn(downloadHelper, "isPdfEncrypted").mockImplementation(() => false);
+    try {
+      const filePath = join(tmpDir, "resume_pwd.pdf");
+      writeFileSync(filePath, Buffer.from("%PDF-1.4 content"));
+      const input = makeInput({ file_path: filePath });
+      const job = createRunningJob(input);
+
+      // The provide_guidance path wrote a guidance_password event with the
+      // user's password and flipped the job to queued. Now the worker ticks.
+      addJobEvent(db, job.id, "guidance_applied", {
+        action: "patch",
+        patch: null,
+        decrypt_password_provided: true,
+      });
+      addJobEvent(db, job.id, "guidance_password", { password: "mojeHeslo123" });
+      db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
+      const runningJob = getJob(db, job.id)!;
+
+      mockFetch(
+        () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+        () => jsonResponse({ results: [] }),
+        () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+        () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+        storagePathsMockHandler(),
+        () => new Response('"task-uuid"', { status: 200 }),
+        ...customFieldsMockHandlers(),
+      );
+
+      await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+
+      expect(decryptPwSpy).toHaveBeenCalled();
+      const args = decryptPwSpy.mock.calls[0];
+      expect(args[1]).toBe("mojeHeslo123");
+
+      // Password event must have been scrubbed (payload replaced with {}).
+      const events = getJobEvents(db, job.id);
+      const pwEvent = events.find((e) => e.event_type === "guidance_password");
+      expect(pwEvent).toBeDefined();
+      expect(pwEvent!.payload_json).toBe("{}");
+
+      // Job completes normally.
+      expect(getJob(db, job.id)!.state).toBe("completed");
+
+      // Ensure nothing re-decrypted or inferred (no additional isEncrypted false-positive)
+      expect(isEncSpy).toHaveBeenCalled();
+      // tryDecrypt (the BANK_PDF_PASSWORD one) may or may not have been called
+      // depending on code ordering; we don't assert on that here.
+      void decryptSpy;
+    } finally {
+      decryptSpy.mockRestore();
+      decryptPwSpy.mockRestore();
+      isEncSpy.mockRestore();
+    }
+  });
+
   test("resume does not re-pause (guidance_applied consumed once)", async () => {
     // If a job that was patched gets another tick, the patched owner is
     // already in the merged classification (from the first consumption) and
