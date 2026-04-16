@@ -61,6 +61,7 @@ import {
   type CustomFieldResult,
   type UploadResult,
 } from "./postprocess-service";
+import * as downloadHelper from "../download-helper";
 import { readFileAsDownload } from "../download-helper";
 import { formatNotification, type NotifyFn } from "../telegram-notify";
 import {
@@ -469,6 +470,12 @@ export async function executeInvoiceIntake(
           content_type: file.content_type,
         });
       }
+
+      // Step 1.1: Try to decrypt the PDF if it's password-protected.
+      // No-op when BANK_PDF_PASSWORD is unset or the file isn't encrypted.
+      // Closes the gap between the email and GDrive paths (task 57). Task 2.4
+      // adds the encrypted-PDF guidance pause on top of this hook.
+      downloadHelper.tryDecrypt(filePath);
 
       // Step 1.5: Document classification via channel (non-blocking)
       const cachedDocClassification = completedSteps.get("classify_document");

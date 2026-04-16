@@ -4,6 +4,7 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test";
 import type { Database } from "bun:sqlite";
@@ -12,6 +13,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { executeInvoiceIntake, executeScanIntake, type InvoiceIntakeInput, type InvoiceClassification, type ScanIntakeInput, type ScanClassification } from "./invoice/intake-worker";
+import * as downloadHelper from "./download-helper";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 import {
@@ -2204,6 +2206,38 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
     const output = JSON.parse(updated.output_json!);
     expect(output.tags).toContain("personal");
     expect(output.tags).not.toContain("techlab");
+  });
+
+  test("tryDecrypt is called after download on the email pipeline (task 2.3)", async () => {
+    // Trigger A pause above skips Paperless entirely; use the happy path here
+    // so we exercise the post-download hook specifically.
+    const spy = spyOn(downloadHelper, "tryDecrypt");
+    try {
+      const filePath = join(tmpDir, "decrypt_hook.pdf");
+      writeFileSync(filePath, Buffer.from("fake pdf"));
+      const input = makeInput({ file_path: filePath });
+      const job = createRunningJob(input);
+
+      mockFetch(
+        () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+        () => jsonResponse({ results: [] }),
+        () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+        () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+        storagePathsMockHandler(),
+        () => new Response('"task-uuid"', { status: 200 }),
+        ...customFieldsMockHandlers(),
+      );
+
+      await executeInvoiceIntake(db, job, logger, registry, notify);
+
+      expect(spy).toHaveBeenCalled();
+      // The filename it was called with must be the resolved download path.
+      const calls = spy.mock.calls;
+      const calledWith = calls.map((c) => c[0]);
+      expect(calledWith.some((p) => typeof p === "string" && p.includes("decrypt_hook.pdf"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("resume does not re-pause (guidance_applied consumed once)", async () => {
