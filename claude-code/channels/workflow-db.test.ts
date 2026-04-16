@@ -17,6 +17,7 @@ import {
   getJobEvents,
   listJobs,
   openWorkflowDb,
+  pauseForGuidance,
   requestJobApproval,
   setJobState,
 } from "./workflow-db";
@@ -130,5 +131,29 @@ describe("workflow-db", () => {
     setJobState(db, job.id, "awaiting_user_guidance");
     const reloaded = getJob(db, job.id);
     expect(reloaded?.state).toBe("awaiting_user_guidance");
+  });
+
+  test("pauseForGuidance transitions to awaiting_user_guidance + writes event", () => {
+    const db = openTestWorkflowDb();
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    setJobState(db, job.id, "running");
+
+    pauseForGuidance(db, job.id, {
+      step: "classify_document",
+      reason: "classifier_unknown",
+      missing_fields: ["owner"],
+      suggested_actions: ["set:owner=personal", "set:owner=techlab", "skip"],
+      context: { filename: "x.pdf", classifier_notes: "no IČO" },
+    });
+
+    const reloaded = getJob(db, job.id);
+    expect(reloaded?.state).toBe("awaiting_user_guidance");
+
+    const events = getJobEvents(db, job.id);
+    const guidanceEvent = events.find((e) => e.event_type === "guidance_request");
+    expect(guidanceEvent).toBeDefined();
+    const payload = JSON.parse(guidanceEvent!.payload_json!);
+    expect(payload.reason).toBe("classifier_unknown");
+    expect(payload.missing_fields).toEqual(["owner"]);
   });
 });
