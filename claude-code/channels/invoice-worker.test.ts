@@ -2248,6 +2248,43 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
     expect(payload.suggested_actions).toContain("set:doc_type=invoice");
   });
 
+  test("pause emits guidance.requested log line (observability wiring, task 57/4.2)", async () => {
+    // Task 57 / 4.2: pauseAndNotify must emit a Loki log line
+    // `guidance.requested job_id=... reason=... step=...` alongside the
+    // OTel counter increment. The counter itself is a no-op under the
+    // test harness (no OTel SDK configured), so we pin the wiring via
+    // the paired log line — if the `logger.log` call disappears or its
+    // shape drifts, the Grafana panel query won't match and this test
+    // goes red. Intentionally narrow: we assert the prefix + key=value
+    // tokens, not the full string, so minor format tweaks stay flexible.
+    const logs: string[] = [];
+    const spyLogger = { log(msg: string) { logs.push(msg); } };
+
+    const filePath = join(tmpDir, "guidance_log.pdf");
+    writeFileSync(filePath, Buffer.from("fake pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ vendor: "Alza.sk s.r.o." }),
+      defaultDocClassification({
+        owner: "unknown" as unknown as string,
+        vendor: "Alza.sk s.r.o.",
+      }),
+    );
+
+    mockFetch();
+
+    await executeInvoiceIntake(db, job, spyLogger, registry, notify);
+
+    expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
+
+    const requestedLine = logs.find((l) => l.startsWith("guidance.requested"));
+    expect(requestedLine).toBeDefined();
+    expect(requestedLine).toContain(`job_id=${job.id}`);
+    expect(requestedLine).toContain("reason=classifier_unknown");
+    expect(requestedLine).toContain("step=post_classification");
+  });
+
   test("classifier returns non-unknown values → worker proceeds normally", async () => {
     // Regression guard: ensure the new pause check doesn't false-positive on
     // the happy path (every field is a real value, not "unknown").

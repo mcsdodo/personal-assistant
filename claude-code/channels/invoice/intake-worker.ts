@@ -40,6 +40,13 @@ import {
   type JobEventRow,
   type JobRow,
 } from "../workflow-db";
+// Task 57 / 4.2: counter is defined in workflow-mcp (spec home); we
+// import the handle so increments happen where the pause decision
+// actually lives (pauseAndNotify below). The cycle
+// workflow-mcp → workflow-core → invoice/intake-worker → workflow-mcp
+// is safe in ESM because we only USE the binding at call time, never at
+// module init.
+import { guidanceRequestsTotal } from "../workflow-mcp";
 import type { PaperlessFieldRegistry } from "../paperless-fields";
 import { PaperlessAdapter, type CorrespondentInfo } from "../paperless-adapter";
 import {
@@ -267,6 +274,25 @@ interface GuidanceApplied {
 }
 
 /**
+ * Compute seconds between the most recent `guidance_request` event and
+ * now. Used to enrich the `guidance.applied` Loki log line with
+ * `latency_seconds=...` so ops can answer "how long was the user making
+ * us wait?" from Loki alone (no DB join). Returns -1 if no
+ * guidance_request exists in `events` or the timestamp fails to parse;
+ * caller is expected to just log the sentinel rather than skip.
+ */
+function guidanceLatencySeconds(events: JobEventRow[]): number {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.event_type !== "guidance_request") continue;
+    const t = Date.parse(e.created_at);
+    if (Number.isNaN(t)) return -1;
+    return Math.max(0, Math.round((Date.now() - t) / 1000));
+  }
+  return -1;
+}
+
+/**
  * Return the most recent unconsumed `guidance_applied` event, or null
  * if every guidance_applied has been consumed (or none exist). The
  * "unconsumed" signal is a `guidance_applied_consumed` event whose
@@ -363,8 +389,17 @@ async function pauseAndNotify(
   jobId: string,
   payload: GuidanceRequestPayload,
   notify: NotifyFn | undefined,
+  logger?: WorkerLogger,
 ): Promise<void> {
   pauseForGuidance(db, jobId, payload);
+  // Task 57 / 4.2: observability. Counter tracks pause trends by reason
+  // (encrypted_pdf rising → bank password wrong; classifier_unknown rising
+  // → Haiku over-using IDK). Loki log is paired with guidance.received
+  // (handleProvideGuidance) and guidance.applied (worker consume) so we
+  // can compute average user-response latency per job.
+  guidanceRequestsTotal.add(1, { reason: payload.reason });
+  const lokiLine = `guidance.requested job_id=${jobId} reason=${payload.reason} step=${payload.step}`;
+  if (logger) logger.log(lokiLine);
   if (!notify) return;
   const formatted = formatGuidanceRequest({ job_id: jobId, ...payload });
   await notify(formatted).catch(() => {
@@ -576,7 +611,7 @@ export async function executeInvoiceIntake(
             classifier_notes:
               "PDF is encrypted; decrypt failed (no password configured or wrong password).",
           },
-        }, notify);
+        }, notify, logger);
         logger.log(`Job ${job.id} paused: encrypted_pdf`);
         outcome = "awaiting_user_guidance";
         span.setAttribute("invoice.outcome", "awaiting_user_guidance");
@@ -639,6 +674,14 @@ export async function executeInvoiceIntake(
         addJobEvent(db, job.id, "guidance_applied_consumed", {
           source_event_id: unconsumed.eventId,
         });
+        // Task 57 / 4.2: Loki event paired with guidance.requested (pause)
+        // and guidance.received (user replied). `latency_seconds` is the
+        // wall-clock gap between the guidance_request event and now, so
+        // Loki alone can answer "how responsive is the operator?".
+        const latency = guidanceLatencySeconds(allEvents);
+        logger.log(
+          `guidance.applied job_id=${job.id} action=${unconsumed.action} latency_seconds=${latency}`,
+        );
       }
 
       const merged = mergedClassification as InvoiceClassification;
@@ -667,7 +710,7 @@ export async function executeInvoiceIntake(
             classifier_notes:
               ((mergedClassification as Record<string, unknown>).notes as string | undefined) ?? null,
           },
-        }, notify);
+        }, notify, logger);
         logger.log(
           `Job ${job.id} paused (classifier_unknown: ${unknownFields.join(", ")})`,
         );
@@ -1162,7 +1205,7 @@ export async function executeScanIntake(
             classifier_notes:
               "PDF is encrypted; decrypt failed (no password configured or wrong password).",
           },
-        }, notify);
+        }, notify, logger);
         logger.log(`Job ${job.id} paused: encrypted_pdf (scan)`);
         outcome = "awaiting_user_guidance";
         span.setAttribute("invoice.outcome", "awaiting_user_guidance");
@@ -1209,6 +1252,11 @@ export async function executeScanIntake(
         addJobEvent(db, job.id, "guidance_applied_consumed", {
           source_event_id: scanUnconsumed.eventId,
         });
+        // Task 57 / 4.2: see email-intake path above for rationale.
+        const scanLatency = guidanceLatencySeconds(scanEvents);
+        logger.log(
+          `guidance.applied job_id=${job.id} action=${scanUnconsumed.action} latency_seconds=${scanLatency}`,
+        );
       }
 
       vendorForSpan = classification.vendor;
@@ -1236,7 +1284,7 @@ export async function executeScanIntake(
             classifier_notes:
               ((classification as Record<string, unknown>).notes as string | undefined) ?? null,
           },
-        }, notify);
+        }, notify, logger);
         logger.log(
           `Job ${job.id} paused (classifier_unknown scan: ${scanUnknownFields.join(", ")})`,
         );

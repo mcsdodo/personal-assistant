@@ -283,6 +283,17 @@
         "showHeader": true,
         "sortBy": [{ "displayName": "Start time", "desc": true }]
       }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${prometheus_ds}" },
+      "description": "Rate of job pauses into awaiting_user_guidance, grouped by trigger reason (classifier_unknown, encrypted_pdf, ...). Rising classifier_unknown → Haiku over-using 'I don't know'. Rising encrypted_pdf → wrong bank password. Source metric emitted by workflow-mcp.ts on every pauseAndNotify call.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineWidth": 2, "fillOpacity": 60 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 63 },
+      "id": 41,
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "expr": "sum by (reason) (rate(personal_assistant_guidance_requests_total[5m]))", "legendFormat": "{{ reason }}", "refId": "A" }],
+      "title": "Guidance requests by reason",
+      "type": "barchart"
     }
   ],
   "refresh": "10s",

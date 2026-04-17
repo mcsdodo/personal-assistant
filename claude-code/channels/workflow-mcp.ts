@@ -27,7 +27,7 @@ import {
   type JobRow,
 } from "./workflow-db";
 
-import { initTracing, createLogger, getTracer, remoteParentContext, SpanStatusCode } from "./tracing";
+import { initTracing, createLogger, getMeter, getTracer, remoteParentContext, SpanStatusCode } from "./tracing";
 import { getEmailTraceId } from "./db";
 
 const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
@@ -36,6 +36,23 @@ const WORKFLOW_PORT = parseInt(process.env.WORKFLOW_MCP_PORT ?? "8003", 10);
 
 initTracing("workflow");
 const log = createLogger("workflow");
+
+// Task 57 / 4.2: Observability counter for guidance pauses. Incremented
+// every time the worker parks a job in `awaiting_user_guidance` (via
+// `pauseAndNotify` in invoice/intake-worker.ts). Exported so the worker
+// can `.add()` to it directly; the Prometheus series is keyed by
+// `reason` (classifier_unknown, encrypted_pdf, ...). Zero-cardinality in
+// the happy path — only non-zero when jobs actually get stuck.
+//
+// `email_watcher_jobs{state="awaiting_user_guidance"}` already captures
+// the instantaneous backlog since that gauge groups by (type, state),
+// so we don't need a separate backlog metric for paused jobs. This
+// counter is the trend view — "how often are we pausing, and for what".
+const workflowMeter = getMeter("workflow");
+export const guidanceRequestsTotal = workflowMeter.createCounter(
+  "personal_assistant_guidance_requests_total",
+  { description: "Job pauses for user guidance, by trigger reason" },
+);
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -111,6 +128,12 @@ export function handleProvideGuidance(
   }
 
   const { guidance } = args;
+
+  // Loki event — the user has answered a guidance_request. Paired with
+  // `guidance.requested` (emitted on pause) and `guidance.applied`
+  // (emitted by the worker when it consumes the guidance_applied event).
+  // See task 57 section "Observability".
+  log(`guidance.received job_id=${args.job_id} action=${guidance.action}`);
 
   switch (guidance.action) {
     case "skip":
