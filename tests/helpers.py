@@ -614,6 +614,7 @@ def wait_claude_ready(timeout: int = 180):
         "file-ops.ts",
     )
     deadline = time.time() + timeout
+    missing: list[str] = list(expected_channels)
     while time.time() < deadline:
         # 1. container `healthy` (the docker-compose healthcheck verifies the
         #    tmux session is alive AND email-watcher health is OK).
@@ -659,7 +660,7 @@ def wait_claude_ready(timeout: int = 180):
 
     raise TimeoutError(
         f"Claude not fully ready within {timeout}s "
-        f"(missing channels: {missing if 'missing' in locals() else 'unknown'})"
+        f"(missing channels: {missing})"
     )
 
 
