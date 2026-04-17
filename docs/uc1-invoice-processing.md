@@ -310,6 +310,40 @@ Gates for unknown vendor, low confidence, browser_required, and requires_review 
 
 **Status:** Simplified to single dedup gate. Deployed.
 
+## UC-1.6b: When the classifier doesn't know (guidance pause)
+
+The worker pauses a job in `awaiting_user_guidance` whenever it would otherwise have to guess or hallucinate. Two triggers:
+
+- **Trigger A — classifier said `"unknown"`**. Both `email-classifier` and `document-classifier` are now allowed to return `"unknown"` for required fields (e.g. `owner`, `doc_type`, `total_amount`) and MUST populate `notes` explaining why. The worker detects any `"unknown"` in the merged classification and pauses with `reason: "classifier_unknown"` plus the list of missing fields.
+- **Trigger B — PDF still encrypted after `tryDecrypt`**. Both intake paths call `download-helper.tryDecrypt` (wraps `qpdf` via `file-ops` MCP, uses `BANK_PDF_PASSWORD`) immediately after download. If the file is still encrypted afterwards the worker pauses with `reason: "encrypted_pdf"`. Previously only the GDrive scan path decrypted; the email path has also been wired up (closes the original bug where doc 422 — a password-protected mBank statement attached to an email — was pushed through the classifier with 0 extractable text and misfiled as a techlab invoice).
+
+When the worker pauses, `pauseAndNotify` writes a `guidance_request` event carrying `step`, `reason`, `missing_fields`, `suggested_actions`, and `context` (filename, sender, subject, classifier notes), sets state to `awaiting_user_guidance`, and sends a Telegram message with an inline keyboard (`formatGuidanceRequest` + `buildGuidanceReplyMarkup` in `telegram-notify.ts`).
+
+The user resumes the job with `provide_guidance(job_id, guidance)`:
+
+| `guidance.action` | Effect |
+|---|---|
+| `skip` | Complete the job with `outcome: "skipped"`. |
+| `fail` | Fail the job with `code: "user_cancelled"`. |
+| `retry` | Re-queue and re-run the paused step as-is. |
+| `patch` | Re-queue; worker merges `guidance.patch` into the classification on resume. |
+
+`decrypt_password` (for Trigger B) is written to a separate `guidance_password` job event so password material never lands in the normal `guidance_applied` audit row — the `guidance_applied` event only records `decrypt_password_provided: boolean`.
+
+Routing of free-form Telegram replies into `provide_guidance` calls happens in the Claude session; see `claude-code/CLAUDE.md` section "Guidance routing for paused jobs" for the stack-discipline rule (if exactly one job is paused, the next non-command Telegram message targets it) and for the slash-command / NL parsing rules.
+
+**Stale guidance sweep.** `sweepStaleGuidance` runs on every worker tick: at 24h it nudges the operator with a Telegram reminder, at 72h it auto-fails the job with `code: "timed_out"`. Tunables: `GUIDANCE_REMINDER_HOURS`, `GUIDANCE_TIMEOUT_HOURS` in `workflow-mcp.ts`.
+
+**Observability.** `personal_assistant_guidance_requests_total{reason}` counter, Loki events `guidance.requested` / `guidance.received` / `guidance.applied`, and a stacked-bar Grafana panel (id 41) track the pause volume by reason.
+
+**Code:**
+- [`workflow-db.ts:387-423`](../claude-code/channels/workflow-db.ts#L387) — `GuidanceRequestPayload` type + `pauseForGuidance` helper
+- [`workflow-mcp.ts:85-187`](../claude-code/channels/workflow-mcp.ts#L85) — `Guidance` type + `handleProvideGuidance` (and the `provide_guidance` MCP tool registration further down)
+- [`workflow-mcp.ts:217-259`](../claude-code/channels/workflow-mcp.ts#L217) — `sweepStaleGuidance` (72h auto-cancel + 24h reminder)
+- [`invoice/intake-worker.ts:387-616`](../claude-code/channels/invoice/intake-worker.ts#L387) — `pauseAndNotify` + Trigger A / B call sites (both intake paths)
+- [`telegram-notify.ts`](../claude-code/channels/telegram-notify.ts) — `formatGuidanceRequest` + `buildGuidanceReplyMarkup`
+- [`claude-code/CLAUDE.md`](../claude-code/CLAUDE.md) — "Guidance routing for paused jobs" (stack-discipline + slash commands + free-form parsing)
+
 ## UC-1.7: Query Invoice Status
 
 Claude can query Paperless directly using `search_documents` from the community Paperless MCP. Example: "do I have March invoices?" triggers a search with month filter.
@@ -385,7 +419,7 @@ At startup, the watcher resolves every level1 × level2 combination (e.g. `techl
 
 **Unified classifier:** Both email PDFs and GDrive scans use the same `document-classifier` agent. The email path adds an email-classifier triage step before download; the GDrive path skips it.
 
-**PDF decryption:** Password-protected PDFs (e.g., bank statements) are decrypted via `file-ops` MCP `decrypt_pdf` tool (wraps qpdf). Password from `BANK_PDF_PASSWORD` env var.
+**PDF decryption:** Password-protected PDFs (e.g., bank statements) are decrypted via `file-ops` MCP `decrypt_pdf` tool (wraps qpdf). Password from `BANK_PDF_PASSWORD` env var. Both intake paths (email + scan) now call `download-helper.tryDecrypt` immediately after download; if decryption still fails afterwards, the worker pauses in `awaiting_user_guidance` (Trigger B — see UC-1.6b) instead of handing the encrypted PDF to the classifier.
 
 **Code:**
 - [`agents/document-classifier.md`](../claude-code/agents/document-classifier.md) — Haiku classifier prompt (7-field output)
@@ -434,6 +468,11 @@ stateDiagram-v2
     running --> awaiting_approval : requestJobApproval\n(duplicate_likely)
     awaiting_approval --> queued : approveJob
 
+    running --> awaiting_user_guidance : pauseForGuidance\n(classifier_unknown\nor encrypted_pdf)
+    awaiting_user_guidance --> queued : provide_guidance\n(retry / patch)
+    awaiting_user_guidance --> completed : provide_guidance\n(skip)
+    awaiting_user_guidance --> failed : provide_guidance\n(fail) / 72h timeout
+
     running --> completed : completeJob
     running --> retryable : error\n(retries remaining)
     running --> failed : error\n(max retries)
@@ -445,6 +484,8 @@ stateDiagram-v2
     completed --> [*]
     failed --> [*]
 ```
+
+The worker parks jobs in `awaiting_user_guidance` via `pauseForGuidance` when the classifier returns `"unknown"` on a required field (Trigger A) or the PDF is still encrypted after `tryDecrypt` (Trigger B). `provide_guidance` resumes them — see "UC-1.6b: When the classifier doesn't know" above.
 
 The worker processes jobs in ticks. When it needs Claude's classification, it parks the job in `awaiting_classification` and moves to the next job. Claude's `submit_classification` call moves the job back to `queued`, where the worker picks it up on the next tick and resumes from the last completed step.
 

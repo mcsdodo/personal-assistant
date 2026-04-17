@@ -14,6 +14,7 @@ If you want implementation details, follow the linked deep-dive documents for ea
 - attachment and invoice-link download flows
 - upload to Paperless with metadata
 - Telegram notifications and approval prompts
+- pause-and-ask guidance flow for unclear classifications and encrypted PDFs
 - Google Drive scan ingestion
 - workflow observability and telemetry
 - bank statement matching and annual P&L summaries
@@ -40,6 +41,7 @@ Detailed documentation: [`uc1-invoice-processing.md`](./uc1-invoice-processing.m
 | 1.7 | [Query invoice status](./uc1-invoice-processing.md#uc-17-query-invoice-status) | DONE |
 | 1.8 | Google Drive scan + email PDF auto-upload | DONE |
 | 1.9 | Personal income documents (payslips) routed to personal, not techlab | DONE |
+| 1.10 | [Pause and ask user when classifier is unsure or PDF is encrypted](./uc1-invoice-processing.md#uc-16b-when-the-classifier-doesnt-know-guidance-pause) | DONE |
 
 ## UC-1A: Email Workflow Observability
 

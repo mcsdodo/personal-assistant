@@ -248,7 +248,9 @@ Domain logic stays in each watcher (Gmail/Outlook polling, Drive folder logic, a
 
 ### claude-code/channels/workflow-mcp.ts (~440 lines)
 
-Durable job queue backed by SQLite (`workflow.db`). Stdio channel with health endpoint on :8003. Job states: queued → running → awaiting_classification → awaiting_approval → completed/failed. Tools: `create_invoice_intake_job(email_source, message_id, force?)` (manual/force reprocessing only — watchers create jobs directly), `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`, `submit_classification(job_id, step, result)`. On boot, runs `sweepOrphanedDownloads()` to delete files > 7d old that aren't tied to an active job (defense-in-depth for download cleanup; per-job cleanup is automatic via `completeJob` / `failJob` / `cancelJob`).
+Durable job queue backed by SQLite (`workflow.db`). Stdio channel with health endpoint on :8003. Job states: queued → running → awaiting_classification → awaiting_approval → awaiting_user_guidance → completed/failed. Tools: `create_invoice_intake_job(email_source, message_id, force?)` (manual/force reprocessing only — watchers create jobs directly), `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`, `submit_classification(job_id, step, result)`, `provide_guidance(job_id, guidance)` (resumes a job paused in `awaiting_user_guidance`; `guidance.action` is `skip | retry | fail | patch`, optional `decrypt_password` routed to a separate `guidance_password` event so password material never lands in the normal audit trail — see task 57 / "Guidance routing for paused jobs" in `claude-code/CLAUDE.md`). On boot, runs `sweepOrphanedDownloads()` to delete files > 7d old that aren't tied to an active job (defense-in-depth for download cleanup; per-job cleanup is automatic via `completeJob` / `failJob` / `cancelJob`). Every worker tick also runs `sweepStaleGuidance` which nudges operators at 24h and auto-fails `awaiting_user_guidance` jobs at 72h.
+
+**Guidance pause triggers (both intake paths):** Trigger A — classifier returned `"unknown"` for a required field; Trigger B — PDF still encrypted after `tryDecrypt`. See `docs/uc1-invoice-processing.md#uc-16b-when-the-classifier-doesnt-know-guidance-pause`.
 
 ### claude-code/agents/
 
@@ -576,6 +578,7 @@ No Grafana restart needed — the file provisioner detects changes and reloads.
 |--------|---------|
 | `invoice_worker_correspondents_total` | Completed invoices by normalized Paperless correspondent. Counter seeded from DB at startup, incremented on each upload. Used by "Top Correspondents" dashboard panel. |
 | `invoice_worker_missing_month_tag_total` | Documents uploaded without a valid YYYY-MM accounting period. Labelled by `workflow_type` (invoice_intake / scan_intake). Non-zero indicates the LLM-driven `accounting_period` resolution chain fully fell through and the document needs manual tagging in Paperless. |
+| `personal_assistant_guidance_requests_total` | Jobs paused in `awaiting_user_guidance`, labelled by `reason` (`classifier_unknown`, `encrypted_pdf`, ...). Rendered as a stacked bar in Grafana panel id 41. Pairs with the `email_watcher_jobs{state="awaiting_user_guidance"}` gauge for current backlog. |
 
 ### Events (Loki, via OTel logs)
 
@@ -586,6 +589,9 @@ No Grafana restart needed — the file provisioner detects changes and reloads.
 | `claude_code.tool_result` | tool_name, success, duration_ms, mcp_server_scope |
 | `claude_code.tool_decision` | tool_name, decision, source |
 | `claude_code.user_prompt` | prompt length |
+| `guidance.requested` | `job_id`, `reason` — worker parked a job in `awaiting_user_guidance` |
+| `guidance.received` | `job_id`, `action` — user called `provide_guidance` |
+| `guidance.applied` | `job_id`, `action` — worker consumed the guidance on resume |
 
 ### Key Files
 
