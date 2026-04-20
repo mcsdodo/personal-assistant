@@ -4,6 +4,15 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-17 — Awaiting-User-Guidance Flow (Classifier Pause)
+
+### Added
+- **Worker pauses on unclear or unreadable documents and asks the operator for guidance via Telegram instead of guessing** — previously the classifier would silently hallucinate values when faced with zero-quality inputs (e.g. a password-protected bank statement ran through OCR yielded empty text and got misfiled to the wrong owner). New `awaiting_user_guidance` job state fires on two triggers: (A) classifier returned `"unknown"` for a required field, (B) PDF still encrypted after `tryDecrypt`.
+- **Email intake path now calls `tryDecrypt` immediately after download** (previously only the GDrive scan path did), so encrypted attachments surface at Trigger B instead of slipping through to the classifier.
+- **`provide_guidance(job_id, guidance)` MCP tool** with actions `skip | retry | fail | patch` plus optional `decrypt_password` (stored in a separate `guidance_password` job event — never co-mingled with the normal audit trail). Telegram replies route through `claude-code/CLAUDE.md` → `provide_guidance` using a stack-discipline rule (one paused job → next reply targets it).
+- **72h auto-cancel + 24h Telegram reminder sweep** for jobs stuck in `awaiting_user_guidance`.
+- **Observability for the pause flow** — new `personal_assistant_guidance_requests_total{reason}` counter, Loki events `guidance.requested` / `guidance.received` / `guidance.applied`, and a stacked-bar Grafana panel for pause volume by reason.
+
 ## 2026-04-15 — Scan Notification Owner Mismatch
 
 ### Fixed
