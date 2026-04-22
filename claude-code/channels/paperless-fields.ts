@@ -34,25 +34,36 @@ export class PaperlessFieldRegistry {
     this.log = log ?? ((_msg: string) => {});
   }
 
-  async init(): Promise<void> {
-    // Fetch all existing custom fields (paginated)
-    const existing = await this.fetchAllFields();
-    for (const field of existing) {
-      this.cache.set(field.name, field.id);
-    }
-
-    // Create any missing fields from FIELD_DEFS
-    for (const [name, def] of Object.entries(FIELD_DEFS)) {
-      if (this.cache.has(name)) continue;
-
+  async init(maxRetries = 5, initialDelayMs = 2000): Promise<void> {
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const created = await this.createField(name, def.data_type);
-        this.cache.set(name, created.id);
-        this.log(`Created missing custom field "${name}" with id ${created.id}`);
+        const existing = await this.fetchAllFields();
+        for (const field of existing) {
+          this.cache.set(field.name, field.id);
+        }
+
+        for (const [name, def] of Object.entries(FIELD_DEFS)) {
+          if (this.cache.has(name)) continue;
+          try {
+            const created = await this.createField(name, def.data_type);
+            this.cache.set(name, created.id);
+            this.log(`Created missing custom field "${name}" with id ${created.id}`);
+          } catch (e: any) {
+            this.log(`Warning: failed to create custom field "${name}": ${e.message}`);
+          }
+        }
+        return;
       } catch (e: any) {
-        this.log(`Warning: failed to create custom field "${name}": ${e.message}`);
+        lastError = e;
+        if (attempt < maxRetries) {
+          const delay = initialDelayMs * Math.pow(2, attempt - 1);
+          this.log(`Paperless unreachable (attempt ${attempt}/${maxRetries}): ${e.message} — retrying in ${delay}ms`);
+          await new Promise((r) => setTimeout(r, delay));
+        }
       }
     }
+    throw lastError!;
   }
 
   getFieldId(name: string): number {

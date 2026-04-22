@@ -117,8 +117,11 @@ BEST_EFFORT_CHANNELS=(
 )
 ALL_CHANNELS=("${CRITICAL_CHANNELS[@]}" "${BEST_EFFORT_CHANNELS[@]}")
 
+# Claude Code v2.1.92 races MCP connections against a 5s budget then spawns
+# the rest in background. Processes appear anywhere from 30s to 180s after
+# container start. 60 attempts × 5s = 300s covers observed worst case.
 CRITICAL_READY=false
-for attempt in $(seq 1 24); do
+for attempt in $(seq 1 60); do
   MISSING_CRITICAL=()
   MISSING_BEST=()
   for ch in "${CRITICAL_CHANNELS[@]}"; do
@@ -134,18 +137,20 @@ for attempt in $(seq 1 24); do
   if [ ${#MISSING_CRITICAL[@]} -eq 0 ]; then
     CRITICAL_READY=true
     total_running=$(( ${#ALL_CHANNELS[@]} - ${#MISSING_BEST[@]} ))
-    echo "Critical channels ready (after ${attempt} checks). ${total_running}/${#ALL_CHANNELS[@]} stdio channels running."
+    echo "Critical channels ready (after ${attempt} checks, $((attempt * 5))s). ${total_running}/${#ALL_CHANNELS[@]} stdio channels running."
     if [ ${#MISSING_BEST[@]} -gt 0 ]; then
-      echo "  WARN: best-effort channels not spawned: ${MISSING_BEST[*]}"
-      echo "  (Claude Code v2.1.92 MCP loading race — container continues without them)"
+      echo "  WARN: best-effort channels not spawned yet: ${MISSING_BEST[*]}"
+      echo "  (may still spawn in background — watchdog will monitor)"
     fi
     break
   fi
-  echo "  attempt ${attempt}/24: critical missing: ${MISSING_CRITICAL[*]}; best-effort missing: ${MISSING_BEST[*]}"
+  if [ $((attempt % 12)) -eq 0 ]; then
+    echo "  attempt ${attempt}/60 ($((attempt * 5))s): critical missing: ${MISSING_CRITICAL[*]}; best-effort missing: ${MISSING_BEST[*]}"
+  fi
   sleep 5
 done
 if [ "$CRITICAL_READY" = "false" ]; then
-  echo "ERROR: Critical channels not spawned after 120s — see per-attempt log above"
+  echo "ERROR: Critical channels not spawned after 300s — see per-attempt log above"
   echo "Killing tmux session to trigger container restart..."
   tmux kill-server 2>/dev/null || true
   exit 1
