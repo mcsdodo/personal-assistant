@@ -104,7 +104,17 @@ export function openWorkflowDb(path: string): Database {
   try { db.exec("ALTER TABLE jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"); } catch {}
   try { db.exec("ALTER TABLE jobs ADD COLUMN scheduled_at TEXT"); } catch {}
   try { db.exec("ALTER TABLE jobs ADD COLUMN trace_id TEXT"); } catch {}
+  try { db.exec("ALTER TABLE jobs ADD COLUMN paperless_doc_id INTEGER"); } catch {}
   db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_retryable ON jobs(state, scheduled_at)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_paperless_doc_id ON jobs(paperless_doc_id)");
+  // Backfill from the established output field name `paperless_document_id`
+  // (used by InvoiceIntakeResult, telegram-notify, and tests).
+  db.exec(
+    `UPDATE jobs SET paperless_doc_id = json_extract(output_json, '$.paperless_document_id')
+     WHERE output_json IS NOT NULL
+       AND json_extract(output_json, '$.paperless_document_id') IS NOT NULL
+       AND paperless_doc_id IS NULL`,
+  );
 
   return db;
 }
@@ -124,6 +134,28 @@ export function addJobEvent(
 export function getJob(db: Database, id: string): JobRow | null {
   const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get(id);
   return (row as JobRow | null) ?? null;
+}
+
+/**
+ * Returns the `input_json.received_at` from the most recently-created job
+ * that touched the given Paperless document. Used by the dedup service to
+ * decide whether an incoming email is newer than what's already in Paperless
+ * (multi-stage vendor refresh path, task 59). Returns null when no jobs
+ * reference this doc id — the caller treats that as "newer wins".
+ *
+ * Orders by `created_at` (always ISO from `nowIso()`) instead of MAX(received_at)
+ * because received_at is heterogeneous (sender-controlled RFC 2822, ISO 8601,
+ * etc. — see task 59 investigation log) and SQL MAX would lex-compare.
+ */
+export function getLatestReceivedAtForDoc(db: Database, paperlessDocId: number): string | null {
+  const row = db
+    .prepare(
+      `SELECT json_extract(input_json, '$.received_at') AS received_at
+         FROM jobs WHERE paperless_doc_id = ?
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(paperlessDocId) as { received_at: string | null } | undefined;
+  return row?.received_at ?? null;
 }
 
 export function getJobByIdempotencyKey(db: Database, key: string): JobRow | null {
@@ -244,14 +276,23 @@ export function claimNextQueuedJob(db: Database): JobRow | null {
 
 export function completeJob(db: Database, jobId: string, output?: unknown): boolean {
   const timestamp = nowIso();
+  // Mirror `output.paperless_document_id` into the indexed column so the
+  // dedup service can look up source-email received_at by doc id without
+  // parsing output_json on every check (task 59 multi-stage refresh path).
+  const docId =
+    output && typeof output === "object" &&
+    typeof (output as { paperless_document_id?: unknown }).paperless_document_id === "number"
+      ? ((output as { paperless_document_id: number }).paperless_document_id)
+      : null;
   const result = db
     .prepare(
       `UPDATE jobs
        SET state = 'completed', output_json = ?, error_json = NULL,
-           completed_at = ?, updated_at = ?
+           completed_at = ?, updated_at = ?,
+           paperless_doc_id = COALESCE(?, paperless_doc_id)
        WHERE id = ?`
     )
-    .run(output === undefined ? null : JSON.stringify(output), timestamp, timestamp, jobId);
+    .run(output === undefined ? null : JSON.stringify(output), timestamp, timestamp, docId, jobId);
 
   if (result.changes === 0) return false;
   addJobEvent(db, jobId, "completed", output);

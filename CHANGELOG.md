@@ -4,6 +4,18 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-22 — Multi-Stage Vendor Emails (Newer Email Auto-Refreshes Paperless)
+
+### Added
+- **Multi-stage vendor email handling — when a vendor (initially Alza) sends several emails per order (`Už to chystáme.` → `Pripravené v AlzaBoxe` → `Odoslané` → `Doručené`), every stage carrying the same `Stiahnuť faktúru` link, the worker now auto-PATCHes the existing Paperless document if the new email is newer than the email that produced the doc currently in Paperless** — pre-task-59 dedup short-circuited everything after the first stage (`outcome: duplicate`, silent skip), so a corrected invoice issued mid-lifecycle never reached Paperless. Reuses the existing task-44 force-PATCH path, no new outcome state, doc id / PDF / OCR / thumbnail all preserved. Outcome is `refreshed` and the existing `🔄 refreshed #N` Telegram notification fires automatically.
+- **`jobs.paperless_doc_id INTEGER` indexed column** on `workflow.db` mirrors `output.paperless_document_id` at completion time. Migration backfills from existing `output_json.paperless_document_id` rows. `getLatestReceivedAtForDoc(db, docId)` helper looks up source-email `received_at` for the dedup decision.
+- **Date-aware `received_at` comparison in `dedup-service.ts`** — uses `Date.parse` instead of lexical compare because the watchers store sender-controlled `Date:` headers in heterogeneous formats (RFC 2822 from Gmail, ISO 8601 from Outlook). Verified against 284 production rows showing 5 distinct format buckets.
+- **Email-classifier prompt rule** — Alza order-lifecycle subject patterns (`Už to chystáme`, `Pripravené v AlzaBoxe`, `Odoslané`, `Doručené`, etc.) are now classified as invoices when a `Stiahnuť faktúru` link is present, instead of `ignore`.
+
+### Notes
+- PDF byte / text hash short-circuit deferred to Phase 2 — only worth adding if the operator-observable noise (one Telegram `🔄 refreshed` per stage email after the first) becomes annoying. Phase 1 is correctness-first: if a vendor ever changes the PDF mid-lifecycle, we PATCH automatically without having to predict it. See `_tasks/59-multi-stage-vendor-emails/02-design.md` for the verified Phase 2 hashing recipe and trigger condition.
+- The separate `&amp;` HTML-entity decoding bug in `invoice-links.ts` (which surfaced this whole task by 404-ing four Alza downloads) is a one-line fix tracked separately and is a hard prerequisite for Phase 1 to deliver value.
+
 ## 2026-04-17 — Awaiting-User-Guidance Flow (Classifier Pause)
 
 ### Added

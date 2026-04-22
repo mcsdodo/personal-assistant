@@ -151,13 +151,13 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 | `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice/download-service) |
 | `claude-code/channels/mcp-client.ts` | HTTP MCP client with retry logic (exponential backoff for transient network errors) + `McpToolError` thrown on `isError: true` tool responses so error payloads don't silently leak into callers as if they were valid output (task 48) |
 | `claude-code/channels/workflow-mcp.ts` | Durable job queue channel (stdio, health on :8003) + invoice/scan worker loop. Runs the download-cleanup safety sweep on boot. |
-| `claude-code/channels/workflow-db.ts` | jobs + job_events SQLite schema, lifecycle helpers, schema validation gateway, file-cleanup helpers |
+| `claude-code/channels/workflow-db.ts` | jobs + job_events SQLite schema, lifecycle helpers, schema validation gateway, file-cleanup helpers, indexed `paperless_doc_id` column for multi-stage refresh lookups |
 | `claude-code/channels/workflow-schemas.ts` | Runtime validation for InvoiceIntakeInput, ScanIntakeInput, EmailClassificationResult, DocumentClassificationResult |
 | `claude-code/channels/paperless-adapter.ts` | Unified Paperless boundary (MCP + REST). Owns correspondent/tag/doc-type/storage CRUD, dedup search, upload, PATCH, task polling, custom fields. |
 | `claude-code/channels/invoice-pipeline.ts` | Pure pipeline functions (mergeClassifications, resolveMonthTag, validMonthTag, parseServicePeriodStart, buildTagNames, generateTitle, getCompletedSteps) |
 | `claude-code/channels/invoice/intake-worker.ts` | Invoice + scan intake orchestrator (executeInvoiceIntake, executeScanIntake) |
 | `claude-code/channels/invoice/download-service.ts` | Download strategies: Outlook/Gmail attachments, link extraction, direct HTTP, GDrive |
-| `claude-code/channels/invoice/dedup-service.ts` | Duplicate detection (order_id + correspondent + amount comparison) |
+| `claude-code/channels/invoice/dedup-service.ts` | Duplicate detection (order_id + correspondent + amount comparison). Returns `force_refresh` outcome when an exact-amount duplicate is found AND the new email is strictly newer than the existing doc's source email (multi-stage vendor refresh, task 59). Date-aware comparison via `Date.parse` to tolerate the heterogeneous RFC 2822 / ISO 8601 timestamp formats the watchers store. |
 | `claude-code/channels/invoice/classification-state.ts` | parkForClassification helper — channel notification + requestClassification |
 | `claude-code/channels/invoice/postprocess-service.ts` | resolveCorrespondent, resolveTagIds, resolveDocumentTypeId, resolveStoragePathId, uploadToPaperless, setDocumentCustomFields, patchExistingDocument, moveGdriveFile, buildScanTitle |
 | `claude-code/channels/fuzzy-match.ts` | Jaro-Winkler fuzzy correspondent matching |
@@ -221,7 +221,7 @@ Deterministic job worker and pipeline orchestrator. Owns `executeInvoiceIntake` 
 9. set custom fields after consumption (poll task → PATCH → verify)
 10. send Telegram notification
 
-Step-level resume via `getCompletedSteps` — on retry, the worker skips already-completed steps. Approval gates for `browser_required` / `manual_review` / `duplicate_likely`. **Force reprocess:** when the job input has `force: true`, dedup hits do NOT short-circuit — the worker re-runs the full pipeline and PATCHes the existing Paperless doc in place (preserves doc id, PDF, OCR), producing the `refreshed` outcome.
+Step-level resume via `getCompletedSteps` — on retry, the worker skips already-completed steps. Approval gates for `browser_required` / `manual_review` / `duplicate_likely`. **Force reprocess:** when the job input has `force: true`, dedup hits do NOT short-circuit — the worker re-runs the full pipeline and PATCHes the existing Paperless doc in place (preserves doc id, PDF, OCR), producing the `refreshed` outcome. **Multi-stage vendor refresh (task 59):** the email pipeline also passes a `RefreshDecisionContext` to `dedup-service.checkDuplicate` carrying the new email's `received_at` plus a `getLatestReceivedAtForDoc` lookup against `workflow.db`. When dedup hits AND the new email is strictly newer than the existing doc's source email, dedup returns `outcome: "force_refresh"` and the same PATCH path fires — automatically, no operator interaction. Scan pipeline left unchanged; multi-stage refresh is email-driven only.
 
 ### claude-code/channels/paperless-adapter.ts (~485 lines)
 

@@ -30,6 +30,7 @@ import {
   completeJob,
   failJob,
   getJobEvents,
+  getLatestReceivedAtForDoc,
   parseJobJson,
   pauseForGuidance,
   recordDownloadedFile,
@@ -54,7 +55,11 @@ import {
   downloadFromGdrive as downloadFromGdriveImpl,
   type DownloadedFile as ServiceDownloadedFile,
 } from "./download-service";
-import { checkDuplicate as checkDuplicateImpl, type DedupeResult } from "./dedup-service";
+import {
+  checkDuplicate as checkDuplicateImpl,
+  type DedupeResult,
+  type RefreshDecisionContext,
+} from "./dedup-service";
 import { parkForClassification } from "./classification-state";
 import {
   buildScanTitle,
@@ -763,8 +768,14 @@ export async function executeInvoiceIntake(
       // worker captures forceTargetDocId and the upload step PATCHes the
       // existing Paperless document in place. This is the operator's path for
       // "reprocess this and update the doc with the new tags/title/period".
+      // Task 59: a `force_refresh` outcome from the dedup service triggers
+      // the same PATCH path automatically when a newer email for the same
+      // order arrives (multi-stage vendors like Alza).
       addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
-      const dedupeResult = await checkDuplicate(merged, correspondent, logger, registry);
+      const dedupeResult = await checkDuplicate(merged, correspondent, logger, registry, {
+        newReceivedAt: input.received_at ?? null,
+        lookupExistingReceivedAt: async (docId) => getLatestReceivedAtForDoc(db, docId),
+      });
       let forceTargetDocId: number | undefined;
       if (dedupeResult) {
         addJobEvent(db, job.id, "step_completed", {
@@ -772,9 +783,10 @@ export async function executeInvoiceIntake(
           ...dedupeResult,
         });
 
-        if (input.force) {
+        if (input.force || dedupeResult.outcome === "force_refresh") {
           forceTargetDocId = dedupeResult.existing_id;
-          logger.log(`force=true: will refresh existing doc #${forceTargetDocId} (${dedupeResult.outcome}) instead of skipping`);
+          const trigger = input.force ? "force=true" : "newer email arrived";
+          logger.log(`${trigger}: will refresh existing doc #${forceTargetDocId} (${dedupeResult.outcome}) instead of skipping`);
           span.setAttribute("invoice.force_refresh", true);
           span.setAttribute("invoice.force_target_doc_id", forceTargetDocId);
         } else if (dedupeResult.outcome === "duplicate") {
@@ -1012,8 +1024,16 @@ function checkDuplicate(
   correspondent: CorrespondentInfo,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
+  refreshCtx?: RefreshDecisionContext,
 ): Promise<DedupeResult | null> {
-  return checkDuplicateImpl(classification, correspondent, getPaperlessAdapter(registry), registry, logger);
+  return checkDuplicateImpl(
+    classification,
+    correspondent,
+    getPaperlessAdapter(registry),
+    registry,
+    logger,
+    refreshCtx,
+  );
 }
 
 function resolveTags(

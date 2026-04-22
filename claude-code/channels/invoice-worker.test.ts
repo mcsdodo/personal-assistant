@@ -18,6 +18,7 @@ import { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 import {
   addJobEvent,
+  completeJob,
   createJob,
   getJob,
   getJobEvents,
@@ -1395,6 +1396,61 @@ describe("invoice-worker force-refresh (email pipeline)", () => {
     const output = JSON.parse(updated.output_json!);
     expect(output.outcome).toBe("duplicate");
     expect(output.duplicate_of).toBe(411);
+  });
+
+  test("force=false + exact duplicate + newer email → automatic force_refresh (task 59)", async () => {
+    // Seed a prior completed job that uploaded doc 411 with an older source email.
+    // The dedup service will look this up via jobs.paperless_doc_id and compare
+    // received_at; the new email being newer triggers automatic PATCH-in-place.
+    const priorJob = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify({
+        email_source: "outlook",
+        message_id: "msg-prior",
+        received_at: "2026-04-19T08:00:00Z",
+      }),
+    });
+    completeJob(db, priorJob.id, {
+      outcome: "uploaded",
+      paperless_document_id: 411,
+    });
+
+    // New email for the same order, but later — should trigger force_refresh.
+    const input = makeInput({
+      force: false,
+      message_id: "msg-newer",
+      received_at: "2026-04-21T10:00:00Z",
+    });
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 512 }])),
+      () => jsonResponse(rpcResponse({ name: "inv.pdf", content_type: "application/pdf", size: 512, content_base64: "AA" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // dedup → exact duplicate (would short-circuit pre-task-59)
+      () => jsonResponse({ results: [{
+        id: 411,
+        title: "Alza - FA2026030001",
+        custom_fields: [{ field: 4, value: "FA2026030001" }, { field: 1, value: 59.99 }],
+      }] }),
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
+      // PATCH the existing doc — automatic refresh, no operator input
+      (url, init) => {
+        expect(url).toContain("/api/documents/411/");
+        expect(init?.method).toBe("PATCH");
+        return jsonResponse({ id: 411 });
+      },
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("refreshed");
+    expect(output.paperless_document_id).toBe(411);
   });
 });
 

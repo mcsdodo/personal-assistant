@@ -15,6 +15,7 @@ import {
   getJob,
   getJobByIdempotencyKey,
   getJobEvents,
+  getLatestReceivedAtForDoc,
   listJobs,
   openWorkflowDb,
   pauseForGuidance,
@@ -155,5 +156,141 @@ describe("workflow-db", () => {
     const payload = JSON.parse(guidanceEvent!.payload_json!);
     expect(payload.reason).toBe("classifier_unknown");
     expect(payload.missing_fields).toEqual(["owner"]);
+  });
+});
+
+describe("paperless_doc_id migration", () => {
+  test("adds paperless_doc_id column on fresh DB", () => {
+    const cols = db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>;
+    expect(cols.some((c) => c.name === "paperless_doc_id")).toBe(true);
+  });
+
+  test("creates index on paperless_doc_id", () => {
+    const indexes = db.prepare("PRAGMA index_list(jobs)").all() as Array<{ name: string }>;
+    expect(indexes.some((i) => i.name === "idx_jobs_paperless_doc_id")).toBe(true);
+  });
+
+  test("backfills paperless_doc_id from output_json on reopen", () => {
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    // Simulate a legacy completed job where output_json has the doc id but
+    // the new column wasn't populated at completion time.
+    db.prepare("UPDATE jobs SET output_json = ?, paperless_doc_id = NULL WHERE id = ?")
+      .run(JSON.stringify({ paperless_document_id: 411, outcome: "uploaded" }), job.id);
+
+    db.close();
+    db = openWorkflowDb(join(tmpDir, "workflow.db"));
+
+    const row = db.prepare("SELECT paperless_doc_id FROM jobs WHERE id = ?").get(job.id) as
+      | { paperless_doc_id: number | null }
+      | null;
+    expect(row?.paperless_doc_id).toBe(411);
+  });
+
+  test("leaves paperless_doc_id NULL when output_json lacks the field", () => {
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    db.prepare("UPDATE jobs SET output_json = ? WHERE id = ?")
+      .run(JSON.stringify({ outcome: "failed", error: "boom" }), job.id);
+
+    db.close();
+    db = openWorkflowDb(join(tmpDir, "workflow.db"));
+
+    const row = db.prepare("SELECT paperless_doc_id FROM jobs WHERE id = ?").get(job.id) as
+      | { paperless_doc_id: number | null }
+      | null;
+    expect(row?.paperless_doc_id).toBeNull();
+  });
+
+  test("idempotent: reopening the DB twice does not error", () => {
+    db.close();
+    db = openWorkflowDb(join(tmpDir, "workflow.db"));
+    db.close();
+    db = openWorkflowDb(join(tmpDir, "workflow.db"));
+    const cols = db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>;
+    expect(cols.filter((c) => c.name === "paperless_doc_id").length).toBe(1);
+  });
+});
+
+describe("completeJob writes paperless_doc_id column", () => {
+  function readDocId(jobId: string): number | null {
+    const row = db.prepare("SELECT paperless_doc_id FROM jobs WHERE id = ?").get(jobId) as
+      | { paperless_doc_id: number | null }
+      | null;
+    return row?.paperless_doc_id ?? null;
+  }
+
+  test("uploaded outcome populates paperless_doc_id from output.paperless_document_id", () => {
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    completeJob(db, job.id, { outcome: "uploaded", paperless_document_id: 412 });
+    expect(readDocId(job.id)).toBe(412);
+  });
+
+  test("refreshed outcome populates paperless_doc_id from output.paperless_document_id", () => {
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    completeJob(db, job.id, { outcome: "refreshed", paperless_document_id: 411 });
+    expect(readDocId(job.id)).toBe(411);
+  });
+
+  test("outcome without paperless_document_id leaves column NULL", () => {
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    completeJob(db, job.id, { outcome: "ignored" });
+    expect(readDocId(job.id)).toBeNull();
+  });
+
+  test("undefined output does not error and leaves column NULL", () => {
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    expect(() => completeJob(db, job.id)).not.toThrow();
+    expect(readDocId(job.id)).toBeNull();
+  });
+
+  test("ignores non-numeric paperless_document_id without throwing", () => {
+    const job = createJob(db, { workflowType: "invoice_intake" });
+    completeJob(db, job.id, { outcome: "uploaded", paperless_document_id: "not-a-number" });
+    expect(readDocId(job.id)).toBeNull();
+  });
+});
+
+describe("getLatestReceivedAtForDoc", () => {
+  test("returns null when no jobs reference the doc id", () => {
+    expect(getLatestReceivedAtForDoc(db, 999)).toBeNull();
+  });
+
+  test("returns received_at from the only job referencing the doc", () => {
+    const job = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify({ received_at: "2026-04-20T09:57:11Z" }),
+    });
+    completeJob(db, job.id, { outcome: "uploaded", paperless_document_id: 411 });
+    expect(getLatestReceivedAtForDoc(db, 411)).toBe("2026-04-20T09:57:11Z");
+  });
+
+  test("picks received_at from the most recently-created job for that doc", () => {
+    const older = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify({ received_at: "2026-04-20T09:57:11Z" }),
+    });
+    completeJob(db, older.id, { outcome: "uploaded", paperless_doc_id: 411 });
+
+    // SQLite's CURRENT_TIMESTAMP / nowIso() advances per call. Force a small
+    // gap to avoid identical created_at values.
+    const newer = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify({ received_at: "Wed, 22 Apr 2026 11:16:23 +0200" }),
+    });
+    db.prepare("UPDATE jobs SET created_at = ? WHERE id = ?").run(
+      new Date(Date.now() + 1000).toISOString(),
+      newer.id,
+    );
+    completeJob(db, newer.id, { outcome: "refreshed", paperless_document_id: 411 });
+
+    expect(getLatestReceivedAtForDoc(db, 411)).toBe("Wed, 22 Apr 2026 11:16:23 +0200");
+  });
+
+  test("returns null when input_json has no received_at field", () => {
+    const job = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify({ message_id: "x" }),
+    });
+    completeJob(db, job.id, { outcome: "uploaded", paperless_document_id: 411 });
+    expect(getLatestReceivedAtForDoc(db, 411)).toBeNull();
   });
 });

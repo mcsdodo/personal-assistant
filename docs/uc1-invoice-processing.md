@@ -602,6 +602,26 @@ This is the recommended way to push corrected metadata onto an already-uploaded 
 - [`invoice-worker.ts:393-440`](../claude-code/channels/invoice-worker.ts#L393) — dedup branch on `force` (email pipeline)
 - [`invoice-worker.ts:1430-1475`](../claude-code/channels/invoice-worker.ts#L1430) — same for scan pipeline
 
+### Multi-stage vendor email refresh (automatic, task 59)
+
+Some vendors send several emails per order. Alza, for example, ships `Už to chystáme.` → `Pripravené v AlzaBoxe` → `Odoslané` → `Doručené`, and every stage carries the same `Stiahnuť faktúru` link. Pre-task-59 dedup short-circuited everything after the first one (`outcome: duplicate`, silent skip), so a corrected invoice issued mid-lifecycle never landed in Paperless.
+
+The worker now treats a dedup hit on `order_id + correspondent + amount` as a question rather than a verdict: *"is the new email newer than the email that produced the doc currently in Paperless?"* If yes, the dedup service returns `outcome: force_refresh` and the worker runs the existing task-44 PATCH-in-place path automatically — no operator interaction. Doc id, PDF, OCR, page count, and thumbnail are preserved; only metadata changes.
+
+**How "newer" is determined:** every job records `paperless_document_id` into a new indexed `jobs.paperless_doc_id` column at completion time. The dedup service looks up the source-email `received_at` from the most recently-created job that touched the candidate doc id (`getLatestReceivedAtForDoc`), and compares against the new email's `received_at`. The comparison is **date-aware** (`Date.parse`-based) because the watchers store sender-controlled `Date:` headers in heterogeneous formats — RFC 2822 (`Tue, 14 Apr 2026 21:11:07 +0200`) for Gmail, ISO 8601 (`2026-04-20T08:00:00Z`) for Outlook. Lexical compare across these formats sorts wrong; the date-aware compare collapses to one canonical answer. If either side is unparseable, the worker treats it as "newer wins" so we refresh rather than silently skip a real update.
+
+**Pre-existing docs (no source-email history yet):** `getLatestReceivedAtForDoc` returns `null` when no jobs reference the doc id. That's treated as "newer wins", so the FIRST stage email for any pre-existing order after deploy triggers one PATCH. One-time backfill cost.
+
+**Out of scope (deferred to Phase 2 if real-world noise hurts):** PDF byte / text hash short-circuit to skip when the new download is byte-identical to what's already in Paperless. The Phase 1 always-PATCH approach is louder (one Telegram `🔄 refreshed` per stage email after the first) but correctness-first — if the vendor ever does change the PDF mid-lifecycle, we PATCH automatically; we don't need to predict vendor behavior. See [`_tasks/59-multi-stage-vendor-emails/02-design.md`](../../../_tasks/59-multi-stage-vendor-emails/02-design.md) for the verified Phase 2 hashing recipe and the trigger condition for picking it back up.
+
+**Code:**
+- [`workflow-db.ts:openWorkflowDb`](../claude-code/channels/workflow-db.ts) — adds `paperless_doc_id INTEGER` column + `idx_jobs_paperless_doc_id` index, backfills from existing `output_json.paperless_document_id`
+- [`workflow-db.ts:completeJob`](../claude-code/channels/workflow-db.ts) — mirrors `output.paperless_document_id` into the column on every completion
+- [`workflow-db.ts:getLatestReceivedAtForDoc`](../claude-code/channels/workflow-db.ts) — looks up source-email `received_at` for a given Paperless doc id (orders by `created_at` to avoid SQL `MAX` lex-compare on heterogeneous timestamps)
+- [`dedup-service.ts:checkDuplicate`](../claude-code/channels/invoice/dedup-service.ts) — accepts an optional `RefreshDecisionContext`, returns `outcome: "force_refresh"` when the new email is strictly newer than the existing doc's source email; defaults to current `duplicate` outcome otherwise
+- [`intake-worker.ts`](../claude-code/channels/invoice/intake-worker.ts) — invoice path passes the refresh context; `force_refresh` triggers the same `forceTargetDocId` capture as `input.force=true`, so the existing PATCH path takes over with no new branches
+- [`agents/email-classifier.md`](../claude-code/agents/email-classifier.md) — Alza order-lifecycle subject patterns (`Už to chystáme`, `Pripravené v AlzaBoxe`, `Odoslané`, `Doručené`, etc.) are now classified as invoices when a `Stiahnuť faktúru` link is present, instead of `ignore`
+
 ## Email Audit Trail
 
 Every email is tracked in SQLite from discovery to final outcome.

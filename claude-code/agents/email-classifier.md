@@ -58,6 +58,7 @@ These are patterns we've confirmed. For unknown vendors, use your judgment.
 - "Pripravené v AlzaBoxe / Obj. č. X" → invoice (final state, has "Stiahnuť faktúru" link)
 - "Vrátili sme vám X €" → credit note (has "Stiahnuť doklad" link)
 - "Informácie o prípade ASRE..." / "Potvrdenie o zaznamenaní..." → **ignore** (RMA, no invoice)
+- **Multi-stage order emails** (`Už to chystáme`, `Pripravené v AlzaBoxe`, `Pripravené v Alzaboxe`, `Odoslaná`, `Odoslané`, `Doručená`, `Doručené`, etc. — match on the order-lifecycle subject pattern, not an exhaustive word list): when the body contains a `Stiahnuť faktúru` link, classify as `is_invoice: true, action: "download_and_upload", download_strategy: "known_link"`. Each stage email may carry the same or an updated invoice for the same `order_id`; the worker dedups via `order_id + correspondent` and PATCHes the existing Paperless doc in place when a newer-stage email arrives (task 59). **Do not `ignore` Alza order-stage emails that have a `Stiahnuť faktúru` link.** Alza promo / newsletter emails (no `Stiahnuť faktúru` link) keep current `ignore` classification.
 
 **Other known vendors** (for reference, not exhaustive):
 | Vendor | Sender pattern | Typical subject |

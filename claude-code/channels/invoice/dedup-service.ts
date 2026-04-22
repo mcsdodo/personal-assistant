@@ -6,7 +6,13 @@
  * Paperless. The decision is:
  *
  *   - `null`              — no duplicate (or no order_id to check by)
- *   - `duplicate`         — exact match: same order_id, matching amount
+ *   - `duplicate`         — exact match: same order_id, matching amount,
+ *                            and the new email is not newer than the
+ *                            existing doc's source email (silent skip)
+ *   - `force_refresh`     — exact match, but the new email is newer than
+ *                            the existing doc's source email — caller
+ *                            should PATCH the existing doc in place
+ *                            (multi-stage vendor refresh, task 59)
  *   - `duplicate_likely`  — same order_id, different amount (operator should
  *                            confirm whether to upload)
  *
@@ -20,13 +26,40 @@ import type { PaperlessFieldRegistry } from "../paperless-fields";
 import { getTracer, withSpan } from "../tracing";
 
 export interface DedupeResult {
-  outcome: "duplicate" | "duplicate_likely";
+  outcome: "duplicate" | "duplicate_likely" | "force_refresh";
   existing_id: number;
   message: string;
 }
 
 export interface DedupeServiceLogger {
   log(message: string): void;
+}
+
+export interface RefreshDecisionContext {
+  /** received_at of the email that's about to be processed (any RFC 2822 or
+   * ISO 8601 string the watchers may have stored — see task 59 investigation
+   * for why these are heterogeneous). May be null for legacy/manual jobs. */
+  newReceivedAt: string | null;
+  /** Looks up the latest source-email received_at for an existing Paperless
+   * doc. Returns null when no jobs reference that doc id (treated as
+   * "newer wins"). */
+  lookupExistingReceivedAt: (existingDocId: number) => Promise<string | null>;
+}
+
+/** Date-aware comparison that tolerates the heterogeneous timestamp formats
+ * the email watchers store (raw `Date:` headers from senders, ISO 8601 from
+ * Outlook MCP, etc.). Lexical comparison would be wrong — see task 59. */
+function isStrictlyNewer(a: string | null, b: string | null): boolean {
+  if (a == null) return false;
+  if (b == null) return true;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) {
+    // Defensive: if either side is unparseable, treat as "newer wins" so the
+    // pipeline force-refreshes rather than silently skipping a real update.
+    return true;
+  }
+  return ta > tb;
 }
 
 const tracer = getTracer("invoice-worker");
@@ -42,6 +75,7 @@ export async function checkDuplicate(
   adapter: PaperlessAdapter,
   registry: PaperlessFieldRegistry,
   logger: DedupeServiceLogger,
+  refreshCtx?: RefreshDecisionContext,
 ): Promise<DedupeResult | null> {
   return withSpan(tracer, "invoice-worker.dedup", {
     "dedup.order_id": classification.order_id ?? "none",
@@ -88,6 +122,18 @@ export async function checkDuplicate(
             existing_id: doc.id,
             message: `Order ${classification.order_id} matches doc #${doc.id} "${doc.title}" but amount differs (${existingAmount} vs ${classification.total_amount})`,
           };
+        }
+
+        if (refreshCtx) {
+          const existingReceivedAt = await refreshCtx.lookupExistingReceivedAt(doc.id);
+          if (isStrictlyNewer(refreshCtx.newReceivedAt, existingReceivedAt)) {
+            span.setAttribute("dedup.outcome", "force_refresh");
+            return {
+              outcome: "force_refresh",
+              existing_id: doc.id,
+              message: `Order ${classification.order_id} matches doc #${doc.id} "${doc.title}" — newer email arrived (${refreshCtx.newReceivedAt} > ${existingReceivedAt ?? "unknown"}), refreshing in place`,
+            };
+          }
         }
 
         span.setAttribute("dedup.outcome", "duplicate");
