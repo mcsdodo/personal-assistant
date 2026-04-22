@@ -92,41 +92,60 @@ for i in $(seq 1 10); do
   sleep 1
 done
 
-# Verify all expected stdio channel subprocesses spawned.
-# Claude Code still has an occasional startup race where some channels fail
-# to spawn. Retry for up to 60s before giving up and triggering a container
-# restart via non-zero exit.
+# Verify stdio channel subprocesses spawned.
+#
+# Claude Code v2.1.92 has a race loading 9 MCP servers (5 stdio + 4 HTTP)
+# where one gets non-deterministically dropped. Session JSONL confirms the
+# dropped server's tools never appear in deferred_tools_delta — Claude Code
+# skips it entirely, not just delays it.
+#
+# To prevent an infinite restart loop, channels are split into two tiers:
+#   CRITICAL: email-watcher + workflow-mcp — the invoice pipeline is dead
+#             without these. Missing a critical channel → kill tmux → exit 1.
+#   BEST_EFFORT: gdrive-watcher, telegram, file-ops — important but the
+#                container should run without them. Missing → log WARN, not
+#                restart. The watchdog also uses these tiers.
 echo "Verifying stdio channels spawned..."
-EXPECTED_CHANNELS=(
+CRITICAL_CHANNELS=(
   "email-watcher.ts"
+  "workflow-mcp.ts"
+)
+BEST_EFFORT_CHANNELS=(
   "gdrive-watcher.ts"
   "telegram/server.ts"
   "file-ops.ts"
-  "workflow-mcp.ts"
 )
-CHANNELS_READY=false
-for attempt in $(seq 1 12); do
-  MISSING=()
-  for ch in "${EXPECTED_CHANNELS[@]}"; do
+ALL_CHANNELS=("${CRITICAL_CHANNELS[@]}" "${BEST_EFFORT_CHANNELS[@]}")
+
+CRITICAL_READY=false
+for attempt in $(seq 1 24); do
+  MISSING_CRITICAL=()
+  MISSING_BEST=()
+  for ch in "${CRITICAL_CHANNELS[@]}"; do
     if ! pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
-      MISSING+=("$ch")
+      MISSING_CRITICAL+=("$ch")
     fi
   done
-  if [ ${#MISSING[@]} -eq 0 ]; then
-    CHANNELS_READY=true
-    echo "All 5 stdio channels running (after ${attempt} checks)"
+  for ch in "${BEST_EFFORT_CHANNELS[@]}"; do
+    if ! pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
+      MISSING_BEST+=("$ch")
+    fi
+  done
+  if [ ${#MISSING_CRITICAL[@]} -eq 0 ]; then
+    CRITICAL_READY=true
+    total_running=$(( ${#ALL_CHANNELS[@]} - ${#MISSING_BEST[@]} ))
+    echo "Critical channels ready (after ${attempt} checks). ${total_running}/${#ALL_CHANNELS[@]} stdio channels running."
+    if [ ${#MISSING_BEST[@]} -gt 0 ]; then
+      echo "  WARN: best-effort channels not spawned: ${MISSING_BEST[*]}"
+      echo "  (Claude Code v2.1.92 MCP loading race — container continues without them)"
+    fi
     break
   fi
-  # Per-iteration log so the failure trace is unambiguous. The MISSING array
-  # is rebuilt every iteration, so the post-loop final value is a snapshot of
-  # the LAST attempt's missing channels — not necessarily the ones that
-  # blocked the loop. Logging every iteration gives the full timeline.
-  # See _tasks/47-pipeline-hardening-followups/ Issue 3 for the bug this fixes.
-  echo "  attempt ${attempt}/12: still missing: ${MISSING[*]}"
+  echo "  attempt ${attempt}/24: critical missing: ${MISSING_CRITICAL[*]}; best-effort missing: ${MISSING_BEST[*]}"
   sleep 5
 done
-if [ "$CHANNELS_READY" = "false" ]; then
-  echo "ERROR: Missing channel subprocesses after 60s — see per-attempt log above"
+if [ "$CRITICAL_READY" = "false" ]; then
+  echo "ERROR: Critical channels not spawned after 120s — see per-attempt log above"
   echo "Killing tmux session to trigger container restart..."
   tmux kill-server 2>/dev/null || true
   exit 1
@@ -160,13 +179,8 @@ echo "Use 'docker exec -it <container> tmux attach -t claude' to view."
 # Monitor tmux session + rate-limit watchdog + channel liveness (single loop)
 # - Exits if tmux session dies (Docker restart policy kicks in)
 # - Auto-dismisses rate limit TUI prompt so Claude can wait internally
-# - Periodically pgrep's the 5 expected stdio channels. If any channel has
-#   been missing for 2 consecutive ticks (~20s), exits non-zero to trigger
-#   Docker restart. The 2-tick debounce avoids false positives during a
-#   transient channel respawn.
-#   Catches the failure mode where one stdio subprocess dies post-startup
-#   (e.g. port 9465 collision killing email-watcher) while the rest of the
-#   container stays "healthy" and silently stops processing email.
+# - Periodically pgrep's stdio channels. CRITICAL channels trigger restart
+#   after 2 consecutive misses (~20s). BEST_EFFORT channels only log.
 #   See _tasks/47-pipeline-hardening-followups/ Issue 2 for the post-mortem.
 declare -A MISSING_COUNT
 while tmux has-session -t claude 2>/dev/null; do
@@ -177,17 +191,32 @@ while tmux has-session -t claude 2>/dev/null; do
     tmux send-keys -t claude Enter
   fi
 
-  for ch in "${EXPECTED_CHANNELS[@]}"; do
+  for ch in "${CRITICAL_CHANNELS[@]}"; do
     if pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
       MISSING_COUNT[$ch]=0
     else
       MISSING_COUNT[$ch]=$(( ${MISSING_COUNT[$ch]:-0} + 1 ))
       if [ "${MISSING_COUNT[$ch]}" -ge 2 ]; then
-        echo "[watchdog] FATAL: ${ch} missing for ${MISSING_COUNT[$ch]} consecutive checks — triggering container restart"
+        echo "[watchdog] FATAL: critical channel ${ch} missing for ${MISSING_COUNT[$ch]} consecutive checks — triggering container restart"
         tmux kill-server 2>/dev/null || true
         exit 1
       fi
-      echo "[watchdog] WARN: ${ch} missing (count=${MISSING_COUNT[$ch]}/2)"
+      echo "[watchdog] WARN: critical channel ${ch} missing (count=${MISSING_COUNT[$ch]}/2)"
+    fi
+  done
+
+  for ch in "${BEST_EFFORT_CHANNELS[@]}"; do
+    if pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
+      if [ "${MISSING_COUNT[$ch]:-0}" -gt 0 ]; then
+        echo "[watchdog] INFO: best-effort channel ${ch} recovered"
+      fi
+      MISSING_COUNT[$ch]=0
+    else
+      prev=${MISSING_COUNT[$ch]:-0}
+      MISSING_COUNT[$ch]=$(( prev + 1 ))
+      if [ "${MISSING_COUNT[$ch]}" -eq 1 ]; then
+        echo "[watchdog] WARN: best-effort channel ${ch} not running (Claude Code v2.1.92 MCP race — not restarting)"
+      fi
     fi
   done
 
