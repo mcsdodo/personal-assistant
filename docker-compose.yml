@@ -4,7 +4,7 @@ services:
     build:
       context: ./claude-code
       args:
-        CLAUDE_CODE_VERSION: 2.1.92
+        CLAUDE_CODE_VERSION: 2.1.117
     container_name: personal-assistant-claude
     restart: unless-stopped
     labels:

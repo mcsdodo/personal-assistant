@@ -1,6 +1,6 @@
 FROM node:20-slim
 
-ARG CLAUDE_CODE_VERSION=2.1.92
+ARG CLAUDE_CODE_VERSION=2.1.117
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   git curl unzip jq procps ca-certificates tmux qpdf \
