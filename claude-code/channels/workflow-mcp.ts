@@ -206,6 +206,11 @@ async function workerTick(): Promise<void> {
 //   * TIMEOUT_HOURS  (72h): give up — fail the job with a `timed_out`
 //     error so the queue doesn't leak paused jobs indefinitely.
 //
+// The reminder is rate-limited per job via `last_reminder_at` so the
+// 60s sweep tick doesn't spam Telegram. Without the cooldown, every
+// tick re-fired the same nudge as long as a job sat in the 24h–72h
+// window.
+//
 // Timestamps are compared using ISO 8601 bound as a parameter. Do NOT
 // use `datetime('now', '-N hours')` inline in SQL — production writes
 // `updated_at` via `nowIso()` and the two formats are not string-
@@ -213,6 +218,7 @@ async function workerTick(): Promise<void> {
 
 export const GUIDANCE_REMINDER_HOURS = 24;
 export const GUIDANCE_TIMEOUT_HOURS = 72;
+export const GUIDANCE_REMINDER_COOLDOWN_HOURS = 6;
 
 export function sweepStaleGuidance(
   dbInstance: import("bun:sqlite").Database,
@@ -224,6 +230,9 @@ export function sweepStaleGuidance(
   ).toISOString();
   const timeoutCutoffIso = new Date(
     now - GUIDANCE_TIMEOUT_HOURS * 3600 * 1000,
+  ).toISOString();
+  const cooldownCutoffIso = new Date(
+    now - GUIDANCE_REMINDER_COOLDOWN_HOURS * 3600 * 1000,
   ).toISOString();
 
   // Tier 1: timeout — fail jobs parked > 72h.
@@ -241,21 +250,27 @@ export function sweepStaleGuidance(
     });
   }
 
-  // Tier 2: reminder — nudge for jobs in the 24h–72h window. Only the
-  // paused jobs that are NOT yet old enough to time out count here.
+  // Tier 2: reminder — nudge for jobs in the 24h–72h window that
+  // haven't already been nudged in the last cooldown window.
   const needsReminder = dbInstance
     .prepare(
       `SELECT * FROM jobs
        WHERE state = 'awaiting_user_guidance'
          AND updated_at < ?
-         AND updated_at >= ?`,
+         AND updated_at >= ?
+         AND (last_reminder_at IS NULL OR last_reminder_at < ?)`,
     )
-    .all(reminderCutoffIso, timeoutCutoffIso) as JobRow[];
+    .all(reminderCutoffIso, timeoutCutoffIso, cooldownCutoffIso) as JobRow[];
   if (needsReminder.length > 0) {
     const remainingH = GUIDANCE_TIMEOUT_HOURS - GUIDANCE_REMINDER_HOURS;
     void notifyFn(
       `⏰ ${needsReminder.length} job(s) awaiting your guidance — auto-cancel in ${remainingH}h.`,
     );
+    const stampIso = new Date(now).toISOString();
+    const placeholders = needsReminder.map(() => "?").join(",");
+    dbInstance
+      .prepare(`UPDATE jobs SET last_reminder_at = ? WHERE id IN (${placeholders})`)
+      .run(stampIso, ...needsReminder.map((j) => j.id));
   }
 }
 

@@ -42,6 +42,7 @@ export interface JobRow {
   retry_count: number;
   scheduled_at: string | null;
   trace_id: string | null;
+  last_reminder_at: string | null;
 }
 
 export interface JobEventRow {
@@ -105,6 +106,7 @@ export function openWorkflowDb(path: string): Database {
   try { db.exec("ALTER TABLE jobs ADD COLUMN scheduled_at TEXT"); } catch {}
   try { db.exec("ALTER TABLE jobs ADD COLUMN trace_id TEXT"); } catch {}
   try { db.exec("ALTER TABLE jobs ADD COLUMN paperless_doc_id INTEGER"); } catch {}
+  try { db.exec("ALTER TABLE jobs ADD COLUMN last_reminder_at TEXT"); } catch {}
   db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_retryable ON jobs(state, scheduled_at)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_paperless_doc_id ON jobs(paperless_doc_id)");
   // Backfill from the established output field name `paperless_document_id`

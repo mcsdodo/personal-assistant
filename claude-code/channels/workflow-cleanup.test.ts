@@ -261,6 +261,11 @@ function backdateUpdatedAt(jobId: string, hoursAgo: number): void {
   db.prepare("UPDATE jobs SET updated_at = ? WHERE id = ?").run(iso, jobId);
 }
 
+function backdateLastReminderAt(jobId: string, hoursAgo: number): void {
+  const iso = new Date(Date.now() - hoursAgo * 3600 * 1000).toISOString();
+  db.prepare("UPDATE jobs SET last_reminder_at = ? WHERE id = ?").run(iso, jobId);
+}
+
 function makePausedJob(): string {
   const job = createJob(db, { workflowType: "invoice_intake", inputJson: "{}" });
   pauseForGuidance(db, job.id, {
@@ -361,5 +366,59 @@ describe("sweepStaleGuidance", () => {
 
     expect(getJob(db, queued.id)!.state).toBe("queued");
     expect(notifyCalls).toHaveLength(0);
+  });
+
+  // Cooldown: once a reminder is sent for a stuck job, don't re-notify
+  // for 6h. Without this, the 60s sweep tick spammed the user every
+  // minute as soon as any job crossed the 24h reminder threshold.
+  test("does not re-notify within the 6h cooldown after sending a reminder", () => {
+    const jobId = makePausedJob();
+    backdateUpdatedAt(jobId, 25);
+
+    const notifyCalls: string[] = [];
+    const notifyFn = async (msg: string) => {
+      notifyCalls.push(msg);
+    };
+
+    // First sweep — sends the reminder and stamps last_reminder_at.
+    sweepStaleGuidance(db, notifyFn);
+    expect(notifyCalls).toHaveLength(1);
+
+    // Second sweep, immediately after — should NOT re-notify.
+    sweepStaleGuidance(db, notifyFn);
+    expect(notifyCalls).toHaveLength(1);
+  });
+
+  test("re-notifies after the 6h cooldown elapses", () => {
+    const jobId = makePausedJob();
+    backdateUpdatedAt(jobId, 30);
+    // Simulate a reminder sent 7h ago — past the 6h cooldown.
+    backdateLastReminderAt(jobId, 7);
+
+    const notifyCalls: string[] = [];
+    const notifyFn = async (msg: string) => {
+      notifyCalls.push(msg);
+    };
+    sweepStaleGuidance(db, notifyFn);
+
+    expect(notifyCalls).toHaveLength(1);
+    expect(notifyCalls[0]).toContain("1 job(s) awaiting your guidance");
+  });
+
+  test("stamps last_reminder_at on each job that was nudged", () => {
+    const jobId = makePausedJob();
+    backdateUpdatedAt(jobId, 25);
+
+    const before = getJob(db, jobId)!;
+    expect(before.last_reminder_at).toBeNull();
+
+    const notifyFn = async () => {};
+    sweepStaleGuidance(db, notifyFn);
+
+    const after = getJob(db, jobId)!;
+    expect(after.last_reminder_at).not.toBeNull();
+    // Stamp should be recent (within the last few seconds).
+    const ageMs = Date.now() - new Date(after.last_reminder_at!).getTime();
+    expect(ageMs).toBeLessThan(5_000);
   });
 });

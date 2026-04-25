@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-25 — Stale-Guidance Reminder Cooldown
+
+### Fixed
+- **Telegram spammed `⏰ N job(s) awaiting your guidance — auto-cancel in 48h.` every minute** once any paused job crossed the 24h reminder threshold. The 60s sweep had no per-job rate limit, so the same nudge re-fired on every tick until the job was resolved or auto-failed at 72h. Now stamps `last_reminder_at` after each nudge and skips jobs that were already reminded within `GUIDANCE_REMINDER_COOLDOWN_HOURS` (6h).
+
 ## 2026-04-22 — Multi-Stage Vendor Emails (Newer Email Auto-Refreshes Paperless)
 
 ### Added

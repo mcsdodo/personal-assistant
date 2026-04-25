@@ -332,14 +332,14 @@ The user resumes the job with `provide_guidance(job_id, guidance)`:
 
 Routing of free-form Telegram replies into `provide_guidance` calls happens in the Claude session; see `claude-code/CLAUDE.md` section "Guidance routing for paused jobs" for the stack-discipline rule (if exactly one job is paused, the next non-command Telegram message targets it) and for the slash-command / NL parsing rules.
 
-**Stale guidance sweep.** `sweepStaleGuidance` runs on every worker tick: at 24h it nudges the operator with a Telegram reminder, at 72h it auto-fails the job with `code: "timed_out"`. Tunables: `GUIDANCE_REMINDER_HOURS`, `GUIDANCE_TIMEOUT_HOURS` in `workflow-mcp.ts`.
+**Stale guidance sweep.** `sweepStaleGuidance` runs on a 60s `setInterval`: at 24h it nudges the operator with a Telegram reminder, at 72h it auto-fails the job with `code: "timed_out"`. The 24h reminder is rate-limited per job — once a nudge fires, `last_reminder_at` is stamped and the same job won't be re-notified for at least `GUIDANCE_REMINDER_COOLDOWN_HOURS` (6h). Without this cooldown the 60s tick spammed Telegram every minute as soon as any job crossed the 24h threshold. Tunables: `GUIDANCE_REMINDER_HOURS`, `GUIDANCE_TIMEOUT_HOURS`, `GUIDANCE_REMINDER_COOLDOWN_HOURS` in `workflow-mcp.ts`.
 
 **Observability.** `personal_assistant_guidance_requests_total{reason}` counter, Loki events `guidance.requested` / `guidance.received` / `guidance.applied`, and a stacked-bar Grafana panel (id 41) track the pause volume by reason.
 
 **Code:**
 - [`workflow-db.ts:387-423`](../claude-code/channels/workflow-db.ts#L387) — `GuidanceRequestPayload` type + `pauseForGuidance` helper
 - [`workflow-mcp.ts:85-187`](../claude-code/channels/workflow-mcp.ts#L85) — `Guidance` type + `handleProvideGuidance` (and the `provide_guidance` MCP tool registration further down)
-- [`workflow-mcp.ts:217-259`](../claude-code/channels/workflow-mcp.ts#L217) — `sweepStaleGuidance` (72h auto-cancel + 24h reminder)
+- [`workflow-mcp.ts:223-275`](../claude-code/channels/workflow-mcp.ts#L223) — `sweepStaleGuidance` (72h auto-cancel + 24h reminder, 6h per-job cooldown)
 - [`invoice/intake-worker.ts:387-616`](../claude-code/channels/invoice/intake-worker.ts#L387) — `pauseAndNotify` + Trigger A / B call sites (both intake paths)
 - [`telegram-notify.ts`](../claude-code/channels/telegram-notify.ts) — `formatGuidanceRequest` + `buildGuidanceReplyMarkup`
 - [`claude-code/CLAUDE.md`](../claude-code/CLAUDE.md) — "Guidance routing for paused jobs" (stack-discipline + slash commands + free-form parsing)
