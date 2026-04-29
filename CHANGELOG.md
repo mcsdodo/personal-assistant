@@ -4,6 +4,17 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-29 — Doc ID Resolution + Encrypted-PDF Patch Resume
+
+### Fixed
+- **`paperless_document_id` was missing from the worker's `output_json`** because `intake-worker.ts` read `uploadResult.document_id`, but `UploadResult` only carries `task_uuid` (the doc id is resolved later by `waitForConsumption`). Multi-stage vendor refresh broke when reading the field downstream — the failing assertion was the signal. Now always invokes `setDocumentCustomFields` after upload — it already calls `waitForConsumption` and returns `doc_id` even when no custom fields need to be set. Captured as `finalDocId` on both the email and scan paths.
+
+### Added
+- **Encrypted-PDF + operator patch with `owner` + `doc_type` now resumes to upload** instead of re-pausing every cycle. The encrypted-PDF pause's `suggested_actions` already advertises `set:owner=...,doc_type=...` as a valid choice; the worker now honours it — when an unconsumed `guidance_applied(action=patch)` carries both fields, step 1.3 skips the re-pause and synthesises a `step_completed` for `classify_document` so the normal merge/upload path applies the patch. Account statements that can't be decrypted finally land in Paperless with manual classification.
+
+### Notes
+- E2E `tests/helpers.py` aligned with real channel architecture — phantom `workflow-bridge.ts`, `pa-worker`, `pa-email-watcher`, `pa-gdrive-watcher` references replaced with `workflow-mcp.ts` + single `claude-code` service (the watchers and worker are stdio child processes of claude-code, not separate containers). Gate-32 suite (6 tests) now runs 6/6 green in ~12 minutes.
+
 ## 2026-04-25 — Stale-Guidance Reminder Cooldown
 
 ### Fixed
