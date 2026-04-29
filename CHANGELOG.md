@@ -4,6 +4,14 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-29 — Healthcheck pgrep Self-Match + Best-Effort Self-Recovery
+
+### Fixed
+- **Docker healthcheck `pgrep -f "bun run.*<channel>.ts"` always returned 0** because CMD-SHELL passes the literal command string to `sh -c`, so the parent sh's `/proc/self/cmdline` contains the pattern verbatim and pgrep matches itself. Net effect: the healthcheck was effectively `tmux + curl :9465` only — channel-process checks were silent no-ops, and the container stayed `health=healthy` while gdrive-watcher (or any other channel) was actually dead. Anchored with `^bun run /app/channels/<channel>\.ts` so only the real channel processes match.
+
+### Added
+- **Best-effort channel self-recovery loop in `entrypoint.sh`** — when gdrive-watcher / telegram / file-ops loses to the v2.1.x MCP-spawn race, the watchdog now triggers a container restart after a 3-min grace period to re-roll the race, bounded to 3 attempts per channel with exponential backoff (60s / 120s / 240s) between attempts. Recovery state in `/tmp/best_effort_recovery/` survives `docker restart` but is wiped on `docker rm`, so each fresh deploy resets the budget. Counter resets if the channel comes back on its own. Critical channels (email-watcher, workflow-mcp) keep their original 2-strike fast-restart behaviour.
+
 ## 2026-04-29 — Doc ID Resolution + Encrypted-PDF Patch Resume
 
 ### Fixed
