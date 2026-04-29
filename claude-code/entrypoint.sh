@@ -125,12 +125,12 @@ for attempt in $(seq 1 60); do
   MISSING_CRITICAL=()
   MISSING_BEST=()
   for ch in "${CRITICAL_CHANNELS[@]}"; do
-    if ! pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
+    if ! pgrep -f "^bun run /app/channels/${ch}" >/dev/null 2>&1; then
       MISSING_CRITICAL+=("$ch")
     fi
   done
   for ch in "${BEST_EFFORT_CHANNELS[@]}"; do
-    if ! pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
+    if ! pgrep -f "^bun run /app/channels/${ch}" >/dev/null 2>&1; then
       MISSING_BEST+=("$ch")
     fi
   done
@@ -185,8 +185,18 @@ echo "Use 'docker exec -it <container> tmux attach -t claude' to view."
 # - Exits if tmux session dies (Docker restart policy kicks in)
 # - Auto-dismisses rate limit TUI prompt so Claude can wait internally
 # - Periodically pgrep's stdio channels. CRITICAL channels trigger restart
-#   after 2 consecutive misses (~20s). BEST_EFFORT channels only log.
+#   after 2 consecutive misses (~20s). BEST_EFFORT channels get a bounded
+#   self-recovery loop: after a 3-min grace period, restart the container
+#   to re-roll the v2.1.x MCP-spawn race; max 3 attempts per channel with
+#   exponential backoff (60s / 120s / 240s) between attempts. Recovery
+#   state lives in BEST_EFFORT_STATE_DIR which survives `docker restart`
+#   but gets wiped on `docker rm` — so a fresh deploy resets the budget.
 #   See _tasks/47-pipeline-hardening-followups/ Issue 2 for the post-mortem.
+BEST_EFFORT_STATE_DIR=/tmp/best_effort_recovery
+BEST_EFFORT_GRACE_CHECKS=18   # 18 * 10s = 180s before considering restart
+BEST_EFFORT_MAX_RESTARTS=3
+mkdir -p "$BEST_EFFORT_STATE_DIR"
+
 declare -A MISSING_COUNT
 while tmux has-session -t claude 2>/dev/null; do
   pane_text=$(tmux capture-pane -t claude -p -S -15 2>/dev/null || true)
@@ -197,7 +207,7 @@ while tmux has-session -t claude 2>/dev/null; do
   fi
 
   for ch in "${CRITICAL_CHANNELS[@]}"; do
-    if pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
+    if pgrep -f "^bun run /app/channels/${ch}" >/dev/null 2>&1; then
       MISSING_COUNT[$ch]=0
     else
       MISSING_COUNT[$ch]=$(( ${MISSING_COUNT[$ch]:-0} + 1 ))
@@ -211,16 +221,53 @@ while tmux has-session -t claude 2>/dev/null; do
   done
 
   for ch in "${BEST_EFFORT_CHANNELS[@]}"; do
-    if pgrep -f "bun run.*${ch}" >/dev/null 2>&1; then
+    ch_safe=${ch//\//_}
+    count_file="$BEST_EFFORT_STATE_DIR/${ch_safe}.count"
+    ts_file="$BEST_EFFORT_STATE_DIR/${ch_safe}.ts"
+
+    if pgrep -f "^bun run /app/channels/${ch}" >/dev/null 2>&1; then
       if [ "${MISSING_COUNT[$ch]:-0}" -gt 0 ]; then
-        echo "[watchdog] INFO: best-effort channel ${ch} recovered"
+        echo "[watchdog] INFO: best-effort channel ${ch} recovered, resetting recovery counter"
+        rm -f "$count_file" "$ts_file"
       fi
       MISSING_COUNT[$ch]=0
     else
       prev=${MISSING_COUNT[$ch]:-0}
       MISSING_COUNT[$ch]=$(( prev + 1 ))
       if [ "${MISSING_COUNT[$ch]}" -eq 1 ]; then
-        echo "[watchdog] WARN: best-effort channel ${ch} not running (Claude Code v2.1.92 MCP race — not restarting)"
+        echo "[watchdog] WARN: best-effort channel ${ch} not running (Claude Code v2.1.x MCP race — entering recovery loop)"
+      fi
+
+      if [ "${MISSING_COUNT[$ch]}" -ge "$BEST_EFFORT_GRACE_CHECKS" ]; then
+        restart_count=$(cat "$count_file" 2>/dev/null || echo 0)
+
+        if [ "$restart_count" -ge "$BEST_EFFORT_MAX_RESTARTS" ]; then
+          # Budget exhausted. Log occasionally so the situation is visible
+          # but don't spam — every 30 checks (5 min) is enough.
+          if [ $(( MISSING_COUNT[$ch] % 30 )) -eq 0 ]; then
+            echo "[watchdog] WARN: best-effort channel ${ch} still missing — ${restart_count}/${BEST_EFFORT_MAX_RESTARTS} restart attempts exhausted, manual intervention or redeploy required"
+          fi
+        else
+          # Backoff: 60s before attempt 1, 120s before attempt 2, 240s before attempt 3
+          backoff_sec=$(( 60 * (1 << restart_count) ))
+          last_ts=$(cat "$ts_file" 2>/dev/null || echo 0)
+          now=$(date +%s)
+          elapsed=$(( now - last_ts ))
+
+          if [ "$elapsed" -ge "$backoff_sec" ]; then
+            new_count=$(( restart_count + 1 ))
+            echo "$new_count" > "$count_file"
+            echo "$now" > "$ts_file"
+            echo "[watchdog] FATAL: best-effort channel ${ch} missing for ${MISSING_COUNT[$ch]} checks (~$((MISSING_COUNT[$ch]*10))s) — recovery restart attempt ${new_count}/${BEST_EFFORT_MAX_RESTARTS} (next backoff if needed: $((60 * (1 << new_count)))s)"
+            tmux kill-server 2>/dev/null || true
+            exit 1
+          fi
+          # Still in backoff window — log once when entering it
+          if [ "${MISSING_COUNT[$ch]}" -eq "$BEST_EFFORT_GRACE_CHECKS" ]; then
+            remaining=$(( backoff_sec - elapsed ))
+            echo "[watchdog] WARN: best-effort channel ${ch} missing for grace period — recovery restart attempt $((restart_count + 1))/${BEST_EFFORT_MAX_RESTARTS} pending in ${remaining}s (backoff)"
+          fi
+        fi
       fi
     fi
   done

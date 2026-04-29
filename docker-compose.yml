@@ -33,9 +33,9 @@ services:
         - >-
           tmux has-session -t claude 2>/dev/null &&
           curl -sf http://localhost:9465/health > /dev/null &&
-          pgrep -f "bun run.*email-watcher.ts" > /dev/null &&
-          pgrep -f "bun run.*gdrive-watcher.ts" > /dev/null &&
-          pgrep -f "bun run.*workflow-mcp.ts" > /dev/null
+          pgrep -f "^bun run /app/channels/email-watcher\.ts" > /dev/null &&
+          pgrep -f "^bun run /app/channels/gdrive-watcher\.ts" > /dev/null &&
+          pgrep -f "^bun run /app/channels/workflow-mcp\.ts" > /dev/null
       interval: 30s
       timeout: 10s
       retries: 3
