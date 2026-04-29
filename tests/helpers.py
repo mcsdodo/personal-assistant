@@ -8,6 +8,8 @@ from __future__ import annotations
 import base64
 import mimetypes
 import os
+import socket
+import ssl
 import subprocess
 import time
 from dataclasses import dataclass
@@ -17,8 +19,49 @@ from email.mime.text import MIMEText
 from email import encoders
 from email.utils import formatdate
 from pathlib import Path
+from typing import Callable, TypeVar
 
 import requests
+
+T = TypeVar("T")
+
+_NETWORK_RETRY_EXCEPTIONS = (
+    ConnectionAbortedError,
+    ConnectionResetError,
+    ConnectionRefusedError,
+    ssl.SSLError,
+    socket.timeout,
+    TimeoutError,
+)
+
+
+def _retry_on_network_error(
+    fn: Callable[[], T],
+    *,
+    max_attempts: int = 3,
+    base_delay: float = 2.0,
+) -> T:
+    """Run `fn` and retry on transient network exceptions with exponential backoff.
+
+    Used to wrap Gmail API calls because gmail.googleapis.com sometimes aborts
+    TLS connections mid-request from this dev box (intermittent, observed
+    during gate-32 pytest runs). The error is environmental, not a pipeline
+    bug — bounded retry is enough to ride it out.
+
+    Re-raises the last network exception after `max_attempts`.
+    Non-network exceptions propagate immediately on the first occurrence.
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except _NETWORK_RETRY_EXCEPTIONS as exc:
+            last_exc = exc
+            if attempt == max_attempts:
+                break
+            time.sleep(base_delay * (2 ** (attempt - 1)))
+    assert last_exc is not None
+    raise last_exc
 
 # ---------------------------------------------------------------------------
 # Paths & constants
@@ -140,8 +183,8 @@ def send_email(
     msg["Date"] = formatdate(localtime=True)
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-    result = (
-        gmail_service()
+    result = _retry_on_network_error(
+        lambda: gmail_service()
         .users()
         .messages()
         .send(userId="me", body={"raw": raw})
@@ -161,8 +204,8 @@ def send_html_email(to: str, subject: str, html: str, text: str) -> str:
     msg.attach(MIMEText(html, "html", "utf-8"))
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-    result = (
-        gmail_service()
+    result = _retry_on_network_error(
+        lambda: gmail_service()
         .users()
         .messages()
         .send(userId="me", body={"raw": raw})
@@ -268,6 +311,46 @@ def paperless_find_by_title_full(substring: str) -> dict | None:
                 "storage_path_name": storage_paths.get(d.get("storage_path")),
             }
     return None
+
+
+def paperless_get_by_id(doc_id: int) -> dict | None:
+    """Fetch a Paperless document by id and return the same enriched shape
+    as `paperless_find_by_title_full` (raw fields + resolved
+    correspondent_name / tag_names / document_type_name / storage_path_name).
+
+    Use this when the test already knows the doc id from the worker output;
+    it's stable against title-generation changes that would break a
+    title-substring lookup.
+    """
+    r = requests.get(
+        f"{PAPERLESS_URL}/documents/{doc_id}/",
+        headers=_paperless_headers(),
+        timeout=10,
+    )
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    d = r.json()
+    correspondents = {
+        c["id"]: c["name"]
+        for c in paperless_get("correspondents", page_size=100)["results"]
+    }
+    tags = {t["id"]: t["name"] for t in paperless_get("tags", page_size=100)["results"]}
+    doc_types = {
+        dt["id"]: dt["name"]
+        for dt in paperless_get("document_types", page_size=100)["results"]
+    }
+    storage_paths = {
+        sp["id"]: sp["name"]
+        for sp in paperless_get("storage_paths", page_size=100)["results"]
+    }
+    return {
+        **d,
+        "correspondent_name": correspondents.get(d.get("correspondent")),
+        "tag_names": sorted(tags.get(t, str(t)) for t in d.get("tags", [])),
+        "document_type_name": doc_types.get(d.get("document_type")),
+        "storage_path_name": storage_paths.get(d.get("storage_path")),
+    }
 
 
 def paperless_wipe():
@@ -477,18 +560,18 @@ def get_job_events(job_id: str) -> list[dict]:
 def call_provide_guidance(job_id: str, guidance: dict) -> None:
     """Simulate a `provide_guidance` MCP tool call against a paused job.
 
-    The workflow MCP is a stdio channel (no HTTP endpoint), so tests can't
-    hit it via `requests`. Instead we exec a bun one-liner inside the
-    `personal-assistant-claude` container that imports the exported
-    `handleProvideGuidance` from `/app/channels/workflow-mcp.ts` and
-    invokes it against the live `workflow.db`. This matches the side
+    The workflow channel is a stdio MCP server (no HTTP endpoint), so
+    tests can't hit it via `requests`. Instead we exec a bun one-liner
+    inside the `personal-assistant-claude` container that imports the
+    exported `handleProvideGuidance` from `/app/channels/workflow-mcp.ts`
+    and invokes it against the live `workflow.db`. This matches the side
     effects the real MCP tool would produce (adds `guidance_applied`
     event, flips job state from `awaiting_user_guidance` → `queued`,
     stores any `decrypt_password` under a separate `guidance_password`
     event so passwords don't leak into regular audit logs).
 
-    The worker's next `workerTick()` picks up the requeued job and
-    resumes the pipeline.
+    The workflow worker's next `workerTick()` picks up the requeued job
+    and resumes the pipeline.
     """
     import json
     import shlex
@@ -550,23 +633,32 @@ def call_provide_guidance(job_id: str, guidance: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Pipeline containers that must be stopped together to safely wipe shared
+# DBs. The watchers (email-watcher, gdrive-watcher) and worker (workflow-mcp)
+# are stdio child processes of claude-code, so stopping claude-code stops
+# all of them. workflow.db, emails.db, and gdrive.db are then safe to wipe.
+PIPELINE_SERVICES = ("claude-code",)
+
+
 def stop_claude():
-    """Stop the claude-code container."""
+    """Stop all pipeline containers (claude + worker + watchers)."""
+    services = " ".join(PIPELINE_SERVICES)
     subprocess.run(
-        f"cd {PA_STACK} && {COMPOSE_CMD} stop claude-code",
+        f"cd {PA_STACK} && {COMPOSE_CMD} stop {services}",
         shell=True,
         capture_output=True,
-        timeout=60,
+        timeout=120,
     )
 
 
 def start_claude():
-    """Start the claude-code container."""
+    """Start all pipeline containers (claude + worker + watchers)."""
+    services = " ".join(PIPELINE_SERVICES)
     subprocess.run(
-        f"cd {PA_STACK} && {COMPOSE_CMD} start claude-code",
+        f"cd {PA_STACK} && {COMPOSE_CMD} start {services}",
         shell=True,
         capture_output=True,
-        timeout=60,
+        timeout=120,
     )
 
 
@@ -584,8 +676,14 @@ def clear_dbs():
         f.unlink(missing_ok=True)
 
 
-def wait_healthy(timeout: int = 90):
-    """Wait for the email-watcher health endpoint."""
+def wait_healthy(timeout: int = 180):
+    """Wait for the email-watcher health endpoint (port 9465 on claude-code).
+
+    Default 180s because after `stop_claude → start_claude` the container
+    needs to start, MCPs to connect, and the watcher to complete its first
+    poll before /health flips to 200. 90s was tight enough to flake when a
+    test fired after another long-running one.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -595,24 +693,25 @@ def wait_healthy(timeout: int = 90):
         except requests.ConnectionError:
             pass
         time.sleep(5)
-    raise TimeoutError(f"Container not healthy within {timeout}s")
+    raise TimeoutError(f"email-watcher not healthy within {timeout}s")
 
 
-def wait_claude_ready(timeout: int = 180):
-    """Wait until the claude-code container reports `healthy` AND all 5 stdio
-    channel subprocesses are spawned. The :9465 health endpoint only verifies
-    email-watcher is up — Claude itself can still be in the middle of its
-    startup race (Claude Code v2.1.92 sometimes flaps stdio MCP spawns).
-    Without this extra wait, channel notifications pushed by workflow-mcp can
-    be dropped because Claude isn't yet attached to the workflow stdio MCP.
+def wait_claude_ready(timeout: int = 1500):
+    """Wait until the claude-code container reports `healthy` AND the
+    CRITICAL stdio channels (workflow-mcp.ts, email-watcher.ts) are
+    spawned — mirroring entrypoint.sh CRITICAL_CHANNELS. The remaining
+    channels (gdrive-watcher, telegram, file-ops) are BEST_EFFORT: the
+    Claude Code v2.1.x MCP-spawn race occasionally drops one of them,
+    and the in-container watchdog logs a WARN but does NOT restart on
+    best-effort misses. The pytest fixture follows the same contract.
+
+    Default timeout 1500s: Claude Code v2.1.x can take 160-300s to
+    spawn stdio MCP subprocesses on a cold start, and on bad cold
+    starts the entrypoint times out, kills tmux, Docker restarts the
+    container. 1500s covers ~5 entrypoint cycles end-to-end.
     """
-    expected_channels = (
-        "email-watcher.ts",
-        "gdrive-watcher.ts",
-        "workflow-mcp.ts",
-        "telegram/server.ts",
-        "file-ops.ts",
-    )
+    expected_channels = ("workflow-mcp.ts", "email-watcher.ts")
+    best_effort_channels = ("gdrive-watcher.ts", "telegram/server.ts", "file-ops.ts")
     deadline = time.time() + timeout
     missing: list[str] = list(expected_channels)
     while time.time() < deadline:
@@ -630,7 +729,7 @@ def wait_claude_ready(timeout: int = 180):
             health = ""
 
         if health == "healthy":
-            # 2. all 5 stdio channel subprocesses spawned.
+            # 2. all 3 stdio channel subprocesses spawned.
             try:
                 res = subprocess.run(
                     [
@@ -647,10 +746,16 @@ def wait_claude_ready(timeout: int = 180):
                 )
                 cmdlines = res.stdout.decode("utf-8", errors="replace")
                 missing = [c for c in expected_channels if c not in cmdlines]
+                missing_best_effort = [c for c in best_effort_channels if c not in cmdlines]
                 if not missing:
-                    # 3. give the workflow stdio MCP an extra moment to attach
-                    #    its notification handler so an early channel push
-                    #    doesn't get dropped.
+                    if missing_best_effort:
+                        print(
+                            f"[wait_claude_ready] best-effort channels not running "
+                            f"(v2.1.x MCP race, tolerated): {missing_best_effort}"
+                        )
+                    # 3. give the workflow-mcp stdio channel an extra moment
+                    #    to attach its notification handler so an early
+                    #    channel push doesn't get dropped.
                     time.sleep(5)
                     return
             except Exception:

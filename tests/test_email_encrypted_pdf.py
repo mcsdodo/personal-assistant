@@ -39,7 +39,7 @@ from .helpers import (
     TEST_DATA_DIR,
     call_provide_guidance,
     get_job_events,
-    paperless_find_by_title_full,
+    paperless_get_by_id,
     poll_job_completion,
     poll_job_state,
     send_email,
@@ -147,10 +147,15 @@ class TestEncryptedPdfGuidance:
         )
 
         # 6. Verify Paperless metadata reflects the patch (personal
-        #    owner, no techlab tag, personal storage path).
-        doc = paperless_find_by_title_full(TEST_SUBJECT)
+        #    owner, no techlab tag, personal storage path). Look up by
+        #    doc id rather than title — `generateTitle` produces a
+        #    derived string ("vendor - month") that doesn't match the
+        #    raw email subject, and the doc id is the stable handle.
+        doc_id = completed.output.get("paperless_document_id")
+        assert doc_id is not None, f"No paperless_document_id in output: {completed.output}"
+        doc = paperless_get_by_id(doc_id)
         assert doc is not None, (
-            f"Uploaded document with subject '{TEST_SUBJECT}' not found in Paperless. "
+            f"Uploaded document #{doc_id} not found in Paperless. "
             f"Job output: {completed.output}"
         )
         assert "personal" in doc["tag_names"], (

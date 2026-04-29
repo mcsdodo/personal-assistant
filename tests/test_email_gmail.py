@@ -30,7 +30,10 @@ class TestGmailAttachments:
         """Alza invoice: watcher creates job, worker classifies + uploads to Paperless."""
         send_test_pdf("invoice.pdf", GMAIL_TO)
 
-        result = poll_job_completion("gmail:", timeout=240)
+        # 240s is tight when this test runs after another Gmail test in the
+        # same suite — Gmail delivery + watcher poll can stretch past 4 min.
+        # 480s leaves headroom for the suite without slowing isolated runs.
+        result = poll_job_completion("gmail:", timeout=480)
         assert result.state == "completed"
         assert result.output is not None
 
