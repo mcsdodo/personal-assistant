@@ -597,31 +597,63 @@ export async function executeInvoiceIntake(
       // Step 1.3: Trigger B — if the PDF is still encrypted after both
       // decrypt attempts, we have no classifier output to trust. Pause the
       // job and ask the user for the password (or permission to skip).
+      //
+      // Exception: if the user has already responded to a prior pause with
+      // `action: patch` carrying both `owner` and `doc_type`, that's the
+      // explicit "set:owner=...,doc_type=..." action surfaced in
+      // `suggested_actions`. The operator is acknowledging they can't decrypt
+      // and want the file uploaded with manual classification. Skip the
+      // re-pause and synthesize a `step_completed` for `classify_document` so
+      // the next step short-circuits — the patch fields will be merged onto
+      // the empty doc classification at the normal merge point below.
       if (downloadHelper.isPdfEncrypted(filePath)) {
-        await pauseAndNotify(db, job.id, {
-          step: "decrypt_pdf",
-          reason: "encrypted_pdf",
-          missing_fields: [],
-          suggested_actions: [
-            "skip",
-            "set:owner=personal,doc_type=account_statement",
-            "set:owner=techlab,doc_type=account_statement",
-            "send_password",
-            "retry",
-          ],
-          context: {
-            filename: file.filename,
-            sender: classification.sender,
-            subject: classification.subject,
-            classifier_notes:
-              "PDF is encrypted; decrypt failed (no password configured or wrong password).",
-          },
-        }, notify, logger);
-        logger.log(`Job ${job.id} paused: encrypted_pdf`);
-        outcome = "awaiting_user_guidance";
-        span.setAttribute("invoice.outcome", "awaiting_user_guidance");
-        span.setStatus({ code: SpanStatusCode.OK });
-        return;
+        const allEvents = getJobEvents(db, job.id);
+        const pendingPatch = findUnconsumedGuidance(allEvents);
+        const patchCoversClassification =
+          pendingPatch?.action === "patch" &&
+          pendingPatch.patch != null &&
+          typeof pendingPatch.patch.owner === "string" &&
+          typeof pendingPatch.patch.doc_type === "string";
+
+        if (!patchCoversClassification) {
+          await pauseAndNotify(db, job.id, {
+            step: "decrypt_pdf",
+            reason: "encrypted_pdf",
+            missing_fields: [],
+            suggested_actions: [
+              "skip",
+              "set:owner=personal,doc_type=account_statement",
+              "set:owner=techlab,doc_type=account_statement",
+              "send_password",
+              "retry",
+            ],
+            context: {
+              filename: file.filename,
+              sender: classification.sender,
+              subject: classification.subject,
+              classifier_notes:
+                "PDF is encrypted; decrypt failed (no password configured or wrong password).",
+            },
+          }, notify, logger);
+          logger.log(`Job ${job.id} paused: encrypted_pdf`);
+          outcome = "awaiting_user_guidance";
+          span.setAttribute("invoice.outcome", "awaiting_user_guidance");
+          span.setStatus({ code: SpanStatusCode.OK });
+          return;
+        }
+
+        // Operator chose "upload anyway" via patch. Mark classify_document
+        // complete with an empty result so step 1.5 short-circuits; the
+        // unconsumed guidance_applied event is consumed at the normal merge
+        // point and the patch fields fill in owner/doc_type/etc. for upload.
+        if (!completedSteps.has("classify_document")) {
+          addJobEvent(db, job.id, "step_completed", {
+            step: "classify_document",
+            result: { __from_guidance_patch: true },
+          });
+          completedSteps.set("classify_document", { result: { __from_guidance_patch: true } });
+        }
+        logger.log(`Job ${job.id}: encrypted PDF accepted via guidance patch — skipping decrypt-pause`);
       }
 
       // Step 1.5: Document classification via channel (non-blocking)
@@ -896,21 +928,23 @@ export async function executeInvoiceIntake(
           ...uploadResult,
         });
 
-        // Step 7: Set custom fields (total_amount, order_id) if available.
-        // post_document doesn't accept custom fields in multipart, so we PATCH after
-        // consumption. The force-refresh path already set them in the single PATCH above.
-        if (merged.total_amount != null || merged.order_id) {
-          addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
-          const cfResult = await setDocumentCustomFields(
-            uploadResult.task_uuid,
-            merged.total_amount,
-            merged.order_id,
-            logger,
-            registry,
-          );
-          addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
-        }
-        finalDocId = uploadResult.document_id;
+        // Step 7: Resolve doc_id via waitForConsumption and set custom fields
+        // (total_amount, order_id) when applicable. post_document doesn't
+        // accept custom fields in multipart, so we PATCH after consumption.
+        // setDocumentCustomFields always calls waitForConsumption to resolve
+        // the doc id — and returns it in cfResult.doc_id even when there are
+        // no custom fields to set. The force-refresh path above already has
+        // doc id from the patch endpoint.
+        addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
+        const cfResult = await setDocumentCustomFields(
+          uploadResult.task_uuid,
+          merged.total_amount,
+          merged.order_id,
+          logger,
+          registry,
+        );
+        addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
+        finalDocId = cfResult.doc_id;
         finalOutcome = "uploaded";
       }
 
@@ -1432,15 +1466,16 @@ export async function executeScanIntake(
         }, logger, registry);
         addJobEvent(db, job.id, "step_completed", { step: "upload", mode: "post", ...uploadResult });
 
-        // Step 8: Set custom fields (post path only — patch path already set them)
-        if (classification.total_amount != null || classification.order_id) {
-          addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
-          const cfResult = await setDocumentCustomFields(
-            uploadResult.task_uuid, classification.total_amount, classification.order_id, logger, registry,
-          );
-          addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
-        }
-        finalDocId = uploadResult.document_id;
+        // Step 8: Resolve doc_id via waitForConsumption and set custom fields
+        // (post path only — patch path already set them in the single PATCH).
+        // setDocumentCustomFields returns doc_id even when there are no fields
+        // to set, so we always invoke it to resolve the upload's doc id.
+        addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
+        const cfResult = await setDocumentCustomFields(
+          uploadResult.task_uuid, classification.total_amount, classification.order_id, logger, registry,
+        );
+        addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
+        finalDocId = cfResult.doc_id;
         finalOutcome = "uploaded";
       }
 

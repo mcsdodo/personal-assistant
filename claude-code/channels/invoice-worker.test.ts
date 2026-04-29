@@ -351,9 +351,10 @@ describe("invoice-worker attachment download + upload", () => {
     const output = JSON.parse(updated.output_json!);
     expect(output.outcome).toBe("uploaded");
     expect(output.title).toBe("Alza - FA2026030001");
-    // paperless_document_id is undefined: uploadToPaperless returns a task_uuid,
-    // not a document ID. The doc ID is resolved later by setDocumentCustomFields.
-    expect(output.paperless_document_id).toBeUndefined();
+    // paperless_document_id resolved via setDocumentCustomFields' internal
+    // waitForConsumption (mock returns docId=999). The worker captures it
+    // from cfResult.doc_id so output_json carries the real doc id.
+    expect(output.paperless_document_id).toBe(999);
     expect(output.correspondent).toBe("Alza");
     expect(output.tags).toEqual(["techlab", "accounting", "2026-03"]);
 
