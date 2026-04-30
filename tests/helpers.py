@@ -95,6 +95,16 @@ CREDENTIALS_FILE = Path(
 TOKEN_FILE = Path(os.environ.get("GOOGLE_TOKEN_FILE", "config/token.json"))
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
+# Drive scopes needed for E2E gdrive tests.
+# NOTE: If the token.json was originally created with only gmail.send scope,
+# it must be re-authorized to include drive scope (delete token.json and
+# re-run the auth flow with GOOGLE_SCOPES including drive).  The helpers
+# below will fail gracefully with an informative error if the scope is missing.
+DRIVE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/drive",
+]
+
 GMAIL_FROM = _env("GMAIL_EMAIL", "your-email@gmail.com")
 GMAIL_TO = _env("GMAIL_TO", "your-email+dev@gmail.com")
 OUTLOOK_TO = _env("OUTLOOK_TO", "your-email+dev@hotmail.com")
@@ -827,3 +837,147 @@ def full_reset(*sources: str):
     start_claude()
     wait_healthy()
     wait_claude_ready()
+
+
+# ---------------------------------------------------------------------------
+# Paperless search helpers (thin wrappers for E2E test readability)
+# ---------------------------------------------------------------------------
+
+
+def paperless_search_documents(query: str) -> list[dict]:
+    """Search Paperless documents by title substring.
+
+    Returns a list of minimal document dicts (same shape as
+    ``paperless_documents()``).  Returns an empty list if no match.
+    """
+    all_docs = paperless_documents()
+    return [d for d in all_docs if query.lower() in (d.get("title") or "").lower()]
+
+
+def paperless_get_document(doc_id: int) -> dict | None:
+    """Fetch a single Paperless document by id (enriched shape).
+
+    Delegates to ``paperless_get_by_id`` which returns correspondent_name,
+    tag_names, document_type_name, and storage_path_name in addition to the
+    raw Paperless fields.  Returns None if the document does not exist.
+    """
+    return paperless_get_by_id(doc_id)
+
+
+# ---------------------------------------------------------------------------
+# Google Drive helpers for E2E gdrive-scan tests
+# ---------------------------------------------------------------------------
+
+
+_drive_service = None
+
+
+def _get_drive_credentials():
+    """Load Google OAuth credentials with Drive scope from TOKEN_FILE.
+
+    Reuses the same token.json that gmail_service() uses.  The token must
+    have been originally authorised with at minimum:
+      - https://www.googleapis.com/auth/gmail.send
+      - https://www.googleapis.com/auth/drive
+
+    If the existing token.json only has the gmail.send scope the refresh
+    will succeed (the token stores granted scopes from the original consent
+    screen), but any Drive API call will return 403.  Re-authorise by
+    deleting token.json and re-running the auth helper with DRIVE_SCOPES.
+    """
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+
+    creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), DRIVE_SCOPES)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+    return creds
+
+
+def make_drive_service(credentials):
+    """Build a Google Drive v3 service from the given credentials."""
+    from googleapiclient.discovery import build
+
+    return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+
+def get_drive_service():
+    """Lazy-init Google Drive API service (reuses across calls)."""
+    global _drive_service
+    if _drive_service is not None:
+        return _drive_service
+    _drive_service = make_drive_service(_get_drive_credentials())
+    return _drive_service
+
+
+class DriveTestClient:
+    """Minimal Google Drive client for E2E pipeline tests.
+
+    Provides folder resolution and file upload/listing helpers so tests can
+    drop PDFs into the gdrive-watcher watch folder and verify post-processing
+    state without depending on the production gmail-mcp container.
+    """
+
+    def __init__(self, service, level1: str, level2: str):
+        self.service = service
+        self.level1 = level1
+        self.level2 = level2
+
+    def _find_folder(self, name: str, parent_id: str | None = None) -> str | None:
+        """Return the Drive folder id for ``name``, optionally scoped to ``parent_id``."""
+        q = (
+            f"name = '{name}' and mimeType = 'application/vnd.google-apps.folder' "
+            "and trashed = false"
+        )
+        if parent_id:
+            q += f" and '{parent_id}' in parents"
+        res = self.service.files().list(q=q, fields="files(id,name)").execute()
+        files = res.get("files", [])
+        return files[0]["id"] if files else None
+
+    def resolve_watch_folder_id(self) -> str:
+        """Return the Drive folder id for the LEVEL2 watch folder.
+
+        Walks the LEVEL1 → LEVEL2 hierarchy defined at construction time.
+        """
+        l1 = self._find_folder(self.level1)
+        assert l1, f"level1 folder '{self.level1}' not found in Drive"
+        l2 = self._find_folder(self.level2, parent_id=l1)
+        assert l2, f"level2 folder '{self.level2}' not found under '{self.level1}'"
+        return l2
+
+    def resolve_subfolder_id(self, parent_id: str, name: str) -> str | None:
+        """Return the Drive folder id for ``name`` directly inside ``parent_id``."""
+        return self._find_folder(name, parent_id=parent_id)
+
+    def upload_file(self, file_path: Path, filename: str, parent_folder_id: str) -> dict:
+        """Upload a local file to Drive and return the created file metadata.
+
+        Args:
+            file_path: Local path to the file to upload.
+            filename: Name to give the file in Drive.
+            parent_folder_id: Drive folder id of the target folder.
+
+        Returns:
+            Dict with ``id`` and ``name`` of the created Drive file.
+        """
+        from googleapiclient.http import MediaFileUpload
+
+        media = MediaFileUpload(str(file_path), mimetype="application/pdf")
+        return self.service.files().create(
+            body={"name": filename, "parents": [parent_folder_id]},
+            media_body=media,
+            fields="id,name",
+        ).execute()
+
+    def list_files(self, folder_id: str) -> list[dict]:
+        """List non-trashed files directly inside ``folder_id``.
+
+        Returns a list of dicts with ``id`` and ``name`` keys.
+        """
+        res = self.service.files().list(
+            q=f"'{folder_id}' in parents and trashed = false",
+            fields="files(id,name)",
+        ).execute()
+        return res.get("files", [])
