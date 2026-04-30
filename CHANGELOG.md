@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-30 — Pollers Shared Lib
+
+### Added
+- Copy shared modules from `claude-code/channels/` into `pollers/lib/` — `tracing.ts`, `watcher-runtime.ts`, `workflow-db.ts`, `workflow-schemas.ts`, `email-filter.ts`, `email-watcher-utils.ts`, `email-db.ts` (renamed from `db.ts`), `gdrive-db.ts`, plus matching test files. All 156 lib tests pass.
+
 ## 2026-04-30 — Pollers Workspace Scaffold
 
 ### Added
