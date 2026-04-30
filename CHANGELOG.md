@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-30 — Email Poller: skip-catchup CLI
+
+### Added
+- `skip-catchup` operator CLI for email poller — advances `last_checked = now` for a given source (`gmail`|`outlook`), providing an escape hatch when the `catchup_overflow` counter trips and the operator wants to skip the over-cap window without restarting the container
+
 ## 2026-04-30 — Pollers Shared Lib
 
 ### Added
