@@ -291,8 +291,8 @@ h1{{color:#58a6ff;font-size:15px;font-weight:600}}
 .r.info{{color:#8b949e}}
 .r.cancelled{{color:#484f58;text-decoration:line-through;text-decoration-color:#484f58}}
 .r.skipped{{color:#484f58}}
-.r a{{color:inherit;text-decoration:underline;text-decoration-style:dotted}}
-.r a:hover{{text-decoration-style:solid;opacity:.8}}
+.r a{{color:inherit;text-decoration:none}}
+.r a:hover{{text-decoration:underline}}
 .sum{{
   margin-top:1.4em;padding-top:.8em;border-top:1px solid #21262d;
   font-weight:bold;color:#e2e4e8;font-size:13px;
@@ -552,8 +552,8 @@ h1{{color:#58a6ff;font-size:16px;font-weight:600}}
 .pl-section{{margin-bottom:1.2em}}
 .pl-row{{display:flex;align-items:baseline;padding:2px 0;max-width:1000px}}
 .pl-row.sub{{padding-left:2em;color:#8b949e}}
-.pl-row a{{color:#8b949e;text-decoration:underline;text-decoration-style:dotted}}
-.pl-row a:hover{{text-decoration-style:solid;opacity:.8}}
+.pl-row a{{color:#8b949e;text-decoration:none}}
+.pl-row a:hover{{text-decoration:underline}}
 .pl-month{{min-width:80px;color:#484f58;margin-right:1em;flex-shrink:0}}
 .pl-label{{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 .pl-gross{{margin-left:1em;font-size:12px;white-space:nowrap;color:#484f58}}
