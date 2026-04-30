@@ -5,7 +5,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 
 import { executeNextJob, reclaimStaleJobs } from "./workflow-core";
 import { PaperlessFieldRegistry } from "./paperless-fields";
@@ -28,7 +28,6 @@ import {
 } from "./workflow-db";
 
 import { initTracing, createLogger, getMeter, getTracer, remoteParentContext, SpanStatusCode } from "./tracing";
-import { getEmailTraceId } from "./db";
 
 const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
 const WORKFLOW_POLL_MS = parseInt(process.env.WORKFLOW_POLL_MS ?? "2000", 10);
@@ -221,7 +220,7 @@ export const GUIDANCE_TIMEOUT_HOURS = 72;
 export const GUIDANCE_REMINDER_COOLDOWN_HOURS = 6;
 
 export function sweepStaleGuidance(
-  dbInstance: import("bun:sqlite").Database,
+  dbInstance: Database,
   notifyFn: NotifyFn,
 ): void {
   const now = Date.now();
@@ -272,6 +271,71 @@ export function sweepStaleGuidance(
       .prepare(`UPDATE jobs SET last_reminder_at = ? WHERE id IN (${placeholders})`)
       .run(stampIso, ...needsReminder.map((j) => j.id));
   }
+}
+
+// ── Read-only audit-DB handles for debug tools (task 62) ─────────────
+//
+// `emails.db` is owned by `personal-assistant-email-poller`; `gdrive.db`
+// is owned by `personal-assistant-gdrive-poller`. Both ship via the
+// shared volume at /data/email-watcher and /data/gdrive-watcher.
+// We open them read-only and cache the handle on first use so we never
+// race the pollers' WAL writes.
+
+const EMAIL_DB_PATH = process.env.EMAIL_DB_PATH ?? "/data/email-watcher/emails.db";
+const GDRIVE_DB_PATH = process.env.GDRIVE_DB_PATH ?? "/data/gdrive-watcher/gdrive.db";
+
+let emailDbRo: Database | null = null;
+let gdriveDbRo: Database | null = null;
+
+export function openEmailDbReadOnly(path: string = EMAIL_DB_PATH): Database {
+  return new Database(path, { readonly: true });
+}
+export function openGdriveDbReadOnly(path: string = GDRIVE_DB_PATH): Database {
+  return new Database(path, { readonly: true });
+}
+function getEmailDbRo(): Database {
+  if (!emailDbRo) emailDbRo = openEmailDbReadOnly();
+  return emailDbRo;
+}
+function getGdriveDbRo(): Database {
+  if (!gdriveDbRo) gdriveDbRo = openGdriveDbReadOnly();
+  return gdriveDbRo;
+}
+
+// ── Handlers (exported for unit tests; called from the MCP switch) ──
+export function handleGetRecentEmails(
+  roDb: Database,
+  opts: { limit?: number; source?: string },
+): unknown[] {
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+  if (opts.source) { conditions.push("source = ?"); params.push(opts.source); }
+  let sql = "SELECT * FROM emails";
+  if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
+  sql += " ORDER BY discovered_at DESC";
+  if (opts.limit) { sql += " LIMIT ?"; params.push(opts.limit); }
+  return roDb.prepare(sql).all(...params);
+}
+
+export function handleGetEmailStats(roDb: Database): { total: number; last_24h: number } {
+  const total = roDb.prepare("SELECT COUNT(*) as count FROM emails").get() as { count: number };
+  const last24h = roDb.prepare(
+    "SELECT COUNT(*) as count FROM emails WHERE discovered_at >= datetime('now', '-1 day')",
+  ).get() as { count: number };
+  return { total: total.count, last_24h: last24h.count };
+}
+
+export function handleGetGdriveScanStatus(
+  roDb: Database,
+  opts: { limit?: number },
+): unknown[] {
+  return roDb.prepare("SELECT * FROM gdrive_files ORDER BY discovered_at DESC LIMIT ?")
+    .all(opts.limit ?? 20);
+}
+
+export function handleGetGdriveScanStats(roDb: Database): { total: number } {
+  const row = roDb.prepare("SELECT COUNT(*) as count FROM gdrive_files").get() as { count: number };
+  return { total: row.count };
 }
 
 const mcp = new Server(
@@ -436,6 +500,35 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["job_id", "guidance"],
       },
     },
+    {
+      name: "get_recent_emails",
+      description: "Read recent rows from the email-poller audit log (read-only).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          limit: { type: "number", description: "Max rows (default: 20)" },
+          source: { type: "string", description: "Filter by source (gmail, outlook)" },
+        },
+      },
+    },
+    {
+      name: "get_email_stats",
+      description: "Total email count and last-24-hour count from the email-poller audit log.",
+      inputSchema: { type: "object" as const, properties: {} },
+    },
+    {
+      name: "get_gdrive_scan_status",
+      description: "Recent rows from the gdrive-poller audit log (read-only).",
+      inputSchema: {
+        type: "object" as const,
+        properties: { limit: { type: "number", description: "Max rows (default: 20)" } },
+      },
+    },
+    {
+      name: "get_gdrive_scan_stats",
+      description: "Total file count from the gdrive-poller audit log.",
+      inputSchema: { type: "object" as const, properties: {} },
+    },
   ],
 }));
 
@@ -476,11 +569,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Emit job_created span (links to email's trace)
         try {
-          const emailDbPath = process.env.EMAIL_DB_PATH ?? "/mnt/shared_configs/personal-assistant/email-watcher/emails.db";
-          const { Database: BunDb } = require("bun:sqlite");
-          const emailDb = new BunDb(emailDbPath, { readonly: true });
-          const traceId = getEmailTraceId(emailDb, messageId);
-          emailDb.close();
+          const row = getEmailDbRo()
+            .prepare("SELECT trace_id FROM emails WHERE id = ? LIMIT 1")
+            .get(messageId) as { trace_id: string | null } | null;
+          const traceId = row?.trace_id ?? null;
           if (traceId) {
             const tracer = getTracer("workflow");
             const parentCtx = remoteParentContext(traceId);
@@ -625,6 +717,26 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         handleProvideGuidance(db, { job_id: jobId, guidance });
         return { content: [text({ success: true, job_id: jobId, action: guidance.action })] };
+      }
+
+      case "get_recent_emails": {
+        const rows = handleGetRecentEmails(getEmailDbRo(), {
+          limit: args?.limit as number | undefined,
+          source: args?.source as string | undefined,
+        });
+        return { content: [text(rows)] };
+      }
+      case "get_email_stats": {
+        return { content: [text(handleGetEmailStats(getEmailDbRo()))] };
+      }
+      case "get_gdrive_scan_status": {
+        const rows = handleGetGdriveScanStatus(getGdriveDbRo(), {
+          limit: args?.limit as number | undefined,
+        });
+        return { content: [text(rows)] };
+      }
+      case "get_gdrive_scan_stats": {
+        return { content: [text(handleGetGdriveScanStats(getGdriveDbRo()))] };
       }
 
       default:
