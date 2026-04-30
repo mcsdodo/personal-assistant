@@ -19,11 +19,8 @@ services:
       outlook-mcp:
         condition: service_healthy
     healthcheck:
-      # Verify: tmux session alive + email-watcher /health endpoint reachable
-      # + the 3 critical stdio channels are running. The pgrep checks catch
-      # the failure mode where Claude Code's stdio subprocess for a channel
-      # silently dies (e.g. port collision killing email-watcher) — without
-      # them, the container would stay "healthy" while ingest is stopped.
+      # Verify: tmux session alive + workflow-mcp /health endpoint reachable
+      # + the workflow-mcp stdio channel is running.
       # Telegram and file-ops channels are intentionally not in the
       # healthcheck — pipeline still works without them, and they're caught
       # by the entrypoint monitor loop's broader liveness check anyway.
@@ -32,17 +29,12 @@ services:
         - CMD-SHELL
         - >-
           tmux has-session -t claude 2>/dev/null &&
-          curl -sf http://localhost:9465/health > /dev/null &&
-          pgrep -f "^bun run /app/channels/email-watcher\.ts" > /dev/null &&
-          pgrep -f "^bun run /app/channels/gdrive-watcher\.ts" > /dev/null &&
+          curl -sf http://localhost:8003/health > /dev/null &&
           pgrep -f "^bun run /app/channels/workflow-mcp\.ts" > /dev/null
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 90s
-    ports:
-      - "9465:9465"
-      - "9466:9466"
     volumes:
       # Bind-mount host Claude credentials dir for OAuth tokens
       - ${PA_DATA_DIR:-/mnt/shared_configs/personal-assistant}/claude-config:/home/node/.claude
@@ -70,23 +62,9 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       - TELEGRAM_STATE_DIR=/home/node/.claude/channels/telegram
-      # email-watcher channel
-      - GMAIL_EMAIL=${GMAIL_EMAIL:-}
-      - GMAIL_SEARCH_BASE=${GMAIL_SEARCH_BASE:-${GMAIL_SEARCH_QUERY:-}}
-      - MAX_CATCHUP_EMAILS=${MAX_CATCHUP_EMAILS:-10}
-      - GMAIL_MCP_URL=http://gmail-mcp:8000/mcp
-      - OUTLOOK_MCP_URL=http://outlook-mcp:8002/mcp
-      - OUTLOOK_ENABLED=${OUTLOOK_ENABLED:-true}
-      - POLL_INTERVAL_MS=${POLL_INTERVAL_MS:-30000}
-      - DB_PATH=/data/email-watcher/emails.db
+      # workflow-mcp channel
       - WORKFLOW_DB_PATH=/data/email-watcher/workflow.db
       - WORKFLOW_POLL_MS=${WORKFLOW_POLL_MS:-2000}
-      - STARTUP_DELAY_MS=${STARTUP_DELAY_MS:-15000}
-      - MAX_NEW_PER_CYCLE=${MAX_NEW_PER_CYCLE:-5}
-      - EMAIL_WATCHER_METRICS_PORT=${EMAIL_WATCHER_METRICS_PORT:-9465}
-      # Email filtering (whitelist/blacklist by recipient address)
-      - EMAIL_FILTER_INCLUDE=${EMAIL_FILTER_INCLUDE:-}
-      - EMAIL_FILTER_EXCLUDE=${EMAIL_FILTER_EXCLUDE:-}
       # Business identifiers (for document-classifier owner field)
       - BUSINESS_COMPANY_NAME=${BUSINESS_COMPANY_NAME}
       - BUSINESS_TAX_IDS=${BUSINESS_TAX_IDS}
@@ -97,12 +75,88 @@ services:
       - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}
       # PDF decryption (bank account statements)
       - BANK_PDF_PASSWORD=${BANK_PDF_PASSWORD:-}
-      # gdrive-watcher channel
+
+  email-poller:
+    image: personal-assistant-email-poller:latest
+    build:
+      context: ./pollers
+      dockerfile: email-poller/Dockerfile
+    container_name: personal-assistant-email-poller
+    restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+    depends_on:
+      gmail-mcp:
+        condition: service_healthy
+      outlook-mcp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9465/health > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    ports:
+      - "9465:9465"
+    volumes:
+      - ${PA_DATA_DIR:-/mnt/shared_configs/personal-assistant}/email-watcher:/data/email-watcher
+    environment:
+      - GMAIL_EMAIL=${GMAIL_EMAIL:-}
+      - GMAIL_SEARCH_BASE=${GMAIL_SEARCH_BASE:-${GMAIL_SEARCH_QUERY:-}}
+      - INITIAL_LOOKBACK=${INITIAL_LOOKBACK:-3d}
+      - MAX_CATCHUP_EMAILS=${MAX_CATCHUP_EMAILS:-200}
+      - GMAIL_MCP_URL=http://gmail-mcp:8000/mcp
+      - OUTLOOK_MCP_URL=http://outlook-mcp:8002/mcp
+      - OUTLOOK_ENABLED=${OUTLOOK_ENABLED:-true}
+      - POLL_INTERVAL_MS=${POLL_INTERVAL_MS:-30000}
+      - DB_PATH=/data/email-watcher/emails.db
+      - WORKFLOW_DB_PATH=/data/email-watcher/workflow.db
+      - STARTUP_DELAY_MS=${STARTUP_DELAY_MS:-15000}
+      - MAX_NEW_PER_CYCLE=${MAX_NEW_PER_CYCLE:-5}
+      - EMAIL_WATCHER_METRICS_PORT=9465
+      - EMAIL_FILTER_INCLUDE=${EMAIL_FILTER_INCLUDE:-}
+      - EMAIL_FILTER_EXCLUDE=${EMAIL_FILTER_EXCLUDE:-}
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
+      - OTEL_METRIC_EXPORT_INTERVAL=${OTEL_METRIC_INTERVAL:-10000}
+
+  gdrive-poller:
+    image: personal-assistant-gdrive-poller:latest
+    build:
+      context: ./pollers
+      dockerfile: gdrive-poller/Dockerfile
+    container_name: personal-assistant-gdrive-poller
+    restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+    depends_on:
+      gmail-mcp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9466/health > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    ports:
+      - "9466:9466"
+    volumes:
+      - ${PA_DATA_DIR:-/mnt/shared_configs/personal-assistant}/email-watcher:/data/email-watcher
+      - ${PA_DATA_DIR:-/mnt/shared_configs/personal-assistant}/gdrive-watcher:/data/gdrive-watcher
+    environment:
+      - GMAIL_EMAIL=${GMAIL_EMAIL:-}
       - GDRIVE_POLL_INTERVAL_MS=${GDRIVE_POLL_INTERVAL_MS:-30000}
       - GDRIVE_LEVEL1=${GDRIVE_LEVEL1:-}
       - GDRIVE_LEVEL2=${GDRIVE_LEVEL2:-accounting,documents}
       - GDRIVE_MCP_URL=${GDRIVE_MCP_URL:-http://gmail-mcp:8000/mcp}
-      - GDRIVE_WATCHER_METRICS_PORT=${GDRIVE_WATCHER_METRICS_PORT:-9466}
+      - GDRIVE_DB_PATH=/data/gdrive-watcher/gdrive.db
+      - WORKFLOW_DB_PATH=/data/email-watcher/workflow.db
+      - GDRIVE_WATCHER_METRICS_PORT=9466
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
+      - OTEL_METRIC_EXPORT_INTERVAL=${OTEL_METRIC_INTERVAL:-10000}
 
   paperless-mcp:
     image: ghcr.io/baruchiro/paperless-mcp:latest  # no semver tags; Watchtower excluded, auto_pull=false
