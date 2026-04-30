@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-30 — Pollers Workspace Scaffold
+
+### Added
+- Scaffold `pollers/` Bun workspace (`package.json`, `tsconfig.json`, `bunfig.toml`, `.gitignore`) — first step toward decoupling email and GDrive watchers into standalone Docker poller services
+
 ## 2026-04-29 — Healthcheck pgrep Self-Match + Best-Effort Self-Recovery
 
 ### Fixed
