@@ -35,13 +35,24 @@ Keep examples concrete enough that contributors and coding agents can still map 
 ```
 claude-code container (node:20-slim, user: node, --model sonnet)
 ├── Claude Code interactive session in tmux (--remote-control)
-├── email-watcher channel+tools (stdio, polls gmail+outlook every 30s, SQLite audit trail)
-├── gdrive-watcher channel+tools (stdio, polls GDrive LEVEL1×LEVEL2 folders every 30s, SQLite audit trail)
 ├── telegram channel (official plugin, cloned at build, two-way)
 ├── file-ops tool server (stdio, scoped file downloads/deletes/decrypt/base64/env)
 ├── workflow-mcp channel+tools (stdio, durable job queue + invoice-worker, health on :8003)
+│   ├── exposes 4 read-only debug tools that read emails.db / gdrive.db via the shared volume
+│   ├── get_recent_emails, get_email_stats, get_gdrive_scan_status, get_gdrive_scan_stats
 ├── subagents: email-classifier (haiku), document-classifier (haiku, returns owner field)
 └── connects to MCP tool servers via Streamable HTTP
+
+email-poller container (oven/bun:1-alpine)
+├── polls Gmail + Outlook every POLL_INTERVAL_MS (default 30s)
+├── writes emails.db (audit trail) + workflow.db (creates invoice_intake jobs)
+├── exposes /health on :9465
+└── INITIAL_LOOKBACK seeds last_checked on first run; over-cap windows fail loud
+
+gdrive-poller container (oven/bun:1-alpine)
+├── polls Google Drive folders (GDRIVE_LEVEL1 × GDRIVE_LEVEL2) every 30s via gmail-mcp
+├── writes gdrive.db (audit trail) + workflow.db (creates scan_intake jobs)
+└── exposes /health on :9466
 
 paperless-mcp container (ghcr.io/baruchiro/paperless-mcp:latest)
 └── 20 Paperless-ngx CRUD tools on :3000/mcp
@@ -58,23 +69,25 @@ outlook-mcp container (python:3.12-slim)
 └── 4 Outlook read-only tools on :8002/mcp (custom, MSAL device code auth)
 ```
 
-Channels are stdio subprocesses of Claude Code — they MUST run inside the same container. MCP tool servers CAN be separate containers via Streamable HTTP (`"type": "http"` in `.mcp.json`).
+Pollers are pure data-path containers — they write directly into `workflow.db`. They are independent of Claude Code's lifecycle, so an MCP-spawn race can never break ingest. Only `telegram`, `file-ops`, and `workflow-mcp` remain as Claude Code stdio channels (they each need access to the live Claude session). MCP tool servers run as separate containers via Streamable HTTP (`"type": "http"` in `.mcp.json`).
 
 ## Robustness & Health
 
 ### Health Checks
 
-All 5 services have Docker health checks. `claude-code` depends on all MCPs via `depends_on: service_healthy` — it won't start until all MCPs are ready.
+All services have Docker health checks. `claude-code` depends on all MCPs via `depends_on: service_healthy` — it won't start until all MCPs are ready.
 
 | Service | Health check | Interval | Start period |
-|---------|-------------|----------|--------------|
-| `claude-code` | tmux session alive + email-watcher `/health` (port 9465) | 30s | 90s |
+|---|---|---|---|
+| `claude-code` | tmux session alive + workflow-mcp `/health` (port 8003) + workflow-mcp pgrep | 30s | 90s |
+| `email-poller` | HTTP `/health` (port 9465) — staleness check on `lastSuccessfulPollAt` | 30s | 30s |
+| `gdrive-poller` | HTTP `/health` (port 9466) — staleness check on `lastSuccessfulPollAt` | 30s | 30s |
 | `checker-mcp` | TCP socket check (ports 8001 + 5000) | 30s | 15s |
 | `outlook-mcp` | TCP socket check (port 8002) | 30s | 30s |
 | `paperless-mcp` | TCP port 3000 check via Node | 30s | 15s |
 | `gmail-mcp` | TCP port 8000 check via Python | 30s | 15s |
 
-The email-watcher `/health` also tracks poll staleness — returns 503 if no successful poll in `POLL_INTERVAL_MS * 5` (default: 2.5 minutes). This detects both MCP connectivity loss and email-watcher hangs.
+The email-poller and gdrive-poller `/health` endpoints also track poll staleness — return 503 if no successful poll within the staleness window. This detects both MCP connectivity loss and poller hangs.
 
 When the tmux session dies, the entrypoint exits with code 1, triggering Docker's `restart: unless-stopped` policy.
 
@@ -140,15 +153,16 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 | `claude-code/.claude/settings.json` | Permission allowlist (dontAsk mode) |
 | `claude-code/CLAUDE.md` | Instructions for the Claude session |
 | `claude-code/entrypoint.sh` | tmux wrapper, prompt detection, health monitor |
-| `claude-code/channels/email-watcher.ts` | Email-watcher channel (polls Gmail+Outlook, SQLite audit) |
-| `claude-code/channels/email-watcher-utils.ts` | Pure functions extracted from email-watcher (parsing, metrics, duration) |
-| `claude-code/channels/db.ts` | Email-watcher SQLite module (emails + source_state tables, invoice_links persistence) |
-| `claude-code/channels/gdrive-watcher.ts` | GDrive-watcher channel (polls Google Drive, SQLite audit) |
-| `claude-code/channels/gdrive-db.ts` | GDrive-watcher SQLite module |
-| `claude-code/channels/watcher-runtime.ts` | Shared health server, MCP client wrapper, poll loop helpers used by both watchers |
 | `claude-code/channels/file-ops.ts` | File-ops MCP tool server (download, delete, list, decrypt, base64, env) |
+| `pollers/email-poller/src/main.ts` | Email poller (Gmail+Outlook → workflow.db). INITIAL_LOOKBACK seeding, fail-loud overflow. |
+| `pollers/email-poller/cli/skip-catchup.ts` | Operator escape hatch to advance `last_checked = now`. |
+| `pollers/gdrive-poller/src/main.ts` | Google Drive poller (LEVEL1 × LEVEL2 → workflow.db) |
+| `pollers/lib/email-db.ts` | emails + source_state SQLite schema (was `claude-code/channels/db.ts`) |
+| `pollers/lib/gdrive-db.ts` | gdrive_files SQLite schema |
+| `pollers/lib/watcher-runtime.ts` | Shared health server / managed MCP client / poll loop helpers |
+| `pollers/lib/workflow-db.ts` | Shared duplicate of the workflow.db schema (Komodo pins the same git commit across builds) |
 | `claude-code/channels/download-helper.ts` | File utility functions (readFileAsDownload, tryDecrypt) used by file-ops + invoice/intake-worker |
-| `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-watcher + invoice/download-service) |
+| `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-poller + invoice/download-service) |
 | `claude-code/channels/mcp-client.ts` | HTTP MCP client with retry logic (exponential backoff for transient network errors) + `McpToolError` thrown on `isError: true` tool responses so error payloads don't silently leak into callers as if they were valid output (task 48) |
 | `claude-code/channels/workflow-mcp.ts` | Durable job queue channel (stdio, health on :8003) + invoice/scan worker loop. Runs the download-cleanup safety sweep on boot. |
 | `claude-code/channels/workflow-db.ts` | jobs + job_events SQLite schema, lifecycle helpers, schema validation gateway, file-cleanup helpers, indexed `paperless_doc_id` column for multi-stage refresh lookups |
@@ -202,9 +216,22 @@ FastMCP wrapping `match_invoices.py`. 4 tools via HTTP. Lazy-init `PaperlessClie
 
 MSAL device code auth with singleton caching (`_msal_lock`). `get_access_token()` does silent acquisition then falls back to device code flow. Background auth thread (daemon) doesn't block server startup. 4 tools: `list_emails`, `get_email`, `get_attachments`, `download_attachment`.
 
-### claude-code/channels/email-watcher.ts (~800 lines)
+### pollers/email-poller/src/main.ts
 
-Polls Gmail + Outlook every 30s via Streamable HTTP MCP clients managed by `watcher-runtime.ts`. Creates `invoice_intake` jobs directly in `workflow.db` (no channel notification to Claude for new emails). SQLite audit trail (`emails.db`). Health endpoint `/health` on `:9465` with staleness detection. Validates job input via `workflow-schemas.ts` before `createJob()`. Tools: `get_recent_emails()`, `get_email_stats()`. Startup events (`first_start`, `catchup_required`) still use channel notifications.
+Standalone Bun service that polls Gmail + Outlook every `POLL_INTERVAL_MS` (default 30s) via Streamable HTTP MCP clients. Creates `invoice_intake` jobs directly in `workflow.db`. SQLite audit trail (`emails.db`). Health endpoint `/health` on `:9465` with staleness detection. On first run for a source, seeds `last_checked` from `INITIAL_LOOKBACK` (default `3d`) instead of asking Claude. If a poll cycle sees more emails than `MAX_CATCHUP_EMAILS` (default 200), logs `ERROR: catchup overflow`, emits `email_watcher.catchup_overflow{source=...}` OTel counter, and does NOT advance `last_checked`.
+
+### pollers/gdrive-poller/src/main.ts
+
+Standalone Bun service that polls Google Drive folders (`GDRIVE_LEVEL1` × `GDRIVE_LEVEL2`) every 30s via the gmail-mcp Drive tools. Creates `scan_intake` jobs directly in `workflow.db`. SQLite audit trail (`gdrive.db`). Health endpoint `/health` on `:9466`. Uses `pollers/lib/watcher-runtime.ts` for the health server, MCP client lifecycle, and poll loop.
+
+### pollers/lib/watcher-runtime.ts (~155 lines)
+
+Shared operational scaffolding for both pollers. Three pieces:
+- `startHealthServer({port, db, getStaleMs, maxStaleMs, ...})` — Bun.serve `/health` with staleness check
+- `createManagedMcpClient({name, version, url, ...})` — singleton MCP client wrapper with `.get()` and `.reset()`
+- `startPollLoop({name, intervalMs, poll, runFirstCycleImmediately, ...})` — setInterval poll loop with try/catch logging
+
+Domain logic stays in each poller (Gmail/Outlook polling, Drive folder logic, audit DB schemas, OTel gauges).
 
 ### claude-code/channels/invoice/intake-worker.ts (~1110 lines)
 
@@ -232,19 +259,6 @@ All `list_*` MCP calls go through a private `listAllPages` helper that walks the
 ### claude-code/channels/workflow-schemas.ts (~430 lines)
 
 Hand-rolled runtime validators (no zod) for the four boundary contracts: `InvoiceIntakeInput`, `ScanIntakeInput`, `EmailClassificationResult`, `DocumentClassificationResult`. Each validator throws `WorkflowSchemaError` with schema name, field, expected type, and actual value. `submitClassification` validates payloads on write (rejects malformed Claude outputs); both watchers validate job input before `createJob`; the worker validates `input_json` on every run.
-
-### claude-code/channels/gdrive-watcher.ts (~610 lines)
-
-Polls Google Drive folders (`LEVEL1`/`LEVEL2`) every 30s via the gmail-mcp Drive tools. Creates `scan_intake` jobs directly in `workflow.db`. SQLite audit trail (`gdrive.db`). Creates `processed/` and `errors/` subfolders for post-upload file management. Validates job input via `workflow-schemas.ts` before `createJob()`. Uses `watcher-runtime.ts` for the health server, MCP client lifecycle, and poll loop.
-
-### claude-code/channels/watcher-runtime.ts (~155 lines)
-
-Shared operational scaffolding for both watchers. Three pieces:
-- `startHealthServer({port, db, getStaleMs, maxStaleMs, ...})` — Bun.serve `/health` with staleness check
-- `createManagedMcpClient({name, version, url, ...})` — singleton MCP client wrapper with `.get()` and `.reset()`
-- `startPollLoop({name, intervalMs, poll, runFirstCycleImmediately, ...})` — setInterval poll loop with try/catch logging
-
-Domain logic stays in each watcher (Gmail/Outlook polling, Drive folder logic, audit DB schemas, OTel gauges, channel tools).
 
 ### claude-code/channels/workflow-mcp.ts (~440 lines)
 
@@ -388,6 +402,19 @@ Claude Code's `typescript-lsp` plugin fails on Windows with `ENOENT: uv_spawn 't
 
 **Why pyright works:** pip installs real `.exe` shims; npm only creates `.cmd` batch wrappers.
 
+## First deploy of email/gdrive pollers
+
+**First deploy of email/gdrive pollers.** On a fresh deploy where `emails.db` has no `source_state` rows, the email-poller seeds `last_checked` for each enabled source from `INITIAL_LOOKBACK` (default `3d`). To pick a different window, set `INITIAL_LOOKBACK=1w` (or `12h`, `24h`, etc.) in `.env` (or in the Komodo stack environment) **before** the first deploy. After the first poll cycle the row exists and the var is ignored.
+
+**Catchup overflow.** If a poll cycle ever sees more than `MAX_CATCHUP_EMAILS` (default 200) new emails for a single source, the poller logs `ERROR: <source> catchup overflow` and bumps the OTel `email_watcher.catchup_overflow{source=...}` counter without advancing `last_checked`. Run the escape hatch:
+
+```bash
+docker exec personal-assistant-email-poller \
+  bun /app/email-poller/cli/skip-catchup.ts gmail
+```
+
+This advances `last_checked = now` so the next poll cycle starts fresh.
+
 ## Development
 
 Development runs locally on the Windows dev machine using Docker Desktop with the `local` profile:
@@ -438,7 +465,7 @@ Unit test rules for bun tests live in `claude-code/channels/CLAUDE.md`. E2E pyte
 | `test_email_gmail.py` | Gmail attachment pipeline (invoice, fuel, credit note, bank statement, ignore) |
 | `test_email_outlook.py` | Outlook attachment pipeline (same set) |
 | `test_email_link.py` | Outlook download link pipeline (Alza-style HTML email with invoice URL) |
-| `helpers.py` | Gmail sending, Paperless API verification, email-watcher DB polling |
+| `helpers.py` | Gmail sending, Drive helpers (DriveTestClient), Paperless API verification, email-poller / gdrive-poller DB polling |
 | `conftest.py` | Fixtures for pipeline reset (stop claude-code, wipe DBs + Paperless, restart, seed) |
 | `test_data/` | Committed test PDFs: invoice.pdf, fuel_invoice.pdf, refund.pdf, account_statement_locked.pdf |
 
@@ -468,24 +495,29 @@ bun test
 
 | Test file | Scope |
 |-----------|-------|
-| `invoice-worker.test.ts` | Invoice/scan intake with mocked MCP calls |
-| `email-watcher.integration.test.ts` | Email polling, dedup, notification push |
-| `gdrive-watcher.integration.test.ts` | GDrive polling, multi-folder resolution |
-| `workflow-lifecycle.integration.test.ts` | Full job lifecycle (create → execute → complete/fail) |
-| `email-watcher-utils.test.ts` | Pure parsing functions (Gmail IDs, duration, metrics) |
-| `gdrive-watcher.test.ts` | Drive response parsing, folder ID extraction |
-| `gdrive-db.test.ts` | GDrive SQLite operations |
-| `db.test.ts` | Email SQLite operations |
-| `download-helper.test.ts` | File reading, PDF decryption |
-| `invoice-links.test.ts` | Invoice link extraction from HTML |
-| `workflow-db.test.ts` | Job queue SQLite operations |
-| `fuzzy-match.test.ts` | Correspondent fuzzy matching |
-| `paperless-fields.test.ts` | Paperless custom field registry |
-| `email-watcher.test.ts` | Recipient filtering |
-| `workflow-core.test.ts` | Job dispatch logic |
-| `workflow-classification.test.ts` | Classification state transitions, submit_classification idempotency |
-| `workflow-resume.test.ts` | Step-level resume via getCompletedSteps |
-| `invoice-pipeline.test.ts` | Pure pipeline functions (merge, tags, title, month_tag) |
+| `claude-code/channels/invoice-worker.test.ts` | Invoice/scan intake with mocked MCP calls |
+| `claude-code/channels/workflow-lifecycle.integration.test.ts` | Full job lifecycle (create → execute → complete/fail) |
+| `claude-code/channels/workflow-mcp.test.ts` | Read-only debug tools (`get_recent_emails`, `get_email_stats`, `get_gdrive_scan_*`) |
+| `claude-code/channels/download-helper.test.ts` | File reading, PDF decryption |
+| `claude-code/channels/invoice-links.test.ts` | Invoice link extraction from HTML |
+| `claude-code/channels/workflow-db.test.ts` | Job queue SQLite operations (legacy copy; canonical lives in `pollers/lib/`) |
+| `claude-code/channels/fuzzy-match.test.ts` | Correspondent fuzzy matching |
+| `claude-code/channels/paperless-fields.test.ts` | Paperless custom field registry |
+| `claude-code/channels/workflow-core.test.ts` | Job dispatch logic |
+| `claude-code/channels/workflow-classification.test.ts` | Classification state transitions, submit_classification idempotency |
+| `claude-code/channels/workflow-resume.test.ts` | Step-level resume via getCompletedSteps |
+| `claude-code/channels/invoice-pipeline.test.ts` | Pure pipeline functions (merge, tags, title, month_tag) |
+| `pollers/lib/email-db.test.ts` | Email SQLite operations (audit DB) |
+| `pollers/lib/gdrive-db.test.ts` | GDrive SQLite operations |
+| `pollers/lib/email-watcher-utils.test.ts` | Pure parsing functions (Gmail IDs, duration, metrics) |
+| `pollers/lib/watcher-runtime.test.ts` | Health server / managed MCP client / poll loop helpers |
+| `pollers/lib/workflow-db.test.ts` | Job queue schema (canonical) |
+| `pollers/lib/workflow-schemas.test.ts` | Runtime validators |
+| `pollers/email-poller/src/main.test.ts` | INITIAL_LOOKBACK seeding + fail-loud overflow guard |
+| `pollers/email-poller/src/main.integration.test.ts` | Email polling, dedup, direct job creation |
+| `pollers/email-poller/cli/skip-catchup.test.ts` | Operator escape hatch CLI |
+| `pollers/gdrive-poller/src/main.test.ts` | scan_intake job creation, MAX_NEW_PER_CYCLE cap |
+| `pollers/gdrive-poller/src/main.integration.test.ts` | GDrive polling, multi-folder resolution |
 
 ### CI
 
@@ -509,7 +541,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push to main when relevant p
 
 Claude Code exports native OpenTelemetry metrics and events via OTLP to an Alloy instance, which forwards to Prometheus (metrics) and Loki (logs/events).
 
-The email-watcher and gdrive-watcher channels also push custom workflow metrics via OTLP (same pipeline as traces). These provide workflow-level visibility beyond generic Claude activity counters.
+The email-poller and gdrive-poller services also push custom workflow metrics via OTLP (same pipeline as traces). These provide workflow-level visibility beyond generic Claude activity counters.
 
 ### Local Dev
 
@@ -562,7 +594,7 @@ No Grafana restart needed — the file provisioner detects changes and reloads.
 | `claude_code_pull_request_count_total` | count | — |
 | `claude_code_code_edit_tool_decision_count_total` | count | `tool_name`, `decision`, `source` |
 
-### Email Workflow Metrics (OTLP push from `email-watcher` channel)
+### Email Workflow Metrics (OTLP push from `email-poller` service)
 
 | Metric | Meaning |
 |--------|---------|

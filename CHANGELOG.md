@@ -4,25 +4,27 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
-## 2026-04-30 — GDrive Scan E2E Test
+## [unreleased] — 2026-04-30 — Decouple watchers from Claude Code
+
+### Breaking
+- `email-watcher` and `gdrive-watcher` no longer run as Claude Code stdio channels. Two new Docker services (`personal-assistant-email-poller`, `personal-assistant-gdrive-poller`) take over polling and write directly to `workflow.db`. Lifecycle fully decoupled from Claude Code — an MCP-spawn race can no longer break ingest.
+
+### Removed
+- `first_start` / `catchup_required` channel events deleted along with the `init_source` / `approve_catchup` / `skip_catchup` MCP tools. Replaced by an `INITIAL_LOOKBACK` env var (default `3d`) that seeds `last_checked` on first run, plus a fail-loud overflow path: if a poll cycle ever sees more than `MAX_CATCHUP_EMAILS` (default 200) new emails for a source, the poller logs `ERROR: <source> catchup overflow`, increments OTel counter `email_watcher.catchup_overflow{source=...}`, and does **not** advance `last_checked`.
+- Watcher source files removed from `claude-code/channels/`: `email-watcher.ts`, `email-watcher-utils.ts`, `email-filter.ts`, `db.ts` (now `pollers/lib/email-db.ts`), `gdrive-watcher.ts`, `gdrive-db.ts`, `watcher-runtime.ts`, plus all matching tests. Logic and tests migrated to `pollers/`. `getEmailTraceId` inlined into `workflow-mcp.ts` and `workflow-core.ts` to break the last imports from the deleted modules.
 
 ### Added
-- E2E test `test_gdrive_scan_uploads_to_paperless` — uploads a unique PDF to the Drive watch folder, polls Paperless for up to 5 minutes, and asserts the file moved to `processed/`. Registered under the new `gdrive` pytest marker. Drive helpers (`DriveTestClient`, `make_drive_service`, `get_drive_service`) and `paperless_search_documents` / `paperless_get_document` convenience wrappers added to `tests/helpers.py`.
+- `pollers/email-poller/src/main.ts` — standalone Gmail+Outlook poller (Bun, oven/bun:1-alpine). Health on `:9465`. INITIAL_LOOKBACK seeding, fail-loud overflow, direct `createJob` against `workflow.db`.
+- `pollers/gdrive-poller/src/main.ts` — standalone Google Drive poller. Health on `:9466`. Resolves `GDRIVE_LEVEL1 × GDRIVE_LEVEL2` watch folders, creates `processed/` and `errors/` subfolders, creates `scan_intake` jobs.
+- `pollers/email-poller/cli/skip-catchup.ts` — operator escape hatch: `docker exec personal-assistant-email-poller bun /app/email-poller/cli/skip-catchup.ts <gmail|outlook>` advances `last_checked = now` so the next cycle starts fresh.
+- `pollers/lib/` — shared library consumed by both poller Dockerfiles via `context: ./pollers` (`tracing.ts`, `watcher-runtime.ts`, `workflow-db.ts`, `workflow-schemas.ts`, `email-filter.ts`, `email-watcher-utils.ts`, `email-db.ts`, `gdrive-db.ts`). Schema drift mitigated by Komodo building all four images from the same git commit.
+- 4 read-only debug tools relocated to `workflow-mcp`: `get_recent_emails`, `get_email_stats`, `get_gdrive_scan_status`, `get_gdrive_scan_stats`. Open `emails.db` and `gdrive.db` read-only via the shared volume — pollers stay the exclusive writers.
+- E2E test `test_gdrive_scan_uploads_to_paperless` (new `gdrive` pytest marker). Drive helpers + `drive_client` fixture in `tests/helpers.py` and `tests/conftest.py`.
+- Komodo builds: `personal-assistant-email-poller` and `personal-assistant-gdrive-poller`. Added to the `deploy-personal-assistant` procedure's `Build Images` stage. Stack environment now declares `INITIAL_LOOKBACK=3d` and `MAX_CATCHUP_EMAILS=200`.
 
-## 2026-04-30 — Email Poller: skip-catchup CLI
-
-### Added
-- `skip-catchup` operator CLI for email poller — advances `last_checked = now` for a given source (`gmail`|`outlook`), providing an escape hatch when the `catchup_overflow` counter trips and the operator wants to skip the over-cap window without restarting the container
-
-## 2026-04-30 — Pollers Shared Lib
-
-### Added
-- Copy shared modules from `claude-code/channels/` into `pollers/lib/` — `tracing.ts`, `watcher-runtime.ts`, `workflow-db.ts`, `workflow-schemas.ts`, `email-filter.ts`, `email-watcher-utils.ts`, `email-db.ts` (renamed from `db.ts`), `gdrive-db.ts`, plus matching test files. All 156 lib tests pass.
-
-## 2026-04-30 — Pollers Workspace Scaffold
-
-### Added
-- Scaffold `pollers/` Bun workspace (`package.json`, `tsconfig.json`, `bunfig.toml`, `.gitignore`) — first step toward decoupling email and GDrive watchers into standalone Docker poller services
+### Changed
+- `claude-code` container: only 3 stdio channels remain (`telegram`, `file-ops`, `workflow-mcp`). Healthcheck no longer pgreps watcher subprocesses; it now checks the workflow-mcp `/health` endpoint at `:8003` and `pgrep -f "^bun run /app/channels/workflow-mcp\.ts"`. Audit-DB volumes (`email-watcher`, `gdrive-watcher`) stay mounted so `workflow-mcp` can read them.
+- `docker-compose.yml` ports `9465:9465` and `9466:9466` moved from `claude-code` to the respective poller services. Watcher-specific env block removed from `claude-code`; pollers carry their own env (GMAIL_*, GDRIVE_*, INITIAL_LOOKBACK, MAX_CATCHUP_EMAILS, OTEL_*).
 
 ## 2026-04-29 — Healthcheck pgrep Self-Match + Best-Effort Self-Recovery
 

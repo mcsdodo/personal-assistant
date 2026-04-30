@@ -100,3 +100,4 @@ Detailed documentation: [`infrastructure.md`](./infrastructure.md)
 | [Watchtower exclusion & version pinning](./infrastructure.md#version-management) | DONE |
 | [MCP client retry logic](./infrastructure.md#mcp-client-retry-logic) | DONE |
 | [Testing & CI](./infrastructure.md#testing--ci) | DONE |
+| Decoupled email/gdrive pollers (independent containers, fail-loud overflow) | DONE |

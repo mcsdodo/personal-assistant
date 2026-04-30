@@ -37,22 +37,6 @@ Outlook email access via Microsoft Graph:
 - `get_attachments(message_id)` — list attachments
 - `download_attachment(message_id, attachment_id)` — download attachment (base64)
 
-### email-watcher (channel + tools)
-
-The email-watcher is both a channel (pushes events) and a tool server:
-- `get_recent_emails(limit?, source?)` — query the email audit trail
-- `get_email_stats()` — email counts and last-24h breakdown
-
-Use these for debugging (“show me recent emails”) and status checks (“how many discovered today?”).
-
-### gdrive-watcher (channel + tools)
-
-The gdrive-watcher polls a Google Drive folder (`techlab/invoicing/`) every 30 seconds for new scanned documents and pushes events here.
-
-Tools:
-- `get_gdrive_scan_status(limit?)` — query the file audit trail
-- `get_gdrive_scan_stats()` — total file count
-
 ### workflow (durable job tools)
 
 The workflow MCP adds durable background-job primitives:
@@ -75,25 +59,14 @@ The workflow worker drives the full invoice pipeline deterministically:
 - Sends Telegram notification on completion/failure
 - Pauses automatically for unknown vendors, low confidence, or browser-required cases
 
-Use `create_invoice_intake_job` or `create_scan_intake_job` only for manual reprocessing (with `force: true`). Watchers create jobs automatically.
+Use `create_invoice_intake_job` or `create_scan_intake_job` only for manual reprocessing (with `force: true`). Pollers create jobs automatically.
 
-## When you receive an email-watcher channel event
-
-The email-watcher creates workflow jobs directly when it detects new emails — you do NOT receive channel events for normal email detection. The only email-watcher channel events you receive are startup events.
-
-### Startup events
-
-The email-watcher tracks a `last_checked` timestamp per source. On startup:
-
-- **`first_start` event**: No previous checkpoint for this source. Ask the user via Telegram how far back to check (e.g. "Gmail is starting for the first time. Check emails from the last 3 days, 1 week, or skip?"). Then call `init_source(source, since)` with their answer or `skip_catchup(source)` if they say skip.
-
-- **`catchup_required` event**: Too many emails found since `last_checked` (exceeds threshold). Ask the user via Telegram: "{N} emails found for {source} since last check. Process all or skip?" Then call `approve_catchup(source)` or `skip_catchup(source)`.
-
-## GDrive watcher
-
-The gdrive-watcher creates workflow jobs directly when it detects new files — you do NOT receive channel events for normal file detection. The gdrive-watcher polls multiple Google Drive folders every 30 seconds (configured via `GDRIVE_LEVEL1` × `GDRIVE_LEVEL2`).
-
-After successful upload, the worker moves the file to `processed/` within the same watch folder. On failure (permanent), it moves to `errors/`. The `month_tag` defaults to the scan date (GDrive file creation time) but the worker overrides it with `doc_date` from the document classifier when present.
+The workflow channel also exposes four read-only debug tools backed by the
+poller-owned audit DBs (mounted via shared volume):
+- `get_recent_emails(limit?, source?)` — recent rows from email-poller's audit log
+- `get_email_stats()` — total + last-24h counts
+- `get_gdrive_scan_status(limit?)` — recent rows from gdrive-poller's audit log
+- `get_gdrive_scan_stats()` — total file count
 
 ## Email/Scan Processing Pipeline
 
@@ -196,7 +169,7 @@ The worker sends Telegram notifications automatically for uploaded and failed jo
 **When NOT to notify:**
 - `action: ignore` emails — silent
 - Job completed with `outcome: uploaded` or `failed` — worker handles it
-- Mock email-watcher events
+- Mock email-poller events
 
 **Message format:** Keep messages short (1-2 lines). No markdown. Use emoji sparingly: ✓ success, ⚠ warning, ❌ error.
 

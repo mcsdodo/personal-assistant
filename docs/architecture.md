@@ -8,25 +8,32 @@ This project runs one Docker Compose stack with Claude Code orchestrating both c
 flowchart TB
     subgraph cc[claude-code]
         claude[Claude Code session]
-        email[email-watcher]
-        drive[gdrive-watcher]
         tg[telegram]
         workflow[workflow-mcp]
+    end
+
+    subgraph pollers[poller containers]
+        emailp[email-poller]
+        drivep[gdrive-poller]
     end
 
     gmail[gmail-mcp]
     outlook[outlook-mcp]
     paperless[paperless-mcp]
     checker[checker-mcp]
+    db[(workflow.db)]
 
     claude --> workflow
     claude --> gmail
     claude --> outlook
     claude --> paperless
     claude --> checker
-    email --> gmail
-    email --> outlook
-    drive --> gmail
+    emailp --> gmail
+    emailp --> outlook
+    emailp --> db
+    drivep --> gmail
+    drivep --> db
+    workflow --> db
 ```
 
 ## Main pieces
@@ -35,13 +42,19 @@ flowchart TB
 
 Runs the Claude session in `tmux` and hosts:
 
-- `email-watcher`
-- `gdrive-watcher`
 - `telegram`
 - `workflow-mcp`
 - the Haiku-based classifier prompts
 
 See [claude-code-runtime.md](claude-code-runtime.md) for the entrypoint phases, the HTTP MCP reconnect workaround, and the gotchas baked into `entrypoint.sh`.
+
+### `email-poller`
+
+Standalone Bun container (`oven/bun:1-alpine`) that polls Gmail + Outlook every `POLL_INTERVAL_MS` (default 30s). Writes to `emails.db` (audit trail) and `workflow.db` (creates `invoice_intake` jobs). On first run, seeds `last_checked` from `INITIAL_LOOKBACK` instead of prompting Claude. Source: `pollers/email-poller/src/main.ts`.
+
+### `gdrive-poller`
+
+Standalone Bun container (`oven/bun:1-alpine`) that polls Google Drive folders (`GDRIVE_LEVEL1` × `GDRIVE_LEVEL2`) every 30s via gmail-mcp. Writes to `gdrive.db` (audit trail) and `workflow.db` (creates `scan_intake` jobs). Source: `pollers/gdrive-poller/src/main.ts`.
 
 ### `paperless-mcp`
 
@@ -61,7 +74,7 @@ Provides read-only Outlook mail access with device-code authentication.
 
 ## Pipeline summary
 
-1. A watcher detects a new email or Drive file.
+1. A poller (email-poller or gdrive-poller) detects a new email or Drive file and writes a job to `workflow.db`.
 2. Claude classifies the item.
 3. The workflow layer downloads or reads the document.
 4. The worker resolves tags, correspondents, and duplicates.
@@ -128,9 +141,9 @@ Failed jobs use exponential backoff: `attempt⁴ × (0.9 + random × 0.2)` secon
 
 `downloadFromGdrive` uses `execSync("curl ...")` instead of `fetch()`. The Gmail MCP returns download URLs with `localhost:8000` which needs Docker hostname rewriting. A `fetch()` approach would be cleaner but would require URL rewriting logic that curl handles implicitly through the Docker network.
 
-### Watchers create jobs directly
+### Pollers create jobs directly
 
-Email-watcher and gdrive-watcher import `createJob` from `workflow-db.ts` and insert jobs into SQLite directly — Claude is not in the job creation path. MCP tools (`create_invoice_intake_job`, `create_scan_intake_job`) remain available for manual reprocessing and `force=true` retry.
+Email-poller (`pollers/email-poller/src/main.ts`) and gdrive-poller (`pollers/gdrive-poller/src/main.ts`) import `createJob` from `pollers/lib/workflow-db.ts` and insert jobs into SQLite directly — Claude is not in the job creation path. MCP tools (`create_invoice_intake_job`, `create_scan_intake_job`) remain available for manual reprocessing and `force=true` retry.
 
 ## Deep dives
 

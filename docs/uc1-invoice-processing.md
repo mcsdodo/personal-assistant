@@ -11,9 +11,13 @@ flowchart LR
     subgraph cc["claude-code container (node:20-slim)"]
         direction TB
         claude["Claude CLI (Sonnet)"]
-        ew["email-watcher<br/>(stdio channel)"]
         tg["telegram<br/>(stdio channel)"]
         wf["workflow-mcp<br/>(HTTP :8003)<br/>includes invoice-worker"]
+    end
+
+    subgraph pollers["poller containers (oven/bun:1-alpine)"]
+        ep["email-poller :9465"]
+        gp["gdrive-poller :9466"]
     end
 
     subgraph mcp["MCP containers"]
@@ -23,8 +27,14 @@ flowchart LR
         checker["checker-mcp :8001"]
     end
 
-    ew -.->|polls via HTTP| gmail
-    ew -.->|polls via HTTP| outlook
+    db[(workflow.db)]
+
+    ep -.->|polls via HTTP| gmail
+    ep -.->|polls via HTTP| outlook
+    ep -->|createJob| db
+    gp -.->|polls via HTTP| gmail
+    gp -->|createJob| db
+    wf --> db
     wf -.->|callMcpTool HTTP| gmail
     wf -.->|callMcpTool HTTP| outlook
     wf -.->|callMcpTool HTTP| paperless
@@ -35,7 +45,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant G as Gmail/Outlook MCPs
-    participant EW as email-watcher<br/>(channel)
+    participant EP as email-poller<br/>(standalone container)
     participant DB as SQLite
     participant C as Claude (Sonnet)
     participant CL as email-classifier<br/>(Haiku)
@@ -46,37 +56,25 @@ sequenceDiagram
     participant TG as Telegram
 
     rect rgb(40, 40, 60)
-    note over G,TG: Startup — first run (no last_checked for source)
-    EW->>DB: getLastChecked(source)?
-    DB-->>EW: null
-    EW--)C: channel event<br/>(event_type: first_start)
-    note over C: Ask user via Telegram:<br/>"How far back to check?"
-    C->>EW: init_source(source, since)
-    EW->>DB: INSERT source_state(last_checked)
-    end
-
-    rect rgb(40, 40, 60)
-    note over G,TG: Startup — catchup required (too many since last_checked)
-    EW->>DB: getLastChecked(source)?
-    DB-->>EW: timestamp
-    G-->>EW: emails[] (count > threshold)
-    EW--)C: channel event<br/>(event_type: catchup_required, count: N)
-    note over C: Ask user via Telegram:<br/>"Process all N or skip?"
-    C->>EW: approve_catchup(source) | skip_catchup(source)
+    note over G,TG: First run — no last_checked for source
+    EP->>DB: getLastChecked(source)?
+    DB-->>EP: null
+    note over EP: Seed last_checked from INITIAL_LOOKBACK (default 3d).<br/>No Telegram prompt — fully automatic.
+    EP->>DB: INSERT source_state(last_checked = now - INITIAL_LOOKBACK)
     end
 
     rect rgb(40, 40, 60)
     note over G,TG: Normal poll — new email detected
     loop Every 30s
-        EW->>G: poll (since last_checked)
-        G-->>EW: emails[]
+        EP->>G: poll (since last_checked)
+        G-->>EP: emails[]
     end
-    EW->>DB: emailExists(id)?
-    DB-->>EW: false
-    EW->>DB: INSERT status="new"
-    EW->>DB: createJob(workflow.db)<br/>invoice_intake job
-    note over EW: No channel notification —<br/>Claude not in job creation path
-    EW->>DB: setLastChecked(source, now)
+    EP->>DB: emailExists(id)?
+    DB-->>EP: false
+    EP->>DB: INSERT email (audit trail)
+    EP->>DB: createJob(workflow.db)<br/>invoice_intake job
+    note over EP: No channel notification —<br/>Claude not in job creation path
+    EP->>DB: setLastChecked(source, now)
     end
 
     rect rgb(50, 40, 40)
@@ -138,8 +136,8 @@ Polls Gmail via the community `google_workspace_mcp` image (pinned `1.16.2`, sup
 `extractGmailIds` deduplicates IDs with `new Set()` because Gmail search results can return the same message as Message ID, Thread ID, and URL hex — without dedup, batch-fetch would process the same email multiple times.
 
 **Code:**
-- [`email-watcher.ts:381-480`](../claude-code/channels/email-watcher.ts#L381) — `pollGmail()`: search + batch-fetch + parse
-- [`email-watcher.ts:56`](../claude-code/channels/email-watcher.ts#L56) — search query from `GMAIL_SEARCH_BASE` env (default: `newer_than:1d`)
+- [`pollers/email-poller/src/main.ts`](../pollers/email-poller/src/main.ts) — `pollGmail()`: search + batch-fetch + parse
+- `GMAIL_SEARCH_BASE` env (default: `newer_than:1d`) — search query base
 
 **Auth:** Trigger `start_google_auth` from inside the Claude session. The `gmail-mcp-auth` Caddy sidecar passes the OAuth callback through while protecting the MCP endpoint with a bearer token. Tokens persist in `/mnt/shared_configs/<stack>/gmail/` or your configured persistent volume.
 
@@ -154,7 +152,7 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 **Flow:** `list_emails(top=20)` → parse response array → map to `EmailInfo`.
 
 **Code:**
-- [`email-watcher.ts:483-525`](../claude-code/channels/email-watcher.ts#L483) — `pollOutlook()`: call `list_emails`, parse array
+- [`pollers/email-poller/src/main.ts`](../pollers/email-poller/src/main.ts) — `pollOutlook()`: call `list_emails`, parse array
 - [`outlook-mcp/server.py`](../outlook-mcp/server.py) — 4 tools: `list_emails`, `get_email`, `get_attachments`, `download_attachment`
 
 **Auth:** MSAL device-code flow. On first start (no cached token), the container prints a URL and code in logs. Tokens persist in `/mnt/shared_configs/<stack>/outlook/token_cache.json` or your configured persistent volume.
@@ -287,7 +285,7 @@ Claude still handles notifications that require user interaction:
 - `notify_user` classification → ask user what to do
 - Auth expired → alert user to re-authenticate
 
-**Watcher notifications:** Email-watcher and gdrive-watcher no longer send channel notifications for new emails/files. They create workflow jobs directly in `workflow.db`. Claude only receives channel events for startup flows (`first_start`, `catchup_required`) and classification requests from the worker.
+**Poller notifications:** The email-poller and gdrive-poller services do not send channel notifications at all — they run in their own containers and create workflow jobs directly in `workflow.db`. Claude receives channel events only from `workflow-mcp` (classification requests, approval prompts). The previous `first_start` / `catchup_required` channel events were removed; first-run seeding is now handled by `INITIAL_LOOKBACK` and over-cap windows by the fail-loud `email_watcher.catchup_overflow` counter.
 
 **Telegram plugin:** Official Anthropic plugin, cloned at Docker build time from `github.com/anthropics/claude-plugins-official`.
 - [`Dockerfile:33-36`](../claude-code/Dockerfile#L33) — git clone + bun install
@@ -348,22 +346,26 @@ Routing of free-form Telegram replies into `provide_guidance` calls happens in t
 
 Claude can query Paperless directly using `search_documents` from the community Paperless MCP. Example: "do I have March invoices?" triggers a search with month filter.
 
-**Also available:** email-watcher audit trail queries:
-- [`email-watcher.ts:798-808`](../claude-code/channels/email-watcher.ts#L798) — `get_recent_emails` tool (filter by status, source, limit)
-- [`email-watcher.ts:810-816`](../claude-code/channels/email-watcher.ts#L810) — `get_email_stats` tool (counts by status, last 24h breakdown)
+**Also available:** email-poller audit trail queries via `workflow-mcp` (read-only handles into `emails.db` / `gdrive.db`):
+- `get_recent_emails(limit?, source?)` — recent rows from email-poller's audit log
+- `get_email_stats()` — total + last-24h counts
+- `get_gdrive_scan_status(limit?)` — recent rows from gdrive-poller's audit log
+- `get_gdrive_scan_stats()` — total file count
+
+Implementations: [`workflow-mcp.ts`](../claude-code/channels/workflow-mcp.ts) (search for `handleGetRecentEmails`).
 
 ## UC-1.8: GDrive Scan Auto-Upload
 
 Scanned documents dropped into Google Drive are automatically classified and uploaded to Paperless.
 
-**Pipeline:** gdrive-watcher polls multiple level2 folders under a level1 parent → creates `scan_intake` job directly in workflow.db with `file_id`, `month_tag`, and `watch_folder` → worker downloads from GDrive, requests document classification via channel → uploads to Paperless with tags derived from the folder path, moves file to `processed/`.
+**Pipeline:** gdrive-poller (standalone container) polls multiple level2 folders under a level1 parent → creates `scan_intake` job directly in workflow.db with `file_id`, `month_tag`, and `watch_folder` → worker downloads from GDrive, requests document classification via channel → uploads to Paperless with tags derived from the folder path, moves file to `processed/`.
 
 ### Scan Pipeline Flow
 
 ```mermaid
 sequenceDiagram
     participant GD as Google Drive
-    participant GW as gdrive-watcher<br/>(channel)
+    participant GW as gdrive-poller<br/>(standalone container)
     participant DB as SQLite
     participant IW as invoice-worker
     participant C as Claude (Sonnet)
@@ -425,7 +427,7 @@ At startup, the watcher resolves every level1 × level2 combination (e.g. `techl
 - [`agents/document-classifier.md`](../claude-code/agents/document-classifier.md) — Haiku classifier prompt (7-field output)
 - [`channels/file-ops.ts`](../claude-code/channels/file-ops.ts) — File-ops MCP tool server (download, delete, list, decrypt, base64, env)
 - [`channels/download-helper.ts`](../claude-code/channels/download-helper.ts) — File utility functions (readFileAsDownload, tryDecrypt) used by file-ops + invoice-worker
-- [`channels/gdrive-watcher.ts`](../claude-code/channels/gdrive-watcher.ts) — GDrive polling channel (multi-folder)
+- [`pollers/gdrive-poller/src/main.ts`](../pollers/gdrive-poller/src/main.ts) — GDrive polling service (multi-folder, standalone container)
 
 ## Download Strategies
 
@@ -440,7 +442,7 @@ The classifier assigns a `download_strategy` that determines how the worker gets
 | `browser_required` | Pauses for approval | Requires browser interaction (e.g., login-gated portal) |
 | `manual_review` | Pauses for approval | Classifier unsure, needs human review |
 
-**Vendor rules** for link extraction: [`channels/invoice-links.ts`](../claude-code/channels/invoice-links.ts) — `INVOICE_LINK_RULES` is the single source of truth for vendor-specific patterns (sender + link text + subject). Used by both email-watcher (Gmail HTML) and invoice-worker (Outlook `body_html`). The legacy `INVOICE_RULES` in `outlook-mcp/server.py` is superseded.
+**Vendor rules** for link extraction: [`channels/invoice-links.ts`](../claude-code/channels/invoice-links.ts) — `INVOICE_LINK_RULES` is the single source of truth for vendor-specific patterns (sender + link text + subject). Used by both email-poller (Gmail HTML) and invoice-worker (Outlook `body_html`). The legacy `INVOICE_RULES` in `outlook-mcp/server.py` is superseded.
 
 **Pre-job download (email path):** For `claude_download` and link strategies, Claude downloads the PDF *before* creating the intake job (using `file-ops` MCP `download_file` for links, email MCP tools for attachments). The job receives a `file_path` and the worker reads from disk. For `attachment` strategy, the worker downloads directly via MCP.
 
@@ -546,7 +548,7 @@ Non-null values from the document classifier override the corresponding email cl
 
 ### Job input schemas
 
-**invoice_intake** (email-watcher → workflow.db):
+**invoice_intake** (email-poller → workflow.db):
 
 | Field | Type |
 |-------|------|
@@ -555,7 +557,7 @@ Non-null values from the document classifier override the corresponding email cl
 
 Idempotency key: `{email_source}:{message_id}`
 
-**scan_intake** (gdrive-watcher → workflow.db):
+**scan_intake** (gdrive-poller → workflow.db):
 
 | Field | Type |
 |-------|------|
@@ -649,30 +651,37 @@ stateDiagram-v2
 
 ### Startup Events
 
-On startup, the email-watcher checks `source_state.last_checked` for each source:
+On startup, the email-poller seeds `source_state.last_checked` from the `INITIAL_LOOKBACK` env var (default `3d`) for any source whose row is missing — no Telegram interaction required. After the first cycle, the row exists and `INITIAL_LOOKBACK` is ignored.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> first_start : No last_checked<br/>(new source)
-    [*] --> catchup_required : Too many emails<br/>since last_checked
-    [*] --> normal_poll : Few/no new emails<br/>since last_checked
+    [*] --> seed : No last_checked<br/>(new source)
+    [*] --> normal_poll : last_checked exists
 
-    first_start --> waiting : Ask user via Telegram<br/>"How far back?"
-    catchup_required --> waiting : Ask user via Telegram<br/>"Process N emails or skip?"
+    seed --> normal_poll : INITIAL_LOOKBACK<br/>(default 3d)
 
-    waiting --> normal_poll : init_source / approve_catchup
-    waiting --> normal_poll : skip_catchup
+    normal_poll --> normal_poll : <= MAX_CATCHUP_EMAILS<br/>per cycle
+    normal_poll --> overflow : > MAX_CATCHUP_EMAILS<br/>(default 200)
+
+    overflow --> normal_poll : Operator runs<br/>skip-catchup CLI
 
     normal_poll --> [*] : Resume 30s polling
 ```
 
-**Tools:** `init_source(source, since)`, `approve_catchup(source)`, `skip_catchup(source)` — defined at [`email-watcher.ts:818-856`](../claude-code/channels/email-watcher.ts#L818)
+**Overflow handling:** When a poll cycle returns more than `MAX_CATCHUP_EMAILS` (default 200) new emails for a source, the poller logs `ERROR: <source> catchup overflow`, increments OTel counter `email_watcher.catchup_overflow{source=...}`, and does **not** advance `last_checked`. Operator escape hatch:
+
+```bash
+docker exec personal-assistant-email-poller \
+  bun /app/email-poller/cli/skip-catchup.ts gmail
+```
+
+The previous bidirectional control plane (`first_start` / `catchup_required` channel events plus the `init_source` / `approve_catchup` / `skip_catchup` MCP tools) has been removed.
 
 ### Status Reference
 
 | Status | Meaning | Set by | Timestamp |
 |--------|---------|--------|-----------|
-| `new` | Newly detected, job created in workflow.db | email-watcher `processNewEmails` | `discovered_at` |
+| `new` | Newly detected, job created in workflow.db | email-poller `processNewEmails` | `discovered_at` |
 | `classified` | email-classifier returned classification JSON | Claude via `update_email_status` | `classified_at` (auto) |
 | `processed` | invoice-worker completed (uploaded or duplicate) | Claude via `update_email_status` | `processed_at` (auto) |
 | `ignored` | Classifier said action=ignore (not an invoice) | Claude via `update_email_status` | `processed_at` |
@@ -680,12 +689,12 @@ stateDiagram-v2
 
 ### Design Decisions
 
-- **Checkpoint-based polling**: Each source tracks a `last_checked` timestamp in `source_state`. On startup, the watcher checks how many emails exist since `last_checked` — if too many, it asks the user via Telegram before processing (catchup flow)
+- **Checkpoint-based polling**: Each source tracks a `last_checked` timestamp in `source_state`. New sources are seeded from `INITIAL_LOOKBACK` (default `3d`); over-cap windows fail loud (counter + log) without advancing the cursor
 - **Capping**: Max 5 new emails per poll cycle (`MAX_NEW_PER_CYCLE`) to avoid flooding Claude's context
 - **Two-stage update**: Classification and processing are separate `update_email_status` calls — shows where in the pipeline an email stalled
 - **Auto-timestamps**: `classified_at` set when `classification` provided, `processed_at` when `process_result` provided
 - **Idempotent inserts**: `INSERT OR IGNORE` on email ID prevents duplicate pushes across restarts
 - **MCP client retry**: The invoice-worker calls MCP servers (gmail, outlook, paperless) via HTTP. Transient network errors (DNS resolution, connection refused) are retried with exponential backoff (3 retries, 1s→2s→4s). See [`mcp-client.ts:40-55`](../claude-code/channels/mcp-client.ts#L40)
 
-**Startup flow:** On first run for a source, a `first_start` event triggers user interaction (init_source). On subsequent starts, if too many emails accumulated, a `catchup_required` event triggers approval (approve_catchup/skip_catchup). Normal polls resume after.
-- [`email-watcher.ts:624-730`](../claude-code/channels/email-watcher.ts#L624) — `pollCycle()`: checkpoint check, catchup detection, dedup, direct job creation
+**Startup flow:** On first run for a source, the poller seeds `last_checked = now - INITIAL_LOOKBACK` automatically. Subsequent cycles either process up to `MAX_CATCHUP_EMAILS` and advance the cursor, or fail loud (counter + log, cursor unchanged) when over the cap. Operator decides whether to raise the cap or run `skip-catchup`.
+- [`pollers/email-poller/src/main.ts`](../pollers/email-poller/src/main.ts) — `pollCycle()`: dedup, overflow guard, direct job creation
