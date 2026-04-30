@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-04-30 — GDrive Scan E2E Test
+
+### Added
+- E2E test `test_gdrive_scan_uploads_to_paperless` — uploads a unique PDF to the Drive watch folder, polls Paperless for up to 5 minutes, and asserts the file moved to `processed/`. Registered under the new `gdrive` pytest marker. Drive helpers (`DriveTestClient`, `make_drive_service`, `get_drive_service`) and `paperless_search_documents` / `paperless_get_document` convenience wrappers added to `tests/helpers.py`.
+
 ## 2026-04-30 — Email Poller: skip-catchup CLI
 
 ### Added
