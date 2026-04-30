@@ -130,11 +130,11 @@ def collect_month(
             result["rows"].append(
                 {
                     "date": "",
-                    "desc": inv["title"][:40].ljust(40),
+                    "desc": "no statement".ljust(40),
                     "amount": f"{amt:>10.2f} ",
                     "status": "pending",
                     "label": "PENDING",
-                    "detail": "no statement",
+                    "detail": inv["title"],
                     "doc_id": inv["id"],
                 }
             )
@@ -312,11 +312,11 @@ def collect_month(
             result["rows"].append(
                 {
                     "date": "",
-                    "desc": inv["title"][:40].ljust(40),
+                    "desc": "not in this statement".ljust(40),
                     "amount": f"{amt:>10.2f} ",
                     "status": "info",
                     "label": "NEXT STATEMENT",
-                    "detail": "not in this statement",
+                    "detail": inv["title"],
                     "doc_id": inv["id"],
                 }
             )
@@ -377,7 +377,7 @@ def filter_resolved_unmatched(results: list[dict]) -> None:
                     # (likely paid cash or private money)
                     row["status"] = "unaccounted"
                     row["label"] = "NOT IN STATEMENTS"
-                    row["detail"] = "not in this or next statement"
+                    row["desc"] = "not in this or next statement".ljust(40)
                     r["stats"]["info"] -= 1
                     r["stats"]["missing"] += 1
             filtered.append(row)
@@ -571,7 +571,7 @@ def collect_pl(
                     if doc_inv["_amounts"][0] * paired["_amounts"][0] < 0:
                         continue
 
-            title = row.get("desc", "").strip().lower()
+            title = row.get("detail", "").strip().lower()
             if not any(title.startswith(p) for p in INCOME_PREFIXES):
                 continue
 
@@ -595,7 +595,7 @@ def collect_pl(
             income_items.append(
                 {
                     "month": attr_month,
-                    "label": row["desc"].strip(),
+                    "label": row["detail"].strip(),
                     "amount": net_amount,
                     "gross": round(amount, 2),
                     "doc_id": doc_id,
