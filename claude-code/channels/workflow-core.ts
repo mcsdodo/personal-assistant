@@ -20,7 +20,13 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 import { getTracer, SpanStatusCode, remoteParentContext } from "./tracing";
 import type { Span } from "./tracing";
-import { getEmailTraceId } from "./db";
+/** Inlined from ./db (removed in task 62/task 8). */
+function getEmailTraceId(db: import("bun:sqlite").Database, emailId: string): string | null {
+  const row = db
+    .prepare("SELECT trace_id FROM emails WHERE id = ? LIMIT 1")
+    .get(emailId) as { trace_id: string | null } | null;
+  return row?.trace_id ?? null;
+}
 
 const tracer = getTracer("workflow");
 

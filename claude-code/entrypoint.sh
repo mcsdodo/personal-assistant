@@ -46,8 +46,6 @@ fi
 # Run Claude Code in interactive mode inside tmux
 tmux new-session -d -s claude \
   "claude --model sonnet --remote-control --name personal-assistant \
-    --dangerously-load-development-channels server:email-watcher \
-    --dangerously-load-development-channels server:gdrive-watcher \
     --dangerously-load-development-channels server:telegram \
     --dangerously-load-development-channels server:workflow \
     --permission-mode dontAsk \
@@ -100,18 +98,16 @@ done
 # skips it entirely, not just delays it.
 #
 # To prevent an infinite restart loop, channels are split into two tiers:
-#   CRITICAL: email-watcher + workflow-mcp — the invoice pipeline is dead
-#             without these. Missing a critical channel → kill tmux → exit 1.
-#   BEST_EFFORT: gdrive-watcher, telegram, file-ops — important but the
-#                container should run without them. Missing → log WARN, not
-#                restart. The watchdog also uses these tiers.
+#   CRITICAL: workflow-mcp — the invoice pipeline is dead without it.
+#             Missing a critical channel → kill tmux → exit 1.
+#   BEST_EFFORT: telegram, file-ops — important but the container should
+#                run without them. Missing → log WARN, not restart.
+#                The watchdog also uses these tiers.
 echo "Verifying stdio channels spawned..."
 CRITICAL_CHANNELS=(
-  "email-watcher.ts"
   "workflow-mcp.ts"
 )
 BEST_EFFORT_CHANNELS=(
-  "gdrive-watcher.ts"
   "telegram/server.ts"
   "file-ops.ts"
 )

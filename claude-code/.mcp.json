@@ -1,13 +1,5 @@
 {
   "mcpServers": {
-    "email-watcher": {
-      "command": "bun",
-      "args": ["run", "/app/channels/email-watcher.ts"]
-    },
-    "gdrive-watcher": {
-      "command": "bun",
-      "args": ["run", "/app/channels/gdrive-watcher.ts"]
-    },
     "telegram": {
       "command": "bun",
       "args": ["run", "/app/channels/telegram/server.ts"]
