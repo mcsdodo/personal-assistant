@@ -26,6 +26,14 @@ This project was developed as part of a private monorepo. This changelog was gen
 - `claude-code` container: only 3 stdio channels remain (`telegram`, `file-ops`, `workflow-mcp`). Healthcheck no longer pgreps watcher subprocesses; it now checks the workflow-mcp `/health` endpoint at `:8003` and `pgrep -f "^bun run /app/channels/workflow-mcp\.ts"`. Audit-DB volumes (`email-watcher`, `gdrive-watcher`) stay mounted so `workflow-mcp` can read them.
 - `docker-compose.yml` ports `9465:9465` and `9466:9466` moved from `claude-code` to the respective poller services. Watcher-specific env block removed from `claude-code`; pollers carry their own env (GMAIL_*, GDRIVE_*, INITIAL_LOOKBACK, MAX_CATCHUP_EMAILS, OTEL_*).
 
+### Fixed
+- E2E test setup after the watcher decoupling. `wait_claude_ready` no longer waits for the deleted `email-watcher.ts` channel. `full_reset` now stops `email-poller` and `gdrive-poller` together with `claude-code`, so they release their SQLite handles before `clear_dbs` runs (without this, writes hit the deleted inode and the new DBs stay empty). Pollers run as `user: "1000:1000"` in compose so the workflow.db they create is writable by the `node` user inside `claude-code`.
+- Scan-intake worker now sees `GMAIL_EMAIL` (and `GDRIVE_MCP_URL`) in the `claude-code` environment, so `get_drive_file_download_url` no longer 403s on missing `user_google_email`.
+- E2E gdrive test now matches Paperless docs by `original_file_name` (the title is `vendor - order_id`, not the upload filename) and retries the move-to-`processed/` assertion for up to 90s while the job finishes its post-upload steps.
+
+### Removed
+- Stale Windows-only `playwright` MCP entry from the repo-root `.mcp.json` (handled per-machine via Codex/Claude config now, not shared in the monorepo).
+
 ## 2026-04-29 — Healthcheck pgrep Self-Match + Best-Effort Self-Recovery
 
 ### Fixed
