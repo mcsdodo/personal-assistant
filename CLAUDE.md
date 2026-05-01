@@ -67,7 +67,7 @@ claude-code container (node:20-slim, user: node, --model sonnet)
 ├── Claude Code interactive session in tmux (--remote-control)
 ├── telegram channel (official plugin, cloned at build, two-way)
 ├── file-ops tool server (stdio, scoped file downloads/deletes/decrypt/base64/env)
-├── workflow-mcp channel+tools (stdio, durable job queue + invoice-worker, health on :8003)
+├── workflow-mcp channel+tools (stdio, durable job queue MCP surface + 2s classification push loop)
 │   ├── exposes 4 read-only debug tools that read emails.db / gdrive.db via the shared volume
 │   ├── get_recent_emails, get_email_stats, get_gdrive_scan_status, get_gdrive_scan_stats
 ├── subagents: email-classifier (haiku), document-classifier (haiku, returns owner field)
@@ -83,6 +83,14 @@ gdrive-poller container (oven/bun:1-alpine)
 ├── polls Google Drive folders (GDRIVE_LEVEL1 × GDRIVE_LEVEL2) every 30s via gmail-mcp
 ├── writes gdrive.db (audit trail) + workflow.db (creates scan_intake jobs)
 └── exposes /health on :9466
+
+pa-worker container (oven/bun:1-alpine)
+├── runs /app/channels/worker.ts (extracted from workflow-mcp by task 64)
+├── workerTick on WORKFLOW_POLL_MS — reclaim stale + executeNextJob
+├── sweepStaleGuidance on 60s (reminder at 24h, fail at 72h)
+├── sweepOrphanedDownloads once on boot
+├── notifyTelegram (outbound — uploaded/failed/refreshed/guidance reminders)
+└── exposes /health on :8003
 
 paperless-mcp container (ghcr.io/baruchiro/paperless-mcp:latest)
 └── 20 Paperless-ngx CRUD tools on :3000/mcp
@@ -101,6 +109,8 @@ outlook-mcp container (python:3.12-slim)
 
 Pollers are pure data-path containers — they write directly into `workflow.db`. They are independent of Claude Code's lifecycle, so an MCP-spawn race can never break ingest. Only `telegram`, `file-ops`, and `workflow-mcp` remain as Claude Code stdio channels (they each need access to the live Claude session). MCP tool servers run as separate containers via Streamable HTTP (`"type": "http"` in `.mcp.json`).
 
+The workflow executor runs in a separate `pa-worker` Docker container — `workflow-mcp` writes a `classification_request_meta` job event when the worker parks a job for classification, and a 2s push loop in `workflow-mcp` (running inside `claude-code` with the live Claude session) drains those breadcrumbs into channel notifications. Net latency cost: one `WORKFLOW_POLL_MS` tick (~2s) before Claude sees the request.
+
 ## Robustness & Health
 
 ### Health Checks
@@ -109,7 +119,8 @@ All services have Docker health checks. `claude-code` depends on all MCPs via `d
 
 | Service | Health check | Interval | Start period |
 |---|---|---|---|
-| `claude-code` | tmux session alive + workflow-mcp `/health` (port 8003) + workflow-mcp pgrep | 30s | 90s |
+| `claude-code` | tmux session alive + pgrep workflow-mcp | 30s | 90s |
+| `pa-worker` | HTTP `/health` (port 8003) | 30s | 30s |
 | `email-poller` | HTTP `/health` (port 9465) — staleness check on `lastSuccessfulPollAt` | 30s | 30s |
 | `gdrive-poller` | HTTP `/health` (port 9466) — staleness check on `lastSuccessfulPollAt` | 30s | 30s |
 | `checker-mcp` | TCP socket check (ports 8001 + 5000) | 30s | 15s |
@@ -194,7 +205,9 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 | `claude-code/channels/download-helper.ts` | File utility functions (readFileAsDownload, tryDecrypt) used by file-ops + invoice/intake-worker |
 | `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-poller + invoice/download-service) |
 | `claude-code/channels/mcp-client.ts` | HTTP MCP client with retry logic (exponential backoff for transient network errors) + `McpToolError` thrown on `isError: true` tool responses so error payloads don't silently leak into callers as if they were valid output (task 48) |
-| `claude-code/channels/workflow-mcp.ts` | Durable job queue channel (stdio, health on :8003) + invoice/scan worker loop. Runs the download-cleanup safety sweep on boot. |
+| `claude-code/channels/workflow-mcp.ts` | Durable job queue channel (stdio) — MCP tool surface (create/get/list/approve/cancel jobs, submit_classification, provide_guidance) + 2s classification push loop that drains `classification_request_meta` breadcrumbs into Claude channel notifications. |
+| `claude-code/channels/worker.ts` | Standalone executor module (task 64): workerTick, sweepStaleGuidance, sweepOrphanedDownloads (boot), notifyTelegram, /health on :8003. Runs in pa-worker container. |
+| `worker/Dockerfile` | Bun-based image for the pa-worker container. Build context is ./claude-code so it shares the channels/ source tree with workflow-mcp. |
 | `claude-code/channels/workflow-db.ts` | jobs + job_events SQLite schema, lifecycle helpers, schema validation gateway, file-cleanup helpers, indexed `paperless_doc_id` column for multi-stage refresh lookups |
 | `claude-code/channels/workflow-schemas.ts` | Runtime validation for InvoiceIntakeInput, ScanIntakeInput, EmailClassificationResult, DocumentClassificationResult |
 | `claude-code/channels/paperless-adapter.ts` | Unified Paperless boundary (MCP + REST). Owns correspondent/tag/doc-type/storage CRUD, dedup search, upload, PATCH, task polling, custom fields. |

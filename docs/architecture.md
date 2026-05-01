@@ -17,6 +17,7 @@ flowchart TB
         drivep[gdrive-poller]
     end
 
+    worker[pa-worker]
     gmail[gmail-mcp]
     outlook[outlook-mcp]
     paperless[paperless-mcp]
@@ -34,6 +35,10 @@ flowchart TB
     drivep --> gmail
     drivep --> db
     workflow --> db
+    worker --> db
+    worker --> gmail
+    worker --> outlook
+    worker --> paperless
 ```
 
 ## Main pieces
@@ -55,6 +60,10 @@ Standalone Bun container (`oven/bun:1-alpine`) that polls Gmail + Outlook every 
 ### `gdrive-poller`
 
 Standalone Bun container (`oven/bun:1-alpine`) that polls Google Drive folders (`GDRIVE_LEVEL1` × `GDRIVE_LEVEL2`) every 30s via gmail-mcp. Writes to `gdrive.db` (audit trail) and `workflow.db` (creates `scan_intake` jobs). Source: `pollers/gdrive-poller/src/main.ts`.
+
+### `pa-worker`
+
+Standalone Bun container (`oven/bun:1-alpine`) that runs the durable job executor extracted from `workflow-mcp` by task 64. Polls `workflow.db` every `WORKFLOW_POLL_MS` (default 2s) — claims queued jobs, reclaims stale ones, runs the invoice/scan pipelines, sweeps stale guidance jobs (24h reminder / 72h auto-fail), sweeps orphaned downloads on boot, and posts outbound Telegram notifications. Communicates with `workflow-mcp` (in `claude-code`) only via the shared `workflow.db` SQLite WAL. Health endpoint `/health` on `:8003`. Source: `claude-code/channels/worker.ts`. Decoupling the worker from the Claude container removes the v2.1.x MCP-spawn race as a failure mode for job execution.
 
 ### `paperless-mcp`
 

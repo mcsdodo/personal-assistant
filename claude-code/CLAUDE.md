@@ -49,6 +49,8 @@ The workflow MCP adds durable background-job primitives:
 - `cancel_job(job_id, reason?)` — cancel a queued, running, or awaiting_approval job (cannot cancel failed/completed)
 - `provide_guidance(job_id, guidance)` — resume a job paused in `awaiting_user_guidance`. `guidance.action` is one of `skip | retry | fail | patch`. See "Guidance routing for paused jobs" below for how to translate Telegram replies into this call.
 
+The workflow worker runs in a separate `pa-worker` container, communicating with the workflow-mcp tool surface (in `claude-code`) via the shared `workflow.db` SQLite WAL — no in-process coupling.
+
 The workflow worker drives the full invoice pipeline deterministically:
 - Requests email classification via channel (you run the haiku subagent)
 - Downloads attachments or extracts invoice links from email HTML

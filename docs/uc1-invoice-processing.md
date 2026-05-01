@@ -491,6 +491,8 @@ The worker parks jobs in `awaiting_user_guidance` via `pauseForGuidance` when th
 
 The worker processes jobs in ticks. When it needs Claude's classification, it parks the job in `awaiting_classification` and moves to the next job. Claude's `submit_classification` call moves the job back to `queued`, where the worker picks it up on the next tick and resumes from the last completed step.
 
+**Channel push from `workflow-mcp` (post task 64).** Since the worker runs in the standalone `pa-worker` container — which has no MCP `Server` attached to a live Claude session — it cannot push `classify_email` / `classify_document` channel notifications directly. Instead, when the worker parks a job in `awaiting_classification`, it writes a `classification_request_meta` event to `workflow.db`. A 2s push loop inside `workflow-mcp` (running in `claude-code` with the live Claude session) drains those breadcrumbs and emits the channel notification. Net cost: one `WORKFLOW_POLL_MS` tick (~2s) of latency before Claude sees the request.
+
 **Code:**
 - [`workflow-db.ts:46-78`](../claude-code/channels/workflow-db.ts#L46) — schema: `jobs` + `job_events` tables
 - [`workflow-core.ts:56`](../claude-code/channels/workflow-core.ts#L56) — `executeNextJob()`: claim + dispatch by workflow_type
