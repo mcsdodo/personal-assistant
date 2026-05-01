@@ -40,6 +40,15 @@ const NON_ALZA_HTML = `
 </body></html>
 `;
 
+// Real Alza href encodes `&` as `&amp;` per HTML attribute rules. The extracted
+// URL must be decoded — otherwise fetch() sends `&amp;x=...` which Alza parses
+// as a query param named `amp;x` and returns HTTP 404.
+const ALZA_AMP_ENTITY_HTML = `
+<html><body>
+  <a href="https://www.alza.sk/Apps/pdfdoc.asp?d=5419913904&amp;x=22B221303522304236TgB1R24C7&amp;utm_source=template">Stiahnuť&nbsp;faktúru</a>
+</body></html>
+`;
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 describe("extractInvoiceLinks", () => {
@@ -231,6 +240,32 @@ describe("extractInvoiceLinks", () => {
       </body></html>`;
       const links = extractInvoiceLinks(html, "info@alza.sk", "Order");
       expect(links).toHaveLength(1);
+    });
+  });
+
+  describe("href HTML entity decoding (regression — task 59 / 2026-04-18)", () => {
+    test("decodes &amp; in href so signed query params reach the server intact", () => {
+      const links = extractInvoiceLinks(
+        ALZA_AMP_ENTITY_HTML,
+        "sluzobnicek@alza.sk",
+        "Už to chystáme. / Obj. č. 593058485",
+      );
+
+      expect(links).toHaveLength(1);
+      // Must be `&x=`, not `&amp;x=` — fetch() of `&amp;x=...` makes Alza
+      // parse it as a query param named `amp;x` and return HTTP 404.
+      expect(links[0].url).not.toContain("&amp;");
+      expect(links[0].url).toContain("&x=22B221303522304236TgB1R24C7");
+      expect(links[0].url).toContain("&utm_source=template");
+    });
+
+    test("docId is parsed correctly from a href that originally had &amp;", () => {
+      const links = extractInvoiceLinks(
+        ALZA_AMP_ENTITY_HTML,
+        "sluzobnicek@alza.sk",
+        "Už to chystáme. / Obj. č. 593058485",
+      );
+      expect(links[0].docId).toBe("5419913904");
     });
   });
 });

@@ -62,7 +62,11 @@ export function extractInvoiceLinks(
 
   let match: RegExpExecArray | null;
   while ((match = anchorRegex.exec(html)) !== null) {
-    const href = match[1].trim();
+    // HTML attribute values must encode `&` as `&amp;`. Decode before use:
+    // Alza's signed PDF URL `?d=…&amp;x=<token>` is parsed as a param named
+    // `amp;x` if left literal, the signature check fails, and we get HTTP 404.
+    // See _tasks/_done/59-multi-stage-vendor-emails/01-task.md.
+    const href = match[1].trim().replace(/&amp;/g, "&");
     if (seen.has(href) || !href.startsWith("http")) continue;
     seen.add(href);
 
