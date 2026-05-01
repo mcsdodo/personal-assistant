@@ -338,6 +338,40 @@ export function handleGetGdriveScanStats(roDb: Database): { total: number } {
   return { total: row.count };
 }
 
+export interface InvoiceIntakeInputPayload {
+  email_source: string;
+  message_id: string;
+  sender: string | null;
+  subject: string | null;
+  received_at: string | null;
+  force?: true;
+}
+
+// Builds the input_json payload for a manual `create_invoice_intake_job` call.
+// Watcher-created jobs ship sender/subject/received_at directly; manual jobs
+// only get email_source+message_id from the operator. Look those fields up
+// from the emails.db audit row so `submitClassification`'s merge step has
+// real values, otherwise vendor-rule link extraction in `extractInvoiceLinks`
+// bails out (sender+subject both null short-circuits to no matches).
+export function buildInvoiceIntakeInputPayload(
+  emailDbRo: Database,
+  args: { email_source: string; message_id: string; force: boolean },
+): InvoiceIntakeInputPayload {
+  const row = emailDbRo
+    .prepare("SELECT sender, subject, received_at FROM emails WHERE id = ? LIMIT 1")
+    .get(args.message_id) as
+      | { sender: string | null; subject: string | null; received_at: string | null }
+      | null;
+  return {
+    email_source: args.email_source,
+    message_id: args.message_id,
+    sender: row?.sender ?? null,
+    subject: row?.subject ?? null,
+    received_at: row?.received_at ?? null,
+    ...(args.force ? { force: true as const } : {}),
+  };
+}
+
 const mcp = new Server(
   { name: "workflow", version: "0.3.0" },
   {
@@ -550,11 +584,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Use source:message_id as idempotency key; force bypasses with unique suffix
         // AND propagates into input_json so the worker can branch dedup → patch.
         const force = Boolean(args?.force);
-        const inputPayload = {
+        const inputPayload = buildInvoiceIntakeInputPayload(getEmailDbRo(), {
           email_source: emailSource,
           message_id: messageId,
-          ...(force ? { force: true } : {}),
-        };
+          force,
+        });
         const idempotencyKey = force
           ? `${emailSource}:${messageId}:force-${Date.now()}`
           : `${emailSource}:${messageId}`;

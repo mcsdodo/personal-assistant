@@ -4,6 +4,7 @@ import {
   openEmailDbReadOnly, openGdriveDbReadOnly,
   handleGetRecentEmails, handleGetEmailStats,
   handleGetGdriveScanStatus, handleGetGdriveScanStats,
+  buildInvoiceIntakeInputPayload,
 } from "./workflow-mcp";
 
 function tmpPath(prefix: string): string {
@@ -18,13 +19,15 @@ function seedEmailsDb(path: string, rows: Array<Record<string, unknown>>): void 
     discovered_at TEXT NOT NULL DEFAULT (datetime('now')), trace_id TEXT,
     invoice_links TEXT
   );`);
-  const stmt = db.prepare(`INSERT INTO emails (id, source, sender, subject, has_attachments)
-                           VALUES (?, ?, ?, ?, ?)`);
+  const stmt = db.prepare(`INSERT INTO emails
+    (id, source, sender, subject, has_attachments, received_at)
+    VALUES (?, ?, ?, ?, ?, ?)`);
   for (const r of rows) {
     stmt.run(r.id as string, r.source as string,
              (r.sender as string | null) ?? null,
              (r.subject as string | null) ?? null,
-             r.has_attachments ? 1 : 0);
+             r.has_attachments ? 1 : 0,
+             (r.received_at as string | null) ?? null);
   }
   db.close();
 }
@@ -97,5 +100,65 @@ describe("workflow-mcp read-only debug tools", () => {
     expect(() =>
       roDb.prepare("INSERT INTO emails (id, source) VALUES ('x', 'gmail')").run(),
     ).toThrow(/readonly|read-only/i);
+  });
+});
+
+describe("buildInvoiceIntakeInputPayload", () => {
+  it("populates sender/subject/received_at from emails.db so known_link reprocess can match vendor rules", () => {
+    const path = tmpPath("emails");
+    seedEmailsDb(path, [{
+      id: "msg-alza", source: "outlook",
+      sender: "sluzobnicek@alza.sk",
+      subject: "Už to chystáme. / Obj. č. 593058485",
+      received_at: "2026-04-20T09:57:11Z",
+      has_attachments: true,
+    }]);
+    const roDb = openEmailDbReadOnly(path);
+
+    const payload = buildInvoiceIntakeInputPayload(roDb, {
+      email_source: "outlook",
+      message_id: "msg-alza",
+      force: true,
+    });
+
+    expect(payload.email_source).toBe("outlook");
+    expect(payload.message_id).toBe("msg-alza");
+    expect(payload.sender).toBe("sluzobnicek@alza.sk");
+    expect(payload.subject).toBe("Už to chystáme. / Obj. č. 593058485");
+    expect(payload.received_at).toBe("2026-04-20T09:57:11Z");
+    expect(payload.force).toBe(true);
+  });
+
+  it("omits force flag when not requested", () => {
+    const path = tmpPath("emails");
+    seedEmailsDb(path, [{
+      id: "msg-2", source: "gmail", sender: "x@y.com", subject: "S",
+      received_at: "2026-04-21T00:00:00Z", has_attachments: false,
+    }]);
+    const roDb = openEmailDbReadOnly(path);
+
+    const payload = buildInvoiceIntakeInputPayload(roDb, {
+      email_source: "gmail",
+      message_id: "msg-2",
+      force: false,
+    });
+
+    expect("force" in payload).toBe(false);
+  });
+
+  it("returns null metadata when message_id is not in emails.db (legacy/manual ids)", () => {
+    const path = tmpPath("emails");
+    seedEmailsDb(path, []);
+    const roDb = openEmailDbReadOnly(path);
+
+    const payload = buildInvoiceIntakeInputPayload(roDb, {
+      email_source: "outlook",
+      message_id: "missing",
+      force: false,
+    });
+
+    expect(payload.sender).toBeNull();
+    expect(payload.subject).toBeNull();
+    expect(payload.received_at).toBeNull();
   });
 });
