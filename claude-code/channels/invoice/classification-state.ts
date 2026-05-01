@@ -20,7 +20,7 @@
 import type { Database } from "bun:sqlite";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
-import { requestClassification } from "../workflow-db";
+import { addJobEvent, requestClassification } from "../workflow-db";
 
 export interface ClassificationRequestParams {
   /** Step name written into requestClassification + the channel meta. */
@@ -59,6 +59,12 @@ export async function parkForClassification(
   logger: ClassificationStateLogger,
 ): Promise<void> {
   requestClassification(db, jobId, params.step, params.parkedPayload);
+  // Breadcrumb so workflow-mcp can replay channel notifications written by
+  // the soon-to-be-extracted pa-worker container, which has no MCP server
+  // attached to a live Claude session. Backwards-compatible — existing
+  // channel push path still emits the notification below; the dedupe lives
+  // on the workflow-mcp side via a `classification_pushed` event.
+  addJobEvent(db, jobId, "classification_request_meta", params.notificationMeta);
   if (params.channel) {
     await params.channel.notification({
       method: "notifications/claude/channel",
