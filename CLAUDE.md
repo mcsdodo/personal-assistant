@@ -447,7 +447,73 @@ This advances `last_checked = now` so the next poll cycle starts fresh.
 
 ## Development
 
-Development runs locally on the Windows dev machine using Docker Desktop with the `local` profile:
+Development runs locally on the Windows dev machine using Docker Desktop with the `local` profile.
+
+### First-time local setup
+
+On a fresh machine or VM, two things must happen before the stack will stay healthy:
+
+**1. Fix `data/` directory ownership.**
+Docker creates bind-mount directories as `root:root` on first run, but several containers run as UID 1000 (`node`/`app`). Without the ownership fix, `gmail-mcp` crashes with a permission error on its credentials dir and `claude-code` can't write `settings.json`:
+
+```bash
+# Run once before (or after) first `docker compose up`
+sudo chown -R 1000:1000 data/claude-config data/downloads data/email-watcher data/gdrive-watcher data/gmail
+```
+
+Note: `data/outlook/` and `data/paperless/` can stay root-owned — those containers run as root.
+
+**2. Log Claude in.**
+A fresh `data/claude-config/` has no `.credentials.json`. Without credentials Claude exits immediately, killing all its stdio channels (`workflow-mcp.ts`, `telegram`, `file-ops`), and the container loops in a crash-restart cycle. Log in once with a temporary one-shot container (credentials persist in the bind-mounted volume):
+
+```bash
+docker run --rm -it -u node \
+  -v $(pwd)/data/claude-config:/home/node/.claude \
+  --entrypoint claude personal-assistant-claude-code:latest login
+```
+
+After login completes, start (or restart) the main stack as normal.
+
+**3. Bootstrap the local Paperless instance.**
+The local Paperless container starts empty (no admin user, no API token). `workflow-mcp.ts` calls `fieldRegistry.init()` on startup which hits the Paperless API — without a valid token it retries for ~62s then crashes, keeping the container unhealthy. Create the admin and token before starting `claude-code`:
+
+```bash
+# Create admin superuser (non-interactive)
+docker exec personal-assistant-paperless \
+  python3 manage.py createsuperuser --username admin --email admin@local.com --noinput
+
+# Generate API token (copy the token value from output)
+docker exec personal-assistant-paperless \
+  python3 manage.py drf_create_token admin
+
+# Put the token in .env
+sed -i 's/^PAPERLESS_API_TOKEN=.*/PAPERLESS_API_TOKEN=<paste-token-here>/' .env
+
+# Recreate services that use the token
+docker compose --profile local up -d checker-mcp paperless-mcp claude-code
+```
+
+The superuser password isn't set by default — set it if you need Paperless UI access (`manage.py changepassword admin`).
+
+**Typical first-deploy sequence:**
+
+```bash
+# 1. Build images and start all services except claude-code (which needs credentials)
+docker compose --profile local up -d --build
+
+# 2. Wait for gmail-mcp to become healthy, then fix ownership
+sudo chown -R 1000:1000 data/claude-config data/downloads data/email-watcher data/gdrive-watcher data/gmail
+
+# 3. Log Claude in (one-time)
+docker run --rm -it -u node \
+  -v $(pwd)/data/claude-config:/home/node/.claude \
+  --entrypoint claude personal-assistant-claude-code:latest login
+
+# 4. Bootstrap local Paperless (see step 3 above for commands)
+
+# 5. Recreate services with valid token, Claude comes up healthy
+docker compose --profile local up -d
+```
 
 ```bash
 # Start the full stack (from compose.stacks/infra/personal-assistant/)
