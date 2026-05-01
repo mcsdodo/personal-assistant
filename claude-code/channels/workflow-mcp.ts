@@ -190,37 +190,44 @@ export async function pushPendingClassifications(
   dbInstance: Database,
   channel: Server,
 ): Promise<void> {
+  // A single job can request classification multiple times (classify_email
+  // followed later by classify_document). Dedup must be per-request, not
+  // per-job — find every classification_request_meta whose row id is greater
+  // than the latest classification_pushed for the same job. The job_events
+  // table's `id` column is auto-increment so it serves as a stable order.
   const pending = dbInstance.prepare(
-    `SELECT j.id FROM jobs j
-     WHERE j.state = 'awaiting_classification'
-       AND NOT EXISTS (
-         SELECT 1 FROM job_events e
-         WHERE e.job_id = j.id AND e.event_type = 'classification_pushed'
-       )
-       AND EXISTS (
-         SELECT 1 FROM job_events e
-         WHERE e.job_id = j.id AND e.event_type = 'classification_request_meta'
-       )`,
-  ).all() as { id: string }[];
+    `SELECT m.job_id, m.id AS meta_id, m.payload_json
+       FROM job_events m
+       JOIN jobs j ON j.id = m.job_id
+      WHERE j.state = 'awaiting_classification'
+        AND m.event_type = 'classification_request_meta'
+        AND m.id > COALESCE(
+          (SELECT MAX(p.id) FROM job_events p
+            WHERE p.job_id = m.job_id AND p.event_type = 'classification_pushed'),
+          0)
+      ORDER BY m.id ASC`,
+  ).all() as { job_id: string; meta_id: number; payload_json: string }[];
 
-  for (const { id } of pending) {
-    const metaRow = dbInstance.prepare(
-      `SELECT payload_json FROM job_events
-       WHERE job_id = ? AND event_type = 'classification_request_meta'
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-    ).get(id) as { payload_json: string } | undefined;
-    if (!metaRow) continue;
-    const meta = JSON.parse(metaRow.payload_json);
+  // Multiple meta rows for the same job can show up if breadcrumb events
+  // race ahead of the push loop. Only push the most recent per job; older
+  // meta rows describe a step that's already been answered.
+  const latestByJob = new Map<string, { meta_id: number; payload_json: string }>();
+  for (const row of pending) {
+    latestByJob.set(row.job_id, { meta_id: row.meta_id, payload_json: row.payload_json });
+  }
+
+  for (const [jobId, { payload_json }] of latestByJob) {
+    const meta = JSON.parse(payload_json);
     const eventType = String(meta.event_type ?? "classify_email");
-    const content = `${eventType} job_id=${id}`;
+    const content = `${eventType} job_id=${jobId}`;
     try {
       await channel.notification({
         method: "notifications/claude/channel",
         params: { content, meta },
       });
-      addJobEvent(dbInstance, id, "classification_pushed", { meta_event_type: eventType });
+      addJobEvent(dbInstance, jobId, "classification_pushed", { meta_event_type: eventType });
     } catch (err) {
-      log(`pushPendingClassifications: failed to push for job ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      log(`pushPendingClassifications: failed to push for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }

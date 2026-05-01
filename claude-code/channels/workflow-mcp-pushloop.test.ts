@@ -90,6 +90,51 @@ describe("pushPendingClassifications", () => {
     expect(pushedEvents.length).toBe(1);
   });
 
+  test("pushes a second classification request on the same job", async () => {
+    // A job goes through classify_email → classify_document. Each step
+    // writes its own classification_request_meta breadcrumb. The push loop
+    // must fire once per breadcrumb, not once per job.
+    const job = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify({ email_source: "gmail", message_id: "m-multi" }),
+      sourceRef: "gmail:m-multi",
+      idempotencyKey: "pushloop-multi",
+      requiresApproval: false,
+    });
+    setJobState(db, job.id, "awaiting_classification");
+    addJobEvent(db, job.id, "classification_request_meta", {
+      event_type: "classify_email",
+      email_source: "gmail",
+      message_id: "m-multi",
+      job_id: job.id,
+    });
+
+    const channel = makeFakeChannel();
+    await pushPendingClassifications(db, channel as any);
+    expect(channel.pushed.length).toBe(1);
+    expect(channel.pushed[0].params.meta.event_type).toBe("classify_email");
+
+    // Simulate Claude completing the email step and the worker requesting
+    // document classification next. Job stays in awaiting_classification.
+    addJobEvent(db, job.id, "classification_request_meta", {
+      event_type: "classify_document",
+      file_path: "/workspace/downloads/invoice.pdf",
+      job_id: job.id,
+    });
+
+    await pushPendingClassifications(db, channel as any);
+    expect(channel.pushed.length).toBe(2);
+    expect(channel.pushed[1].params.meta.event_type).toBe("classify_document");
+
+    // A third call should be a no-op — both breadcrumbs are now answered.
+    await pushPendingClassifications(db, channel as any);
+    expect(channel.pushed.length).toBe(2);
+
+    const events = getJobEvents(db, job.id);
+    const pushedEvents = events.filter((e) => e.event_type === "classification_pushed");
+    expect(pushedEvents.length).toBe(2);
+  });
+
   test("skips jobs without a classification_request_meta breadcrumb", async () => {
     const job = createJob(db, {
       workflowType: "invoice_intake",

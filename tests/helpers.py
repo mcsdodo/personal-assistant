@@ -645,11 +645,14 @@ def call_provide_guidance(job_id: str, guidance: dict) -> None:
 
 
 # Pipeline containers that must be stopped together to safely wipe shared
-# DBs. email-poller and gdrive-poller are now standalone containers (not stdio
-# children of claude-code). They must be stopped before clear_dbs() so they
-# release their SQLite file handles — otherwise writes go to the deleted inode
-# and the new workflow.db/gdrive.db created after restart is invisible to them.
-PIPELINE_SERVICES = ("claude-code", "email-poller", "gdrive-poller")
+# DBs. email-poller, gdrive-poller, and pa-worker are now standalone containers
+# (not stdio children of claude-code). They must be stopped before clear_dbs()
+# so they release their SQLite file handles — otherwise writes go to the
+# deleted inode and the new workflow.db/gdrive.db created after restart is
+# invisible to them. pa-worker (task 64) opens workflow.db on boot just like
+# the pollers do; a leftover handle there causes scan_intake / invoice_intake
+# jobs created post-reset to never get claimed.
+PIPELINE_SERVICES = ("claude-code", "email-poller", "gdrive-poller", "pa-worker")
 
 
 def stop_claude():
@@ -819,6 +822,16 @@ def preseed_source_state(*sources: str):
         )
     conn.commit()
     conn.close()
+
+    # Test fixture runs from host as root — emails.db ends up root:root and the
+    # email-poller (UID 1000) can't write to it, breaking every email-pipeline
+    # test. Chown the file + WAL/shm sidecars so the poller can take over.
+    try:
+        for f in db_dir.glob("emails.db*"):
+            os.chown(f, 1000, 1000)
+    except (OSError, AttributeError):
+        # Non-root runner or non-Linux — chown not needed/available
+        pass
 
 
 def full_reset(*sources: str):
