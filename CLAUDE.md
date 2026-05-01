@@ -30,6 +30,36 @@ Keep examples concrete enough that contributors and coding agents can still map 
 4. Add new use cases if scope expands
 5. Remove references to deleted files, renamed functions, or changed behavior
 
+## Testing
+
+**When asked to verify, review, or test this stack — run tests. All of them. Do not skip.**
+
+### Unit + integration tests (always run first)
+
+```bash
+# pollers workspace (200 tests)
+cd compose.stacks/infra/personal-assistant/pollers && bun test
+
+# claude-code channels (390 tests)
+cd compose.stacks/infra/personal-assistant/claude-code && bun test
+```
+
+### E2E tests (spin up the stack, then run)
+
+The E2E pytest suite requires a running local stack. **Spin it up — do not declare it "unavailable" without trying.**
+
+```bash
+# Start the full local stack (builds images if needed)
+cd compose.stacks/infra/personal-assistant
+docker compose --profile local up -d --build
+
+# Wait for claude-code to become healthy (~90s), then:
+python -m pytest tests/test_gdrive_scan.py -v           # gdrive pipeline
+python -m pytest tests/ -v -m "not link" --timeout=300 # all except SSH-dependent link test
+```
+
+The `.env` file is present locally and has valid credentials. `gmail-mcp` and `outlook-mcp` retain their OAuth tokens across restarts — they do not need re-authentication. **Just bring the stack up and run the tests.**
+
 ## Architecture
 
 ```

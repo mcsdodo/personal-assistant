@@ -1,3 +1,4 @@
+// keep in sync with claude-code/channels/tracing.ts
 /**
  * Shared OpenTelemetry tracing + metrics module for personal-assistant channels.
  *

@@ -65,6 +65,9 @@ services:
       # workflow-mcp channel
       - WORKFLOW_DB_PATH=/data/email-watcher/workflow.db
       - WORKFLOW_POLL_MS=${WORKFLOW_POLL_MS:-2000}
+      # GDrive download (used by scan_intake worker to call get_drive_file_download_url)
+      - GMAIL_EMAIL=${GMAIL_EMAIL:-}
+      - GDRIVE_MCP_URL=${GDRIVE_MCP_URL:-http://gmail-mcp:8000/mcp}
       # Business identifiers (for document-classifier owner field)
       - BUSINESS_COMPANY_NAME=${BUSINESS_COMPANY_NAME}
       - BUSINESS_TAX_IDS=${BUSINESS_TAX_IDS}
@@ -82,6 +85,7 @@ services:
       context: ./pollers
       dockerfile: email-poller/Dockerfile
     container_name: personal-assistant-email-poller
+    user: "1000:1000"
     restart: unless-stopped
     labels:
       com.centurylinklabs.watchtower.enable: "false"
@@ -127,6 +131,7 @@ services:
       context: ./pollers
       dockerfile: gdrive-poller/Dockerfile
     container_name: personal-assistant-gdrive-poller
+    user: "1000:1000"
     restart: unless-stopped
     labels:
       com.centurylinklabs.watchtower.enable: "false"

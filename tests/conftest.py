@@ -16,6 +16,7 @@ import pytest
 from .helpers import (
     full_reset,
     paperless_wipe,
+    _env,
 )
 
 
@@ -55,7 +56,7 @@ def drive_client():
     """
     from .helpers import DriveTestClient, _get_drive_credentials, make_drive_service
 
-    level1 = os.environ.get("GDRIVE_LEVEL1", "").split(",")[0].strip()
-    level2 = os.environ.get("GDRIVE_LEVEL2", "").split(",")[0].strip()
+    level1 = _env("GDRIVE_LEVEL1", "").split(",")[0].strip()
+    level2 = _env("GDRIVE_LEVEL2", "").split(",")[0].strip()
     creds = _get_drive_credentials()
     return DriveTestClient(make_drive_service(creds), level1, level2)

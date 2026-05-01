@@ -67,10 +67,21 @@ def test_gdrive_scan_uploads_to_paperless(reset_pipeline, drive_client):
         "Check gdrive-watcher logs and workflow-mcp jobs."
     )
 
-    # 3. Verify the file moved to processed/ and is no longer in the watch root
-    files_in_watch = drive_client.list_files(watch_folder_id)
-    assert unique_filename not in [f["name"] for f in files_in_watch], (
-        f"'{unique_filename}' still in watch folder root — should have been moved to processed/"
+    # 3. Verify the file moved to processed/ and is no longer in the watch root.
+    # The move happens after Paperless upload + custom fields, so the job may
+    # still be running when the doc first appears in Paperless. Retry for up to
+    # 90s to let the job finish.
+    move_deadline = time.time() + 90
+    moved = False
+    while time.time() < move_deadline:
+        files_in_watch = drive_client.list_files(watch_folder_id)
+        if unique_filename not in [f["name"] for f in files_in_watch]:
+            moved = True
+            break
+        time.sleep(5)
+    assert moved, (
+        f"'{unique_filename}' still in watch folder root after 90s — "
+        "should have been moved to processed/"
     )
 
     processed_folder_id = drive_client.resolve_subfolder_id(watch_folder_id, "processed")

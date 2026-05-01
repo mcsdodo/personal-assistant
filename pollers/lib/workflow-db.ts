@@ -1,3 +1,4 @@
+// keep in sync with claude-code/channels/workflow-db.ts
 import { Database } from "bun:sqlite";
 import { mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
 import { dirname, join } from "path";

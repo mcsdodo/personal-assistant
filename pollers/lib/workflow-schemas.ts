@@ -1,3 +1,4 @@
+// keep in sync with claude-code/channels/workflow-schemas.ts
 /**
  * Runtime schemas for workflow contract boundaries.
  *

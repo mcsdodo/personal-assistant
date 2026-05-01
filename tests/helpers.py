@@ -270,6 +270,7 @@ def paperless_documents() -> list[dict]:
                 "title": d["title"],
                 "correspondent": correspondents.get(d.get("correspondent")),
                 "tags": sorted(tags.get(t, str(t)) for t in d.get("tags", [])),
+                "original_file_name": d.get("original_file_name"),
                 "custom_fields": {
                     cf["field"]: cf["value"] for cf in d.get("custom_fields", [])
                 },
@@ -644,10 +645,11 @@ def call_provide_guidance(job_id: str, guidance: dict) -> None:
 
 
 # Pipeline containers that must be stopped together to safely wipe shared
-# DBs. The watchers (email-watcher, gdrive-watcher) and worker (workflow-mcp)
-# are stdio child processes of claude-code, so stopping claude-code stops
-# all of them. workflow.db, emails.db, and gdrive.db are then safe to wipe.
-PIPELINE_SERVICES = ("claude-code",)
+# DBs. email-poller and gdrive-poller are now standalone containers (not stdio
+# children of claude-code). They must be stopped before clear_dbs() so they
+# release their SQLite file handles — otherwise writes go to the deleted inode
+# and the new workflow.db/gdrive.db created after restart is invisible to them.
+PIPELINE_SERVICES = ("claude-code", "email-poller", "gdrive-poller")
 
 
 def stop_claude():
@@ -720,8 +722,8 @@ def wait_claude_ready(timeout: int = 1500):
     starts the entrypoint times out, kills tmux, Docker restarts the
     container. 1500s covers ~5 entrypoint cycles end-to-end.
     """
-    expected_channels = ("workflow-mcp.ts", "email-watcher.ts")
-    best_effort_channels = ("gdrive-watcher.ts", "telegram/server.ts", "file-ops.ts")
+    expected_channels = ("workflow-mcp.ts",)
+    best_effort_channels = ("telegram/server.ts", "file-ops.ts")
     deadline = time.time() + timeout
     missing: list[str] = list(expected_channels)
     while time.time() < deadline:
@@ -845,13 +847,18 @@ def full_reset(*sources: str):
 
 
 def paperless_search_documents(query: str) -> list[dict]:
-    """Search Paperless documents by title substring.
+    """Search Paperless documents by title or original_file_name substring.
 
     Returns a list of minimal document dicts (same shape as
     ``paperless_documents()``).  Returns an empty list if no match.
     """
+    q = query.lower()
     all_docs = paperless_documents()
-    return [d for d in all_docs if query.lower() in (d.get("title") or "").lower()]
+    return [
+        d for d in all_docs
+        if q in (d.get("title") or "").lower()
+        or q in (d.get("original_file_name") or "").lower()
+    ]
 
 
 def paperless_get_document(doc_id: int) -> dict | None:
