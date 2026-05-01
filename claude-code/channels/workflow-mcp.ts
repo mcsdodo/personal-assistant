@@ -185,6 +185,60 @@ export function handleProvideGuidance(
   }
 }
 
+// ── Classification push loop (task 64 / Phase 2) ─────────────────────
+//
+// The soon-to-be-extracted pa-worker container runs the executor loop
+// without an MCP server attached to a live Claude session, so it can't
+// push channel notifications itself. Instead, `parkForClassification`
+// writes a `classification_request_meta` job event as a breadcrumb;
+// this loop runs inside `workflow-mcp.ts` (which DOES own the live
+// channel) and replays each breadcrumb as an actual
+// `notifications/claude/channel` push. A `classification_pushed` event
+// is written after each successful push to dedupe re-runs — the loop
+// will pick a job up only when it has a meta breadcrumb AND no prior
+// `classification_pushed` event.
+//
+// Not yet wired into the worker tick — task 64 / Phase 4 hooks it into
+// `main()`. Exported now so its tests can drive it directly.
+export async function pushPendingClassifications(
+  dbInstance: Database,
+  channel: Server,
+): Promise<void> {
+  const pending = dbInstance.prepare(
+    `SELECT j.id FROM jobs j
+     WHERE j.state = 'awaiting_classification'
+       AND NOT EXISTS (
+         SELECT 1 FROM job_events e
+         WHERE e.job_id = j.id AND e.event_type = 'classification_pushed'
+       )
+       AND EXISTS (
+         SELECT 1 FROM job_events e
+         WHERE e.job_id = j.id AND e.event_type = 'classification_request_meta'
+       )`,
+  ).all() as { id: string }[];
+
+  for (const { id } of pending) {
+    const metaRow = dbInstance.prepare(
+      `SELECT payload_json FROM job_events
+       WHERE job_id = ? AND event_type = 'classification_request_meta'
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get(id) as { payload_json: string } | undefined;
+    if (!metaRow) continue;
+    const meta = JSON.parse(metaRow.payload_json);
+    const eventType = String(meta.event_type ?? "classify_email");
+    const content = `${eventType} job_id=${id}`;
+    try {
+      await channel.notification({
+        method: "notifications/claude/channel",
+        params: { content, meta },
+      });
+      addJobEvent(dbInstance, id, "classification_pushed", { meta_event_type: eventType });
+    } catch (err) {
+      log(`pushPendingClassifications: failed to push for job ${id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
 async function workerTick(): Promise<void> {
   if (workerBusy) return;
   workerBusy = true;
