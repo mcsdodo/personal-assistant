@@ -7,9 +7,6 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { Database } from "bun:sqlite";
 
-import { executeNextJob, reclaimStaleJobs } from "./workflow-core";
-import { PaperlessFieldRegistry } from "./paperless-fields";
-import type { NotifyFn } from "./telegram-notify";
 import {
   addJobEvent,
   approveJob,
@@ -23,8 +20,6 @@ import {
   openWorkflowDb,
   setJobState,
   submitClassification,
-  sweepOrphanedDownloads,
-  type JobRow,
 } from "./workflow-db";
 
 import { initTracing, createLogger, getMeter, getTracer, remoteParentContext, SpanStatusCode } from "./tracing";
@@ -41,7 +36,6 @@ export {
 
 const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
 const WORKFLOW_POLL_MS = parseInt(process.env.WORKFLOW_POLL_MS ?? "2000", 10);
-const WORKFLOW_PORT = parseInt(process.env.WORKFLOW_MCP_PORT ?? "8003", 10);
 
 initTracing("workflow");
 const log = createLogger("workflow");
@@ -63,22 +57,6 @@ export const guidanceRequestsTotal = workflowMeter.createCounter(
   { description: "Job pauses for user guidance, by trigger reason" },
 );
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
-const notifyTelegram: NotifyFn = async (message) => {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
-  try {
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message }),
-    });
-  } catch (err) {
-    log(`Telegram notification failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-};
-
 function text(value: unknown): { type: "text"; text: string } {
   return {
     type: "text",
@@ -87,8 +65,6 @@ function text(value: unknown): { type: "text"; text: string } {
 }
 
 let db: Database;
-let workerBusy = false;
-let fieldRegistry: PaperlessFieldRegistry;
 
 /**
  * Guidance payload accepted by the `provide_guidance` MCP tool. See
@@ -246,17 +222,6 @@ export async function pushPendingClassifications(
     } catch (err) {
       log(`pushPendingClassifications: failed to push for job ${id}: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }
-}
-
-async function workerTick(): Promise<void> {
-  if (workerBusy) return;
-  workerBusy = true;
-  try {
-    reclaimStaleJobs(db, { log });
-    await executeNextJob(db, { log }, fieldRegistry, notifyTelegram, mcp);
-  } finally {
-    workerBusy = false;
   }
 }
 
@@ -779,42 +744,6 @@ async function main(): Promise<void> {
   db = openWorkflowDb(WORKFLOW_DB_PATH);
   log(`Opened workflow DB at ${WORKFLOW_DB_PATH}`);
 
-  // Defense-in-depth: on startup, sweep the downloads directory and delete
-  // any file older than DOWNLOAD_SWEEP_MAX_AGE_MS that isn't referenced by
-  // an active job. Per-job cleanup runs in completeJob/failJob/cancelJob;
-  // this catches orphans left behind by crashes or test runs.
-  const downloadDir = process.env.DOWNLOAD_DIR ?? "/workspace/downloads";
-  const sweepMaxAgeMs = parseInt(
-    process.env.DOWNLOAD_SWEEP_MAX_AGE_MS ?? String(7 * 24 * 60 * 60 * 1000),
-    10,
-  );
-  try {
-    const sweep = sweepOrphanedDownloads(db, downloadDir, sweepMaxAgeMs, { log });
-    log(
-      `Download sweep: scanned=${sweep.scanned} deleted=${sweep.deleted} preserved=${sweep.preserved}`,
-    );
-  } catch (err) {
-    log(`Download sweep failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  const paperlessUrl = process.env.PAPERLESS_URL;
-  if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
-  const paperlessToken = process.env.PAPERLESS_API_TOKEN ?? "";
-  fieldRegistry = new PaperlessFieldRegistry(paperlessUrl, paperlessToken, log);
-  await fieldRegistry.init();
-  log("Custom field registry initialized");
-
-  // Side HTTP server for Docker health check only
-  Bun.serve({
-    port: WORKFLOW_PORT,
-    fetch(req) {
-      const url = new URL(req.url);
-      if (url.pathname === "/health") return new Response("ok", { status: 200 });
-      return new Response("Not Found", { status: 404 });
-    },
-  });
-  log(`Health endpoint on :${WORKFLOW_PORT}/health`);
-
   // Connect MCP via stdio (channel mode)
   const { StdioServerTransport } = await import(
     "@modelcontextprotocol/sdk/server/stdio.js"
@@ -822,26 +751,13 @@ async function main(): Promise<void> {
   await mcp.connect(new StdioServerTransport());
   log("MCP server connected (stdio)");
 
-  // Start worker poll loop
-  await workerTick();
+  // Channel push loop: drain classification_request_meta breadcrumbs
+  // (written by pa-worker) into Claude-bound channel notifications.
   setInterval(() => {
-    workerTick().catch((error) => {
-      log(`Worker tick failed: ${error instanceof Error ? error.message : String(error)}`);
+    pushPendingClassifications(db, mcp).catch((err) => {
+      log(`pushPendingClassifications failed: ${err instanceof Error ? err.message : String(err)}`);
     });
   }, WORKFLOW_POLL_MS);
-
-  // Stale-guidance sweep: nudge the user at 24h, auto-fail at 72h.
-  // Runs every 60s — cheap (a couple of indexed SELECTs against jobs)
-  // and decoupled from the fast worker-tick cadence. See task 57 Phase 4.1.
-  setInterval(() => {
-    try {
-      sweepStaleGuidance(db, notifyTelegram);
-    } catch (err) {
-      log(
-        `Stale-guidance sweep failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }, 60_000);
 }
 
 if (import.meta.main) {
