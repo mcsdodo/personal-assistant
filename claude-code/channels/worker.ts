@@ -155,7 +155,7 @@ export async function main(): Promise<void> {
     log,
   );
 
-  Bun.serve({
+  const healthServer = Bun.serve({
     port: WORKFLOW_PORT,
     fetch(req) {
       const url = new URL(req.url);
@@ -166,16 +166,36 @@ export async function main(): Promise<void> {
   log(`Health endpoint on :${WORKFLOW_PORT}/health`);
 
   await workerTick(db, fieldRegistry, notifyTelegram);
-  setInterval(() => {
+  const tickHandle = setInterval(() => {
     workerTick(db, fieldRegistry, notifyTelegram).catch((error) => {
       log(`Worker tick failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }, WORKFLOW_POLL_MS);
 
-  setInterval(() => {
+  const guidanceSweepHandle = setInterval(() => {
     try { sweepStaleGuidance(db, notifyTelegram); }
     catch (err) { log(`Stale-guidance sweep failed: ${err instanceof Error ? err.message : String(err)}`); }
   }, 60_000);
+
+  // Graceful shutdown — `docker stop` sends SIGTERM and waits 10s before
+  // SIGKILL. Closing the DB cleanly on the way out is good hygiene; WAL
+  // is crash-safe but a clean close avoids leaving a *.db-shm/*.db-wal
+  // pair that the next boot has to recover.
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`Received ${signal}, shutting down...`);
+    clearInterval(tickHandle);
+    clearInterval(guidanceSweepHandle);
+    healthServer.stop();
+    try { db.close(); } catch (err) {
+      log(`db.close() failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 if (import.meta.main) {
