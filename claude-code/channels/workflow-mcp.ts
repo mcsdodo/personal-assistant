@@ -184,8 +184,8 @@ export function handleProvideGuidance(
 // will pick a job up only when it has a meta breadcrumb AND no prior
 // `classification_pushed` event.
 //
-// Not yet wired into the worker tick — task 64 / Phase 4 hooks it into
-// `main()`. Exported now so its tests can drive it directly.
+// Wired into main() on the WORKFLOW_POLL_MS push tick (see below).
+// Exported so its tests can drive it directly.
 export async function pushPendingClassifications(
   dbInstance: Database,
   channel: Server,

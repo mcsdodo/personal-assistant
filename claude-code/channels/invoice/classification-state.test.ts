@@ -55,9 +55,6 @@ describe("parkForClassification breadcrumb event", () => {
       {
         step: "classify_email",
         parkedPayload: { email_source: "gmail", message_id: "m-1" },
-        // No `channel` — exercises the path where the worker has no MCP
-        // server attached (the post-extraction pa-worker container case).
-        notificationContent: "Classification request: invoke email-classifier.",
         notificationMeta,
       },
       silentLogger,
@@ -75,10 +72,11 @@ describe("parkForClassification breadcrumb event", () => {
     expect(parsed.user_google_email).toBe("user@example.com");
   });
 
-  test("breadcrumb is written even when channel is provided", async () => {
-    // Backwards-compatibility: existing callers pass a channel; the
-    // workflow-mcp push loop will dedupe via classification_pushed events,
-    // so writing the breadcrumb in both paths is safe.
+  test("transitions the job to awaiting_classification with a step_started event", async () => {
+    // Beyond the breadcrumb, parkForClassification owns the state transition
+    // and the step_started event that submit_classification later validates
+    // against. Pin both behaviors so removing the inline channel push didn't
+    // accidentally regress the rest of the contract.
     const job = createJob(db, {
       workflowType: "scan_intake",
       inputJson: JSON.stringify({ file_id: "drv-1" }),
@@ -88,37 +86,27 @@ describe("parkForClassification breadcrumb event", () => {
     });
     db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
 
-    let pushed = 0;
-    const fakeChannel = {
-      notification: async () => {
-        pushed += 1;
-      },
-    };
-
-    const notificationMeta = {
-      event_type: "classify_document",
-      job_id: job.id,
-      file_path: "/workspace/downloads/scan-1.pdf",
-    };
-
     await parkForClassification(
       db,
       job.id,
       {
         step: "classify_document",
         parkedPayload: { file_path: "/workspace/downloads/scan-1.pdf" },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        channel: fakeChannel as any,
-        notificationContent: "Classification request: invoke document-classifier.",
-        notificationMeta,
+        notificationMeta: {
+          event_type: "classify_document",
+          job_id: job.id,
+          file_path: "/workspace/downloads/scan-1.pdf",
+        },
       },
       silentLogger,
     );
 
-    expect(pushed).toBe(1);
+    const refreshed = db.prepare("SELECT state FROM jobs WHERE id = ?").get(job.id) as { state: string };
+    expect(refreshed.state).toBe("awaiting_classification");
+
     const events = getJobEvents(db, job.id);
-    const breadcrumb = events.find((e) => e.event_type === "classification_request_meta");
-    expect(breadcrumb).toBeDefined();
-    expect(JSON.parse(breadcrumb!.payload_json!).event_type).toBe("classify_document");
+    const stepStarted = events.find((e) => e.event_type === "step_started");
+    expect(stepStarted).toBeDefined();
+    expect(JSON.parse(stepStarted!.payload_json!).step).toBe("classify_document");
   });
 });

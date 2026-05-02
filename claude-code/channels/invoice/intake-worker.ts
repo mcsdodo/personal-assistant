@@ -494,8 +494,6 @@ export async function executeInvoiceIntake(
             email_source: input.email_source,
             message_id: input.message_id,
           },
-          channel,
-          notificationContent: `Classification request: invoke email-classifier with the meta from this event, then call submit_classification with its output.`,
           notificationMeta: {
             event_type: "classify_email",
             job_id: job.id,
@@ -662,8 +660,6 @@ export async function executeInvoiceIntake(
         await parkForClassification(db, job.id, {
           step: "classify_document",
           parkedPayload: { file_path: filePath },
-          channel,
-          notificationContent: `Classification request: run document-classifier on the downloaded file and call submit_classification.`,
           notificationMeta: {
             event_type: "classify_document",
             job_id: job.id,
@@ -1273,8 +1269,6 @@ export async function executeScanIntake(
         await parkForClassification(db, job.id, {
           step: "classify_document",
           parkedPayload: { file_path: filePath },
-          channel,
-          notificationContent: `Classification request: run document-classifier on the scanned file and call submit_classification.`,
           notificationMeta: {
             event_type: "classify_document",
             job_id: job.id,
