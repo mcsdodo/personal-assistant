@@ -99,6 +99,12 @@ export function openWorkflowDb(path: string): Database {
   mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path, { create: true });
   db.exec("PRAGMA journal_mode = WAL;");
+  // Two writers (pa-worker + workflow-mcp's push loop, both ticking on
+  // WORKFLOW_POLL_MS) plus the pollers all share this file. WAL allows
+  // concurrent readers but only one writer; default busy_timeout=0 returns
+  // SQLITE_BUSY immediately on contention. 5s is conservative — actual
+  // writes are sub-millisecond.
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
 
   // Migrations — safe ADD COLUMN (ignore "duplicate column" error)
