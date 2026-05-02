@@ -208,26 +208,27 @@ export async function pushPendingClassifications(
       ORDER BY m.id ASC`,
   ).all() as { job_id: string; meta_id: number; payload_json: string }[];
 
-  // Multiple meta rows for the same job can show up if breadcrumb events
-  // race ahead of the push loop. Only push the most recent per job; older
-  // meta rows describe a step that's already been answered.
-  const latestByJob = new Map<string, { meta_id: number; payload_json: string }>();
+  // Push every unanswered breadcrumb in order. In normal flow there's only
+  // ever one unpushed meta per job (step A's push must complete before step
+  // B's park can run, since the worker waits for Claude to write
+  // step_completed before advancing). This loop is robust against future
+  // changes that might queue several requests before the push tick fires.
   for (const row of pending) {
-    latestByJob.set(row.job_id, { meta_id: row.meta_id, payload_json: row.payload_json });
-  }
-
-  for (const [jobId, { payload_json }] of latestByJob) {
-    const meta = JSON.parse(payload_json);
+    const meta = JSON.parse(row.payload_json);
     const eventType = String(meta.event_type ?? "classify_email");
-    const content = `${eventType} job_id=${jobId}`;
+    const content = `${eventType} job_id=${row.job_id}`;
     try {
       await channel.notification({
         method: "notifications/claude/channel",
         params: { content, meta },
       });
-      addJobEvent(dbInstance, jobId, "classification_pushed", { meta_event_type: eventType });
+      addJobEvent(dbInstance, row.job_id, "classification_pushed", { meta_event_type: eventType });
     } catch (err) {
-      log(`pushPendingClassifications: failed to push for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+      log(`pushPendingClassifications: failed to push for job ${row.job_id}: ${err instanceof Error ? err.message : String(err)}`);
+      // Stop pushing further breadcrumbs for this same job — order matters
+      // (Claude must answer step A before B is meaningful), and a transient
+      // failure here will retry on the next tick.
+      break;
     }
   }
 }

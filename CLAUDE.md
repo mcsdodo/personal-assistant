@@ -504,6 +504,17 @@ sed -i 's/^PAPERLESS_API_TOKEN=.*/PAPERLESS_API_TOKEN=<paste-token-here>/' .env
 
 # Recreate services that use the token
 docker compose --profile local up -d checker-mcp paperless-mcp claude-code
+
+# Pre-create the two storage paths the worker uses (postprocess-service.ts:43,48).
+# Without them the worker logs "Storage path not found: ..." and uploads docs
+# with storage_path=null — most E2E tests assert on storage_path_name and fail.
+TOKEN=$(grep ^PAPERLESS_API_TOKEN .env | cut -d= -f2)
+for sp in "Personal Documents:Personal/{created_year}" \
+          "Techlab Invoices:Techlab/{correspondent}/{created_year}-{created_month}"; do
+  curl -s -X POST http://localhost:8010/api/storage_paths/ \
+    -H "Authorization: Token $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"name\":\"${sp%%:*}\",\"path\":\"${sp##*:}\",\"matching_algorithm\":0}"
+done
 ```
 
 The superuser password isn't set by default — set it if you need Paperless UI access (`manage.py changepassword admin`).
