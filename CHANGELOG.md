@@ -4,6 +4,15 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## [unreleased] — 2026-05-02 — Task 64 review follow-ups
+
+### Changed
+- `openWorkflowDb` now sets `PRAGMA busy_timeout = 5000` after enabling WAL. With pa-worker writing on its own tick and workflow-mcp's push loop also writing `classification_pushed` events every 2s, four processes share `workflow.db`; the default `busy_timeout = 0` returned `SQLITE_BUSY` immediately on contention. 5s is conservative — actual writes are sub-millisecond.
+- `parkForClassification` no longer accepts a `channel: Server` parameter or pushes the channel notification inline. After task 64, the worker is the only executor and always passed `undefined` anyway, so the inline path was dead code with a sharp edge: a future caller passing a channel would have caused workflow-mcp's push loop to double-push (the breadcrumb survived, no `classification_pushed` was written by the inline path). Removed the optional `channel` and `notificationContent` fields from `ClassificationRequestParams`; the push loop builds the notification content from the breadcrumb meta itself.
+
+### Added
+- Graceful shutdown in `worker.ts` — SIGTERM/SIGINT handlers clear the tick + guidance-sweep intervals, stop the health server, and call `db.close()` before exiting. WAL is crash-safe regardless, but a clean close avoids leaving `*.db-shm` / `*.db-wal` recovery work for the next boot.
+
 ## [unreleased] — 2026-04-30 — Decouple watchers from Claude Code
 
 ### Breaking
