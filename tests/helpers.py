@@ -364,8 +364,45 @@ def paperless_get_by_id(doc_id: int) -> dict | None:
     }
 
 
+# Storage paths the worker resolves at upload time (see
+# claude-code/channels/invoice/postprocess-service.ts:43,48). Both must exist
+# in Paperless or every E2E test that asserts on `storage_path_name` will see
+# `None`. Fresh local Paperless deployments ship with zero storage paths, so
+# the test setup must create them itself — `paperless_ensure_storage_paths`
+# is idempotent (matches by name) and cheap enough to run on every wipe.
+_REQUIRED_STORAGE_PATHS = (
+    ("Personal Documents", "Personal/{created_year}"),
+    ("Techlab Invoices", "Techlab/{correspondent}/{created_year}-{created_month}"),
+)
+
+
+def paperless_ensure_storage_paths():
+    """Create the worker's expected storage paths if they don't already exist."""
+    h = _paperless_headers()
+    existing = requests.get(
+        f"{PAPERLESS_URL}/storage_paths/",
+        headers=h,
+        params={"page_size": 500},
+        timeout=10,
+    ).json()
+    by_name = {sp["name"]: sp for sp in existing.get("results", [])}
+    for name, path in _REQUIRED_STORAGE_PATHS:
+        if name in by_name:
+            continue
+        requests.post(
+            f"{PAPERLESS_URL}/storage_paths/",
+            headers={**h, "Content-Type": "application/json"},
+            json={"name": name, "path": path, "matching_algorithm": 0},
+            timeout=10,
+        ).raise_for_status()
+
+
 def paperless_wipe():
-    """Delete all documents, correspondents, tags, and document types."""
+    """Delete all documents, correspondents, tags, and document types.
+
+    Re-creates the worker's required storage paths on the way out so the next
+    test starts from a known-good baseline.
+    """
     h = _paperless_headers()
     # Delete documents
     docs = requests.get(
@@ -414,6 +451,10 @@ def paperless_wipe():
                 headers=h,
                 timeout=10,
             )
+
+    # Always end a wipe with the storage paths in place so the next test's
+    # setup phase doesn't have to remember to call this separately.
+    paperless_ensure_storage_paths()
 
 
 # ---------------------------------------------------------------------------
