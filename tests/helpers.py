@@ -900,6 +900,12 @@ def full_reset(*sources: str):
 # ---------------------------------------------------------------------------
 
 
+def get_custom_field_lookup() -> dict[int, str]:
+    """Fetch custom fields from Paperless and return {id: name} mapping."""
+    data = paperless_get("custom_fields", page_size=100)
+    return {f["id"]: f["name"] for f in data["results"]}
+
+
 def paperless_search_documents(query: str) -> list[dict]:
     """Search Paperless documents by title or original_file_name substring.
 
