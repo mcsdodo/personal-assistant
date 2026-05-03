@@ -370,6 +370,15 @@ export interface DocumentClassificationResultSchema {
    * Telegram guidance prompt that asks the user for help.
    */
   notes?: string | null;
+  /** Fuel volume in litres. Set only when is_fuel: true. Null/missing otherwise. */
+  litres?: number | null;
+  /**
+   * Receipt timestamp.
+   * - Full datetime: "YYYY-MM-DDTHH:MM:SS"
+   * - Date-only fallback: "YYYY-MM-DD"
+   * - Null/missing when neither was extractable.
+   */
+  receipt_datetime?: string | null;
 }
 
 /**
@@ -434,6 +443,30 @@ function numberOrUnknown(
   return v;
 }
 
+/** Validate "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD". Returns the string or throws. */
+function receiptDatetimeOrNull(
+  name: string,
+  obj: Record<string, unknown>,
+  field: string,
+): string | null {
+  if (!(field in obj)) return null;
+  const v = obj[field];
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "string") {
+    throw new WorkflowSchemaError(name, field, "string | null", v);
+  }
+  // Accept "YYYY-MM-DD" (10 chars) or "YYYY-MM-DDTHH:MM:SS" (19 chars, with literal T)
+  if (!/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?$/.test(v)) {
+    throw new WorkflowSchemaError(
+      name,
+      field,
+      'string matching "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM:SS"',
+      v,
+    );
+  }
+  return v;
+}
+
 export function validateDocumentClassificationResult(input: unknown): DocumentClassificationResultSchema {
   const obj = requireObject("DocumentClassificationResult", input);
   const result: DocumentClassificationResultSchema = {
@@ -466,6 +499,8 @@ export function validateDocumentClassificationResult(input: unknown): DocumentCl
       { allowMissing: true },
     ),
     notes: nullableString("DocumentClassificationResult", obj, "notes", { allowMissing: true }),
+    litres: optNumberOrNull("DocumentClassificationResult", obj, "litres") ?? null,
+    receipt_datetime: receiptDatetimeOrNull("DocumentClassificationResult", obj, "receipt_datetime"),
   };
 
   // Cross-field check: if any UNKNOWN_CAPABLE field resolved to the literal

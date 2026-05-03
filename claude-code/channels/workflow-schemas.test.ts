@@ -369,6 +369,69 @@ describe("DocumentClassificationResult unknown values", () => {
   });
 });
 
+// ── DocumentClassificationResult — litres + receipt_datetime ─────────
+
+describe("DocumentClassificationResult — litres + receipt_datetime", () => {
+  // Minimal valid base; tests below clone + override.
+  const base = {
+    doc_type: "receipt",
+    vendor: "Slovnaft",
+    total_amount: 45.30,
+    currency: "EUR",
+    is_fuel: true,
+    owner: "techlab",
+    confidence: "high",
+    order_id: null,
+    subtitle: null,
+    doc_date: "2026-04-25",
+  };
+
+  test("accepts litres as a number", () => {
+    const out = validateDocumentClassificationResult({ ...base, litres: 45.30 });
+    expect(out.litres).toBe(45.30);
+  });
+
+  test("accepts litres as null", () => {
+    const out = validateDocumentClassificationResult({ ...base, is_fuel: false, litres: null });
+    expect(out.litres).toBeNull();
+  });
+
+  test("accepts missing litres (backward compatibility)", () => {
+    const out = validateDocumentClassificationResult(base);
+    expect(out.litres).toBeNull();
+  });
+
+  test("rejects litres as a string", () => {
+    expect(() =>
+      validateDocumentClassificationResult({ ...base, litres: "45.30" })
+    ).toThrow(/litres/);
+  });
+
+  test("accepts receipt_datetime in YYYY-MM-DDTHH:MM:SS format", () => {
+    const out = validateDocumentClassificationResult({ ...base, receipt_datetime: "2026-04-25T14:23:00" });
+    expect(out.receipt_datetime).toBe("2026-04-25T14:23:00");
+  });
+
+  test("accepts receipt_datetime in YYYY-MM-DD format (date-only fallback)", () => {
+    const out = validateDocumentClassificationResult({ ...base, receipt_datetime: "2026-04-25" });
+    expect(out.receipt_datetime).toBe("2026-04-25");
+  });
+
+  test("accepts receipt_datetime as null and missing", () => {
+    expect(validateDocumentClassificationResult({ ...base, receipt_datetime: null }).receipt_datetime).toBeNull();
+    expect(validateDocumentClassificationResult(base).receipt_datetime).toBeNull();
+  });
+
+  test("rejects receipt_datetime with malformed string", () => {
+    expect(() =>
+      validateDocumentClassificationResult({ ...base, receipt_datetime: "25.04.2026" })
+    ).toThrow(/receipt_datetime/);
+    expect(() =>
+      validateDocumentClassificationResult({ ...base, receipt_datetime: "2026-04-25 14:23:00" })  // space, not T
+    ).toThrow(/receipt_datetime/);
+  });
+});
+
 // ── validateClassificationByStep ──────────────────────────────────────
 
 describe("validateClassificationByStep", () => {
