@@ -153,6 +153,41 @@ Rules for parsing:
 
 After the `provide_guidance` call succeeds, send a short Telegram confirmation: the action taken plus the job id (e.g. `✓ patched job a3f9... as personal, resumed` or `✓ skipped job 8bc1...`). Keep it in the same language the user used. Never echo a password back, even partially.
 
+## On-demand /car tagging
+
+After the worker uploads a non-fuel POS receipt (parking, toll, wash, service), its Telegram notification ends with `Reply /car if non-fuel car expense`. The user replies `/car` (most-recent doc) or `/car #N` (explicit doc id). Your job is to translate that reply into a Paperless tag-add and confirm.
+
+This routing fires ONLY when:
+- The Telegram message starts with `/car` (with or without a `#N` suffix), AND
+- `list_jobs(state="awaiting_user_guidance")` returns zero paused jobs (guidance always wins if both are pending).
+
+### Step 1: Resolve the doc id
+
+- **`/car #N`** — N is the Paperless doc id. Use it directly.
+- **`/car`** (no id) — call `list_jobs(state="completed", limit=20)` (no `workflow_type` filter — both `invoice_intake` AND `scan_intake` can produce non-fuel car uploads, e.g. a parking ticket photo dropped into GDrive). Among the returned rows, pick the most recent job whose `output_json.outcome` is `uploaded` AND whose top-level `paperless_doc_id` column is non-null. (Skip `outcome: refreshed` for now — refreshes are typically intentional re-runs, not the doc the user just saw.) Use that job's `paperless_doc_id` as N.
+  - Field name note: `list_jobs` returns full `JobRow`s. `paperless_doc_id` is a top-level indexed column on the row (mirrored from `output_json.paperless_document_id` on completion — see [workflow-db.ts](./channels/workflow-db.ts) lines 114–124, 287–300). Read it directly off the row, not from inside `output_json`.
+  - If no eligible recent upload is found, reply `⚠ no recent upload to tag — try /car #N` and stop.
+
+### Step 2: Add the `car` tag to the document
+
+Call paperless `bulk_edit_documents`:
+
+```
+bulk_edit_documents(documents=[N], method="add_tag", parameters={"tag": "car"})
+```
+
+If Paperless reports the tag doesn't exist, paperless-mcp's `bulk_edit_documents` will fail. In that case, first call `list_tags(name="car")` to confirm absence, then `create_tag(name="car")`, then retry the bulk-edit.
+
+### Step 3: Confirm back
+
+Reply on Telegram: `✓ tagged #N as car`. Keep it short. If the user wrote in Slovak (e.g. "/car prosím"), reply in Slovak: `✓ označené #N ako car`.
+
+### Edge cases
+
+- Already tagged with `car` → reply `ℹ #N already tagged as car`.
+- Doc not found → reply `⚠ doc #N not found in Paperless`.
+- Anything else (network error, etc.) → reply `❌ tag failed: <short error>` and surface the underlying error in your response so the user can paste it back.
+
 ## When asked about invoices or matching
 
 Use checker tools for matching and P&L queries. Use paperless tools for document search, upload, and tagging. Use gmail/ms365 tools to fetch and read emails.
