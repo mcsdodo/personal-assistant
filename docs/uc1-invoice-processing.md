@@ -700,3 +700,32 @@ The previous bidirectional control plane (`first_start` / `catchup_required` cha
 
 **Startup flow:** On first run for a source, the poller seeds `last_checked = now - INITIAL_LOOKBACK` automatically. Subsequent cycles either process up to `MAX_CATCHUP_EMAILS` and advance the cursor, or fail loud (counter + log, cursor unchanged) when over the cap. Operator decides whether to raise the cap or run `skip-catchup`.
 - [`pollers/email-poller/src/main.ts`](../pollers/email-poller/src/main.ts) — `pollCycle()`: dedup, overflow guard, direct job creation
+
+## Integration: kniha-jazd (car expense tracker)
+
+The standalone "kniha-jazd" app pulls car-related receipts directly from
+Paperless instead of running its own LLM-OCR. Contract:
+
+- **Read endpoint:** `GET /api/documents/?tags__name__in=fuel,car`
+- **Per-document fields consumed:**
+  - `id` — Paperless doc id (used as kniha-jazd's row primary key).
+  - `correspondent_name` — vendor / station name.
+  - `created` — fallback for ordering when receipt_datetime is null.
+  - `tags` — distinguishes `fuel` (litres expected) from `car` (no litres).
+  - `custom_fields[]` — resolves field IDs once per session via `GET /api/custom_fields/`. Reads:
+    - `total_amount` (float, EUR) — set by PA's invoice pipeline.
+    - `litres` (float) — fuel volume; only present on fuel docs.
+    - `receipt_datetime` (string `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD`) — receipt timestamp.
+    - `order_id` (string) — invoice number, optional.
+- **Triage:** kniha-jazd treats absent fields as NeedsReview per its own spec.
+  Date-only `receipt_datetime` also flips to NeedsReview.
+- **Direction of flow:** kniha-jazd is read-only against Paperless. User edits in
+  kniha-jazd's UI stay in kniha-jazd; force-refresh in PA can resync metadata
+  to Paperless on next poll.
+- **Tag semantics:**
+  - `fuel` — auto-applied by PA's classifier when `is_fuel: true`.
+  - `car` — applied manually by the operator via Telegram `/car` reply on
+    non-fuel POS receipts (parking, toll, wash, service).
+- **Polling cadence:** kniha-jazd's choice. Recommended 5-10 min, or
+  on-demand "sync now" button. Same LAN as Paperless.
+- **Auth:** dedicated read-only Paperless API token for kniha-jazd, scoped read-only.
