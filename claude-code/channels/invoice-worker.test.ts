@@ -1059,6 +1059,132 @@ describe("invoice-worker unified tag derivation", () => {
   });
 });
 
+// ── Task 6: litres + receipt_datetime wiring through upload path ────────
+
+describe("invoice-worker upload path: litres + receipt_datetime custom fields", () => {
+  /** Registry with all 4 custom fields including litres (id:2) + receipt_datetime (id:3). */
+  let fullRegistry: PaperlessFieldRegistry;
+
+  beforeEach(async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        count: 4,
+        next: null,
+        results: [
+          { id: 1, name: "total_amount", data_type: "float" },
+          { id: 2, name: "litres", data_type: "float" },
+          { id: 3, name: "receipt_datetime", data_type: "string" },
+          { id: 4, name: "order_id", data_type: "string" },
+        ],
+      }),
+    })) as any;
+    fullRegistry = new PaperlessFieldRegistry("https://test", "tok");
+    await fullRegistry.init();
+    globalThis.fetch = origFetch;
+  });
+
+  test("fuel receipt: PATCH body includes litres + receipt_datetime", async () => {
+    const filePath = join(tmpDir, "fuel.pdf");
+    writeFileSync(filePath, Buffer.from("fake fuel pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ is_fuel: true, doc_type: "receipt", total_amount: 45.30 }),
+      defaultDocClassification({ doc_type: "receipt", is_fuel: true, total_amount: 45.30, litres: 45.30, receipt_datetime: "2026-04-25T14:23:00" }),
+    );
+
+    let patchBody: Record<string, unknown> | null = null;
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 2. dedup check → no duplicate
+      () => jsonResponse({ results: [] }),
+      // 3. list_tags (accounting + techlab exist; fuel + month need creating)
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }, { id: 3, name: "techlab" }])),
+      // 4. create_tag "fuel"
+      () => jsonResponse(rpcResponse({ id: 6, name: "fuel" })),
+      // 5. create_tag month (2026-03, from defaultDocClassification doc_date 2026-03-25)
+      () => jsonResponse(rpcResponse({ id: 7, name: "2026-03" })),
+      // 6. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      // 7. resolveStoragePath
+      storagePathsMockHandler(),
+      // 8. post_document upload
+      () => new Response('"task-uuid-fuel"', { status: 200 }),
+      // 9. task poll → SUCCESS
+      () => jsonResponse([{ status: "SUCCESS", result: "Success. New document id 999 created" }]),
+      // 10. PATCH custom fields — capture body for assertion
+      (url, init) => {
+        patchBody = JSON.parse(init?.body as string);
+        return jsonResponse({ id: 999, custom_fields: [] });
+      },
+      // 11. verify GET
+      () => jsonResponse({ id: 999, custom_fields: [{ field: 1, value: 45.30 }, { field: 2, value: 45.30 }, { field: 3, value: "2026-04-25T14:23:00" }] }),
+    );
+
+    await executeInvoiceIntake(db, job, logger, fullRegistry, notify);
+
+    expect(getJob(db, job.id)!.state).toBe("completed");
+    expect(patchBody).not.toBeNull();
+    const cf = (patchBody as any).custom_fields as Array<{ field: number; value: unknown }>;
+    expect(cf).toContainEqual({ field: 1, value: 45.30 });   // total_amount
+    expect(cf).toContainEqual({ field: 2, value: 45.30 });   // litres
+    expect(cf).toContainEqual({ field: 3, value: "2026-04-25T14:23:00" }); // receipt_datetime
+  });
+
+  test("non-fuel receipt: PATCH body includes receipt_datetime but omits litres", async () => {
+    const filePath = join(tmpDir, "receipt.pdf");
+    writeFileSync(filePath, Buffer.from("fake receipt pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ is_fuel: false, doc_type: "receipt", total_amount: 12.50 }),
+      defaultDocClassification({ doc_type: "receipt", is_fuel: false, total_amount: 12.50, litres: null, receipt_datetime: "2026-04-25T11:05:00" }),
+    );
+
+    let patchBody: Record<string, unknown> | null = null;
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 2. dedup check → no duplicate
+      () => jsonResponse({ results: [] }),
+      // 3. list_tags (accounting + techlab + month already exist)
+      () => jsonResponse(rpcResponse([{ id: 11, name: "accounting" }, { id: 3, name: "techlab" }, { id: 7, name: "2026-03" }])),
+      // 4. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      // 5. resolveStoragePath
+      storagePathsMockHandler(),
+      // 6. post_document upload
+      () => new Response('"task-uuid-receipt"', { status: 200 }),
+      // 7. task poll → SUCCESS
+      () => jsonResponse([{ status: "SUCCESS", result: "Success. New document id 998 created" }]),
+      // 8. PATCH custom fields — capture body for assertion
+      (url, init) => {
+        patchBody = JSON.parse(init?.body as string);
+        return jsonResponse({ id: 998, custom_fields: [] });
+      },
+      // 9. verify GET
+      () => jsonResponse({ id: 998, custom_fields: [{ field: 1, value: 12.50 }, { field: 3, value: "2026-04-25T11:05:00" }] }),
+    );
+
+    await executeInvoiceIntake(db, job, logger, fullRegistry, notify);
+
+    expect(getJob(db, job.id)!.state).toBe("completed");
+    expect(patchBody).not.toBeNull();
+    const cf = (patchBody as any).custom_fields as Array<{ field: number; value: unknown }>;
+    // receipt_datetime must be set
+    expect(cf).toContainEqual({ field: 3, value: "2026-04-25T11:05:00" });
+    // litres must NOT be set (is_fuel: false → litres: null)
+    expect(cf.find((f) => f.field === 2)).toBeUndefined();
+    // total_amount must be set
+    expect(cf).toContainEqual({ field: 1, value: 12.50 });
+  });
+});
+
 // ── Production flow tests (classification via channel roundtrip) ────────
 
 describe("invoice-worker channel classification flow", () => {

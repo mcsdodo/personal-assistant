@@ -936,6 +936,8 @@ export async function executeInvoiceIntake(
           uploadResult.task_uuid,
           merged.total_amount,
           merged.order_id,
+          (merged as Record<string, unknown>).litres as number | null | undefined,
+          (merged as Record<string, unknown>).receipt_datetime as string | null | undefined,
           logger,
           registry,
         );
@@ -1466,7 +1468,9 @@ export async function executeScanIntake(
         // to set, so we always invoke it to resolve the upload's doc id.
         addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
         const cfResult = await setDocumentCustomFields(
-          uploadResult.task_uuid, classification.total_amount, classification.order_id, logger, registry,
+          uploadResult.task_uuid, classification.total_amount, classification.order_id,
+          null, null, // litres + receiptDatetime wired in Task 8
+          logger, registry,
         );
         addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
         finalDocId = cfResult.doc_id;
@@ -1555,16 +1559,17 @@ function setDocumentCustomFields(
   taskUuid: string | undefined,
   totalAmount: number | null | undefined,
   orderId: string | null | undefined,
+  litres: number | null | undefined,
+  receiptDatetime: string | null | undefined,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<CustomFieldResult> {
-  // litres and receiptDatetime are wired in Task 6; pass null until then.
   return setDocumentCustomFieldsImpl(
     taskUuid,
     totalAmount,
     orderId,
-    null,
-    null,
+    litres,
+    receiptDatetime,
     getPaperlessAdapter(registry),
     registry,
     logger,
