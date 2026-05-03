@@ -275,6 +275,8 @@ export interface PatchParams {
   storagePathId?: number;
   totalAmount?: number | null;
   orderId?: string | null;
+  litres?: number | null;
+  receiptDatetime?: string | null;
 }
 
 /**
@@ -296,6 +298,12 @@ export async function patchExistingDocument(
   }
   if (params.orderId) {
     customFields.push({ field: registry.getFieldId("order_id"), value: params.orderId });
+  }
+  if (params.litres != null) {
+    customFields.push({ field: registry.getFieldId("litres"), value: params.litres });
+  }
+  if (params.receiptDatetime) {
+    customFields.push({ field: registry.getFieldId("receipt_datetime"), value: params.receiptDatetime });
   }
   return adapter.patchDocument(
     params.documentId,

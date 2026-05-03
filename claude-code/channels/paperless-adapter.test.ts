@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { PaperlessAdapter } from "./paperless-adapter";
 import { PaperlessFieldRegistry } from "./paperless-fields";
-import { setDocumentCustomFields } from "./invoice/postprocess-service";
+import { setDocumentCustomFields, patchExistingDocument } from "./invoice/postprocess-service";
 
 // ── Test infrastructure ────────────────────────────────────────────────
 
@@ -613,6 +613,85 @@ describe("setDocumentCustomFields (postprocess-service)", () => {
     expect(cf).toContainEqual({ field: 1, value: 99.00 });    // total_amount present
     expect(cf).toContainEqual({ field: 4, value: "INV-001" }); // order_id present
     // litres and receipt_datetime must NOT be in the PATCH body
+    expect(cf.find((e) => e.field === 7)).toBeUndefined();
+    expect(cf.find((e) => e.field === 8)).toBeUndefined();
+  });
+});
+
+// ── patchExistingDocument (postprocess-service) ───────────────────────
+
+describe("patchExistingDocument (postprocess-service)", () => {
+  test("includes litres + receipt_datetime in custom_fields", async () => {
+    const reg = await primeFieldRegistry({ total_amount: 1, order_id: 4, litres: 7, receipt_datetime: 8 });
+    const testAdapter = new PaperlessAdapter({
+      paperlessUrl: "https://paperless.test",
+      paperlessToken: "tok",
+      paperlessMcpUrl: "http://paperless-mcp:3000/mcp",
+      fieldRegistry: reg,
+    });
+
+    mockFetch(
+      () => jsonResponse({ id: 422, title: "Slovnaft - FA12345" }),
+    );
+
+    await patchExistingDocument(
+      {
+        documentId: 422,
+        title: "Slovnaft - FA12345",
+        correspondentId: 10,
+        tagIds: [1, 2],
+        totalAmount: 45.30,
+        orderId: "FA12345",
+        litres: 45.30,
+        receiptDatetime: "2026-04-25T14:23:00",
+      },
+      testAdapter,
+      reg,
+      { log: () => {} },
+    );
+
+    const patchCall = fetchCallLog.find((c) => c.init?.method === "PATCH");
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse(patchCall!.init!.body as string);
+    const cf: Array<{ field: number; value: unknown }> = body.custom_fields;
+    expect(cf).toContainEqual({ field: 7, value: 45.30 });
+    expect(cf).toContainEqual({ field: 8, value: "2026-04-25T14:23:00" });
+  });
+
+  test("omits litres + receipt_datetime when not provided (non-fuel force-refresh)", async () => {
+    const reg = await primeFieldRegistry({ total_amount: 1, order_id: 4, litres: 7, receipt_datetime: 8 });
+    const testAdapter = new PaperlessAdapter({
+      paperlessUrl: "https://paperless.test",
+      paperlessToken: "tok",
+      paperlessMcpUrl: "http://paperless-mcp:3000/mcp",
+      fieldRegistry: reg,
+    });
+
+    mockFetch(
+      () => jsonResponse({ id: 300, title: "Alza - INV-001" }),
+    );
+
+    await patchExistingDocument(
+      {
+        documentId: 300,
+        title: "Alza - INV-001",
+        correspondentId: 5,
+        tagIds: [3],
+        totalAmount: 99.00,
+        orderId: "INV-001",
+        litres: null,
+        receiptDatetime: null,
+      },
+      testAdapter,
+      reg,
+      { log: () => {} },
+    );
+
+    const patchCall = fetchCallLog.find((c) => c.init?.method === "PATCH");
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse(patchCall!.init!.body as string);
+    const cf: Array<{ field: number; value: unknown }> = body.custom_fields;
+    // litres and receipt_datetime must NOT appear
     expect(cf.find((e) => e.field === 7)).toBeUndefined();
     expect(cf.find((e) => e.field === 8)).toBeUndefined();
   });
