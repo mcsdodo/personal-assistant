@@ -2313,6 +2313,156 @@ describe("executeScanIntake", () => {
   });
 });
 
+// ── Task 8: litres + receipt_datetime wiring through scan path ────────────
+
+describe("scan-worker upload path: litres + receipt_datetime custom fields", () => {
+  /** Registry with all 4 custom fields including litres (id:2) + receipt_datetime (id:3). */
+  let fullRegistry: PaperlessFieldRegistry;
+
+  beforeEach(async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        count: 4,
+        next: null,
+        results: [
+          { id: 1, name: "total_amount", data_type: "float" },
+          { id: 2, name: "litres", data_type: "float" },
+          { id: 3, name: "receipt_datetime", data_type: "string" },
+          { id: 4, name: "order_id", data_type: "string" },
+        ],
+      }),
+    })) as any;
+    fullRegistry = new PaperlessFieldRegistry("https://test", "tok");
+    await fullRegistry.init();
+    globalThis.fetch = origFetch;
+  });
+
+  test("scan path: fuel scan PATCH includes litres + receipt_datetime", async () => {
+    const filePath = join(tmpDir, "fuel_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake fuel scan pdf"));
+
+    const input = makeScanInput({ file_path: filePath, watch_folder: "techlab/accounting" });
+    const job = createRunningScanJob(
+      input,
+      defaultScanClassification({
+        doc_type: "receipt",
+        is_fuel: true,
+        total_amount: 45.30,
+        order_id: null,
+        litres: 45.30,
+        receipt_datetime: "2026-04-25T14:23:00",
+      } as any),
+    );
+
+    let patchBody: Record<string, unknown> | null = null;
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // NO dedup (order_id is null)
+      // 2. list_tags
+      () => jsonResponse(rpcResponse([
+        { id: 3, name: "techlab" },
+        { id: 11, name: "accounting" },
+        { id: 6, name: "fuel" },
+        { id: 7, name: "2026-03" },
+      ])),
+      // 3. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 3, name: "receipt" }])),
+      // 4. resolveStoragePath
+      storagePathsMockHandler(),
+      // 5. post_document upload
+      () => new Response('"task-uuid-fuel-scan"', { status: 200 }),
+      // 6. task poll → SUCCESS
+      () => jsonResponse([{ status: "SUCCESS", result: "Success. New document id 999 created" }]),
+      // 7. PATCH custom fields — capture body for assertion
+      (url, init) => {
+        patchBody = JSON.parse(init?.body as string);
+        return jsonResponse({ id: 999, custom_fields: [] });
+      },
+      // 8. verify GET
+      () => jsonResponse({ id: 999, custom_fields: [{ field: 1, value: 45.30 }, { field: 2, value: 45.30 }, { field: 3, value: "2026-04-25T14:23:00" }] }),
+      // 9-11. moveGdriveFile
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, fullRegistry, notify);
+
+    expect(getJob(db, job.id)!.state).toBe("completed");
+    expect(patchBody).not.toBeNull();
+    const cf = (patchBody as any).custom_fields as Array<{ field: number; value: unknown }>;
+    expect(cf).toContainEqual({ field: 1, value: 45.30 });   // total_amount
+    expect(cf).toContainEqual({ field: 2, value: 45.30 });   // litres
+    expect(cf).toContainEqual({ field: 3, value: "2026-04-25T14:23:00" }); // receipt_datetime
+  });
+
+  test("scan path force-refresh: fuel scan PATCH includes litres + receipt_datetime", async () => {
+    const filePath = join(tmpDir, "fuel_scan_refresh.pdf");
+    writeFileSync(filePath, Buffer.from("fake fuel scan pdf refresh"));
+
+    const existingDocId = 222;
+    const input = makeScanInput({ file_path: filePath, watch_folder: "techlab/accounting", force: true });
+    const job = createRunningScanJob(
+      input,
+      defaultScanClassification({
+        doc_type: "receipt",
+        is_fuel: true,
+        total_amount: 45.30,
+        order_id: "FUEL-001",
+        litres: 45.30,
+        receipt_datetime: "2026-04-25T14:23:00",
+      } as any),
+    );
+
+    let patchBody: Record<string, unknown> | null = null;
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 2. dedup → exact duplicate (triggers force-refresh path)
+      () => jsonResponse({ results: [{
+        id: existingDocId,
+        title: "Alza - FUEL-001",
+        custom_fields: [{ field: 4, value: "FUEL-001" }, { field: 1, value: 45.30 }],
+      }] }),
+      // 3. list_tags
+      () => jsonResponse(rpcResponse([
+        { id: 3, name: "techlab" },
+        { id: 11, name: "accounting" },
+        { id: 6, name: "fuel" },
+        { id: 7, name: "2026-03" },
+      ])),
+      // 4. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 3, name: "receipt" }])),
+      // 5. resolveStoragePath
+      storagePathsMockHandler(),
+      // 6. Single PATCH (force-refresh path — no post_document, no separate custom_fields PATCH)
+      (url, init) => {
+        expect(url).toContain(`/api/documents/${existingDocId}/`);
+        expect(init?.method).toBe("PATCH");
+        patchBody = JSON.parse(init?.body as string);
+        return jsonResponse({ id: existingDocId });
+      },
+      // 7-9. moveGdriveFile
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, fullRegistry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("refreshed");
+
+    expect(patchBody).not.toBeNull();
+    const cf = (patchBody as any).custom_fields as Array<{ field: number; value: unknown }>;
+    expect(cf).toContainEqual({ field: 2, value: 45.30 });                       // litres
+    expect(cf).toContainEqual({ field: 3, value: "2026-04-25T14:23:00" });       // receipt_datetime
+  });
+});
+
 // ── Scan pipeline: triggers A+B (task 2.5) ──────────────────────────────
 
 describe("scan-worker trigger A (classifier unknown)", () => {

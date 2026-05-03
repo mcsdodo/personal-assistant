@@ -1449,6 +1449,8 @@ export async function executeScanIntake(
           storagePathId,
           totalAmount: classification.total_amount,
           orderId: classification.order_id,
+          litres: (classification as Record<string, unknown>).litres as number | null | undefined,
+          receiptDatetime: (classification as Record<string, unknown>).receipt_datetime as string | null | undefined,
         }, logger, registry);
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
@@ -1473,7 +1475,8 @@ export async function executeScanIntake(
         addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
         const cfResult = await setDocumentCustomFields(
           uploadResult.task_uuid, classification.total_amount, classification.order_id,
-          null, null, // litres + receiptDatetime wired in Task 8
+          (classification as Record<string, unknown>).litres as number | null | undefined,
+          (classification as Record<string, unknown>).receipt_datetime as string | null | undefined,
           logger, registry,
         );
         addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
