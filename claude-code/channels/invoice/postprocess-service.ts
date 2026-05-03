@@ -206,6 +206,8 @@ export async function setDocumentCustomFields(
   taskUuid: string | undefined,
   totalAmount: number | null | undefined,
   orderId: string | null | undefined,
+  litres: number | null | undefined,
+  receiptDatetime: string | null | undefined,
   adapter: PaperlessAdapter,
   registry: PaperlessFieldRegistry,
   logger: PostprocessLogger,
@@ -213,6 +215,8 @@ export async function setDocumentCustomFields(
   return withSpan(tracer, "invoice-worker.set_fields", {
     "fields.total_amount": String(totalAmount ?? ""),
     "fields.order_id": orderId ?? "",
+    "fields.litres": String(litres ?? ""),
+    "fields.receipt_datetime": receiptDatetime ?? "",
     "fields.task_uuid": taskUuid ?? "",
   }, async (span) => {
     if (!taskUuid) {
@@ -239,6 +243,12 @@ export async function setDocumentCustomFields(
       }
       if (orderId) {
         customFields.push({ field: registry.getFieldId("order_id"), value: orderId });
+      }
+      if (litres != null) {
+        customFields.push({ field: registry.getFieldId("litres"), value: litres });
+      }
+      if (receiptDatetime) {
+        customFields.push({ field: registry.getFieldId("receipt_datetime"), value: receiptDatetime });
       }
       if (customFields.length === 0) return { doc_id: docId, error: "no fields to set" };
 

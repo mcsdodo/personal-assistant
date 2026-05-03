@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { PaperlessAdapter } from "./paperless-adapter";
 import { PaperlessFieldRegistry } from "./paperless-fields";
+import { setDocumentCustomFields } from "./invoice/postprocess-service";
 
 // ── Test infrastructure ────────────────────────────────────────────────
 
@@ -485,5 +486,134 @@ describe("PaperlessAdapter.setCustomFields", () => {
     expect(r.ok).toBe(false);
     expect(r.error).toContain("no fields");
     expect(fetchCallLog).toHaveLength(0);
+  });
+});
+
+// ── setDocumentCustomFields (postprocess-service) ─────────────────────
+
+/**
+ * Build a PaperlessFieldRegistry seeded from a name→id map without hitting
+ * any real network. Temporarily installs a mock fetch for registry.init(),
+ * restores it afterward, then installs mockFetch for the actual test calls.
+ */
+async function primeFieldRegistry(fields: Record<string, number>): Promise<PaperlessFieldRegistry> {
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({
+      count: Object.keys(fields).length,
+      next: null,
+      results: Object.entries(fields).map(([name, id]) => ({
+        id,
+        name,
+        data_type: name === "litres" || name === "total_amount" ? "float" : "string",
+      })),
+    }),
+  })) as any;
+  const reg = new PaperlessFieldRegistry("https://paperless.test", "tok");
+  await reg.init();
+  globalThis.fetch = savedFetch;
+  return reg;
+}
+
+describe("setDocumentCustomFields (postprocess-service)", () => {
+  test("PATCHes litres + receipt_datetime when fuel doc provides both", async () => {
+    const taskUuid = "task-fuel-1";
+    const docId = 422;
+
+    const reg = await primeFieldRegistry({ total_amount: 1, order_id: 4, litres: 7, receipt_datetime: 8 });
+    const testAdapter = new PaperlessAdapter({
+      paperlessUrl: "https://paperless.test",
+      paperlessToken: "tok",
+      paperlessMcpUrl: "http://paperless-mcp:3000/mcp",
+      fieldRegistry: reg,
+    });
+
+    mockFetch(
+      // waitForConsumption: task poll → SUCCESS with doc id
+      () => jsonResponse([{ status: "SUCCESS", result: `Success. New document id ${docId} created` }]),
+      // setCustomFields: PATCH
+      () => jsonResponse({ id: docId, custom_fields: [] }),
+      // setCustomFields: verify GET
+      () => jsonResponse({ id: docId, custom_fields: [
+        { field: 1, value: 45.30 },
+        { field: 4, value: "FA12345" },
+        { field: 7, value: 45.30 },
+        { field: 8, value: "2026-04-25T14:23:00" },
+      ] }),
+    );
+
+    const result = await setDocumentCustomFields(
+      taskUuid,
+      45.30,                       // total_amount
+      "FA12345",                   // order_id
+      45.30,                       // litres
+      "2026-04-25T14:23:00",       // receipt_datetime
+      testAdapter,
+      reg,
+      { log: () => {} },
+    );
+
+    expect(result.doc_id).toBe(docId);
+    expect(result.error).toBeUndefined();
+
+    // The PATCH call is the second fetch (index 1 — after task poll)
+    const patchCall = fetchCallLog.find((c) => c.init?.method === "PATCH");
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse(patchCall!.init!.body as string);
+    const cf: Array<{ field: number; value: unknown }> = body.custom_fields;
+    expect(cf).toContainEqual({ field: 1, value: 45.30 });   // total_amount
+    expect(cf).toContainEqual({ field: 4, value: "FA12345" }); // order_id
+    expect(cf).toContainEqual({ field: 7, value: 45.30 });   // litres
+    expect(cf).toContainEqual({ field: 8, value: "2026-04-25T14:23:00" }); // receipt_datetime
+  });
+
+  test("omits litres and receipt_datetime when both are null (non-fuel doc)", async () => {
+    const taskUuid = "task-nonfuel-1";
+    const docId = 500;
+
+    const reg = await primeFieldRegistry({ total_amount: 1, order_id: 4, litres: 7, receipt_datetime: 8 });
+    const testAdapter = new PaperlessAdapter({
+      paperlessUrl: "https://paperless.test",
+      paperlessToken: "tok",
+      paperlessMcpUrl: "http://paperless-mcp:3000/mcp",
+      fieldRegistry: reg,
+    });
+
+    mockFetch(
+      // waitForConsumption: task poll → SUCCESS
+      () => jsonResponse([{ status: "SUCCESS", result: `Success. New document id ${docId} created` }]),
+      // setCustomFields: PATCH
+      () => jsonResponse({ id: docId, custom_fields: [] }),
+      // setCustomFields: verify GET
+      () => jsonResponse({ id: docId, custom_fields: [
+        { field: 1, value: 99.00 },
+        { field: 4, value: "INV-001" },
+      ] }),
+    );
+
+    const result = await setDocumentCustomFields(
+      taskUuid,
+      99.00,     // total_amount
+      "INV-001", // order_id
+      null,      // litres — not a fuel doc
+      null,      // receipt_datetime — not a fuel doc
+      testAdapter,
+      reg,
+      { log: () => {} },
+    );
+
+    expect(result.doc_id).toBe(docId);
+    expect(result.error).toBeUndefined();
+
+    const patchCall = fetchCallLog.find((c) => c.init?.method === "PATCH");
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse(patchCall!.init!.body as string);
+    const cf: Array<{ field: number; value: unknown }> = body.custom_fields;
+    expect(cf).toContainEqual({ field: 1, value: 99.00 });    // total_amount present
+    expect(cf).toContainEqual({ field: 4, value: "INV-001" }); // order_id present
+    // litres and receipt_datetime must NOT be in the PATCH body
+    expect(cf.find((e) => e.field === 7)).toBeUndefined();
+    expect(cf.find((e) => e.field === 8)).toBeUndefined();
   });
 });

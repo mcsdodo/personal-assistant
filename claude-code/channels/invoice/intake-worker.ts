@@ -1558,10 +1558,13 @@ function setDocumentCustomFields(
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
 ): Promise<CustomFieldResult> {
+  // litres and receiptDatetime are wired in Task 6; pass null until then.
   return setDocumentCustomFieldsImpl(
     taskUuid,
     totalAmount,
     orderId,
+    null,
+    null,
     getPaperlessAdapter(registry),
     registry,
     logger,
