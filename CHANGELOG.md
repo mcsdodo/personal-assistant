@@ -4,6 +4,22 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## [unreleased] — 2026-05-03 — Task 63 — Car-expense fields + `/car` on-demand tagging
+
+### Added
+- `DocumentClassificationResult` schema extended with two new optional fields: `litres: number | null` (fuel volume, litres) and `receipt_datetime: string | null` (ISO datetime or date-only string, `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD`). Both are backward-compatible — missing values are treated as null. A new `receiptDatetimeOrNull` validator helper rejects strings that don't match the expected formats.
+- `paperless-fields.ts` registry extended: `litres` (float) and `receipt_datetime` (string) are now auto-created as Paperless custom fields on cold-start, alongside the existing `total_amount` and `order_id`. Paperless has no native datetime type — `receipt_datetime` stores ISO-format strings.
+- `document-classifier.md` Haiku prompt extended with `litres` and `receipt_datetime` output fields, including new STRICT RULES bullets (null semantics, comma-decimal normalisation, datetime format fallback chain) and Classification Rules sections with POS receipt format examples (Slovak/Czech `litrov`, `Natural 95`, `Diesel`).
+- `setDocumentCustomFields` and `patchExistingDocument` in `postprocess-service.ts` accept two new optional parameters (`litres`, `receiptDatetime`). Each is conditionally pushed to the Paperless PATCH body only when the classifier returned a value — non-fuel documents get no `litres` entry; receipts with unreadable timestamps get no `receipt_datetime` entry.
+- Both fields are wired through all four intake call sites: invoice email upload, invoice email force-refresh PATCH, scan (GDrive) upload, and scan force-refresh PATCH.
+- Telegram notifications for non-fuel POS receipts (`doc_type == "receipt"`, `is_fuel == false`) now append `\nReply /car if non-fuel car expense`. Hint is suppressed for fuel receipts (already auto-tagged), invoices, payslips, account statements, and generic documents. `NotificationData` interface extended with optional `is_fuel?: boolean`.
+- `/car` on-demand tagging documented in `claude-code/CLAUDE.md`. The Claude session interprets `/car` (most-recent uploaded doc) or `/car #N` (explicit doc id) Telegram replies as Paperless `bulk_edit_documents` tag-add calls. Routing fires only when no jobs are paused in `awaiting_user_guidance` (guidance routing always wins). No new MCP tools or workflow state.
+- E2E fuel-receipt test (`test_fuel`) added to the Gmail attachment test suite. Sends a fuel PDF, waits for pipeline completion, asserts `litres > 0` and `receipt_datetime` matching the expected format on the resulting Paperless document. New `get_custom_field_lookup()` helper added to `tests/helpers.py`.
+- `docs/uc1-invoice-processing.md` gains a new "Integration: external car-expense tracker" section documenting the read-only Paperless contract: endpoint (`tags__name__in=fuel,car`), fields consumed (`litres`, `receipt_datetime`, tags), triage rules, polling cadence, and auth.
+
+### Changed
+- `paperless-fields.ts` Key Files entry updated to list all four registered custom fields and their semantics.
+
 ## [unreleased] — 2026-05-02 — Task 64 review follow-ups
 
 ### Changed
