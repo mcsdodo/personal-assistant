@@ -110,6 +110,45 @@ describe("PaperlessFieldRegistry", () => {
     expect(logs.some(l => l.includes("order_id"))).toBe(true);
   });
 
+  test("auto-creates litres and receipt_datetime when missing from Paperless", async () => {
+    const created: Array<{ name: string; data_type: string }> = [];
+    let callIndex = 0;
+    globalThis.fetch = mock(async (_url: string, init?: RequestInit) => {
+      const isPost = init?.method === "POST";
+      if (!isPost) {
+        // GET — empty list
+        callIndex++;
+        return {
+          ok: true,
+          json: async () => ({ count: 0, next: null, results: [] }),
+        } as Response;
+      }
+      // POST — record and return synthetic created field
+      const body = JSON.parse(init!.body as string);
+      created.push(body);
+      callIndex++;
+      return {
+        ok: true,
+        json: async () => ({ id: created.length, name: body.name, data_type: body.data_type }),
+      } as Response;
+    }) as any;
+
+    const registry = new PaperlessFieldRegistry("https://paperless.test", "tok");
+    await registry.init();
+
+    const names = created.map((c) => c.name);
+    expect(names).toContain("total_amount");
+    expect(names).toContain("order_id");
+    expect(names).toContain("litres");
+    expect(names).toContain("receipt_datetime");
+
+    const litres = created.find((c) => c.name === "litres");
+    expect(litres?.data_type).toBe("float");
+
+    const datetime = created.find((c) => c.name === "receipt_datetime");
+    expect(datetime?.data_type).toBe("string");
+  });
+
   test("handles paginated results", async () => {
     mockFetch([
       // Page 1
