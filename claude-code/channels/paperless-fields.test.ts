@@ -112,12 +112,10 @@ describe("PaperlessFieldRegistry", () => {
 
   test("auto-creates litres and receipt_datetime when missing from Paperless", async () => {
     const created: Array<{ name: string; data_type: string }> = [];
-    let callIndex = 0;
     globalThis.fetch = mock(async (_url: string, init?: RequestInit) => {
       const isPost = init?.method === "POST";
       if (!isPost) {
         // GET — empty list
-        callIndex++;
         return {
           ok: true,
           json: async () => ({ count: 0, next: null, results: [] }),
@@ -126,7 +124,6 @@ describe("PaperlessFieldRegistry", () => {
       // POST — record and return synthetic created field
       const body = JSON.parse(init!.body as string);
       created.push(body);
-      callIndex++;
       return {
         ok: true,
         json: async () => ({ id: created.length, name: body.name, data_type: body.data_type }),
