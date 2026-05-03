@@ -17,7 +17,7 @@ You will receive a file path. Use the Read tool to read the PDF/image file — t
 
 Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text.
 
-**You MUST return EXACTLY these 15 fields — no more, no fewer:**
+**You MUST return EXACTLY these 17 fields — no more, no fewer:**
 
 ```json
 {
@@ -35,13 +35,15 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
   "service_period": "2026-04-06/2026-05-06",
   "accounting_period": "2026-04",
   "accounting_period_reasoning": "Subscription invoice issued Apr 6 covering Apr 6 – May 6 service period. Per Slovak VAT § 19, tax point is the supply date (Apr 6). Period starts in April → 2026-04.",
-  "notes": null
+  "notes": null,
+  "litres": null,
+  "receipt_datetime": "2026-04-06T09:42:00"
 }
 ```
 
 **STRICT RULES:**
-- Return ALL 15 fields every time. Never omit any field.
-- Do NOT add extra fields (no `description`, `doc_number`, or anything else beyond the 15 listed).
+- Return ALL 17 fields every time. Never omit any field.
+- Do NOT add extra fields (no `description`, `doc_number`, or anything else beyond the 17 listed).
 - `confidence` must be a string: `"high"`, `"medium"`, or `"low"` — never a number.
 - `is_fuel` must be a boolean — never omit it.
 - `total_amount` must be a number, `null`, or `"unknown"` — never omit it. Use `"unknown"` ONLY when the document is genuinely unreadable (encrypted, blank, illegible). When you use `"unknown"`, you MUST populate `notes` with a short explanation.
@@ -52,6 +54,8 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 - `accounting_period` — `"YYYY-MM"`, `null`, or `"unknown"`. **This is your reasoned answer**, see decision rules below. Use `"unknown"` ONLY when the document is unreadable; use `null` when it's readable but the dates genuinely don't support a period. When you use `"unknown"`, you MUST populate `notes` with a short explanation.
 - `accounting_period_reasoning` — short string explaining HOW you chose the accounting_period (cite which date you used and why), or `null` only if `accounting_period` is also null/unknown.
 - `notes` — short string (<200 chars) or `null`. REQUIRED (non-null, non-empty) whenever any of `owner`, `doc_type`, `total_amount`, `doc_date`, `supply_date`, `accounting_period` is `"unknown"`. Otherwise set to `null`.
+- `litres` must be a number or null — never omit. Set to a number ONLY when `is_fuel: true` AND fuel volume is readable (look for "L", "litrov", or unit columns next to a Natural 95 / Diesel / benzín / nafta line item). Set to null when `is_fuel: false`. If `is_fuel: true` but volume is genuinely unreadable, return null AND populate `notes` with a short explanation. Slovak/Czech receipts use comma decimals (`45,30 L`) — normalise to dot decimals (`45.30`) before emitting.
+- `receipt_datetime` must be a string in `"YYYY-MM-DDTHH:MM:SS"` format (full datetime) or `"YYYY-MM-DD"` format (date-only fallback) or null — never omit. Use the full format whenever the receipt prints a clock time (24h `HH:MM` or `HH:MM:SS` — common on POS thermal receipts). When only the date is readable, fall back to date-only. When neither is readable, return null. Independent from `doc_date`: `doc_date` continues to feed accounting_period; `receipt_datetime` exists for downstream consumers (kniha-jazd) that need the time-of-day.
 
 ## Classification Rules
 
@@ -164,6 +168,31 @@ The Slovak *deň dodania* / *dátum dodania* — the date the goods or services 
 **English labels:** *Date of supply*, *Supply date*, *Delivery date*, *Service date*, *Fulfilment date*, *Tax point*, *Date of taxable supply*
 
 If absent (common on receipts and POS slips), return `null`. Do NOT default to `doc_date` — the worker handles fallback. For receipts, supply_date and doc_date are the same physical event but only doc_date should be returned.
+
+### litres
+Fuel volume in litres. Only relevant for fuel receipts.
+
+- **When `is_fuel: true`:** read the volume from labels like `L`, `litrov`, `Liter`, or the unit column next to fuel line items. Examples:
+  - `Natural 95   45,30 L   1,489 €/L   67,45 €` → `45.30`
+  - `DIESEL  35.20 LITROV  1.512 EUR/L` → `35.20`
+- **When `is_fuel: false`:** always return `null`.
+- Normalise comma decimals (`45,30`) to dot decimals (`45.30`) before emitting.
+- If `is_fuel: true` but the volume is genuinely unreadable, return `null` AND populate `notes`.
+
+### receipt_datetime
+The receipt's transaction timestamp. **Independent from `doc_date`** — this is for downstream consumers that need the time-of-day (e.g. matching a fuel receipt against a trip window).
+
+**Slovak/Czech POS receipt time formats:**
+- `25.04.2026  14:23` — date + time on the header line
+- `Dátum: 25.04.2026   Čas: 14:23:07`
+- `2026-04-25 14:23:00` (rare; receipt formatters)
+
+**Output rules:**
+- Both date and time extracted: return `"YYYY-MM-DDTHH:MM:SS"`. Pad 2-digit times if needed: `14:23` → `14:23:00`.
+- Only date extracted (time missing/smudged/unreadable): return `"YYYY-MM-DD"`. The downstream system flips this to NeedsReview so the user can fill in the time.
+- Neither extractable: return `null`.
+
+For invoices and statements where there's no clock time at all (only an issue date), return the date-only form. For receipts that clearly print a time, prefer the full datetime — most fuel-station thermal printers do.
 
 ### service_period
 The billing/service period as ISO 8601 interval `"YYYY-MM-DD/YYYY-MM-DD"`. Common on subscriptions, telecom, hosting, SaaS.
