@@ -969,6 +969,7 @@ export async function executeInvoiceIntake(
           owner: owner ?? null,
           month_tag: monthTag,
           paperless_document_id: finalDocId,
+          is_fuel: merged.is_fuel,
         });
         if (msg) await notify(msg).catch((e) => {
           span.addEvent("notification_failed", { error: e instanceof Error ? e.message : String(e) });
@@ -1507,6 +1508,7 @@ export async function executeScanIntake(
           owner: scanTagOwner,
           month_tag: resolvedMonthTag,
           paperless_document_id: finalDocId,
+          is_fuel: classification.is_fuel,
         });
         if (msg) await notify(msg).catch((e) => {
           span.addEvent("notification_failed", { error: e instanceof Error ? e.message : String(e) });

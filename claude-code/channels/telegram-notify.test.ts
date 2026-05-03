@@ -146,6 +146,41 @@ describe("formatNotification", () => {
   });
 });
 
+describe("formatNotification — /car hint", () => {
+  const baseUploaded = {
+    outcome: "uploaded" as const,
+    vendor: "Mestský Parkovací Systém",
+    total_amount: 4.20,
+    currency: "EUR",
+    doc_type: "receipt",
+    owner: "techlab" as const,
+    month_tag: "2026-04",
+    paperless_document_id: 422,
+  };
+
+  test("appends /car hint for non-fuel receipt", () => {
+    const msg = formatNotification({ ...baseUploaded, is_fuel: false });
+    expect(msg).toContain("Reply /car");
+  });
+
+  test("does not append /car hint for fuel receipt", () => {
+    const msg = formatNotification({ ...baseUploaded, vendor: "Slovnaft", is_fuel: true });
+    expect(msg).not.toContain("Reply /car");
+  });
+
+  test("does not append /car hint for invoice (non-receipt doc_type)", () => {
+    const msg = formatNotification({ ...baseUploaded, doc_type: "invoice", is_fuel: false });
+    expect(msg).not.toContain("Reply /car");
+  });
+
+  test("does not append /car hint for payslip / account_statement / document", () => {
+    for (const dt of ["payslip", "account_statement", "document"]) {
+      const msg = formatNotification({ ...baseUploaded, doc_type: dt, is_fuel: false });
+      expect(msg).not.toContain("Reply /car");
+    }
+  });
+});
+
 describe("formatGuidanceRequest", () => {
   test("encrypted_pdf reason includes filename, sender, and decrypt-failed note", () => {
     const msg = formatGuidanceRequest({

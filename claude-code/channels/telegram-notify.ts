@@ -13,6 +13,8 @@ export interface NotificationData {
   paperless_document_id?: number | null;
   duplicate_message?: string | null;
   error?: string | null;
+  /** When true, suppress the /car tagging hint (this is already a fuel doc). */
+  is_fuel?: boolean;
 }
 
 /**
@@ -46,7 +48,15 @@ export function formatNotification(data: NotificationData): string | null {
     return `🔄  ${data.vendor} | ${amountStr} | ${data.doc_type} | ${owner} | ${period}${docRef}`;
   }
 
-  return `✔️  ${data.vendor} | ${amountStr} | ${data.doc_type} | ${owner} | ${period}`;
+  const body = `✔️  ${data.vendor} | ${amountStr} | ${data.doc_type} | ${owner} | ${period}`;
+
+  // /car hint: only for non-fuel POS receipts (parking, toll, wash, service).
+  // Excludes fuel (already tagged), invoices, payslips, statements, and other docs.
+  if (data.is_fuel === false && data.doc_type === "receipt") {
+    return `${body}\nReply /car if non-fuel car expense`;
+  }
+
+  return body;
 }
 
 /**
