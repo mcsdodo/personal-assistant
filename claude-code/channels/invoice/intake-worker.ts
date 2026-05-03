@@ -898,6 +898,8 @@ export async function executeInvoiceIntake(
           storagePathId,
           totalAmount: merged.total_amount,
           orderId: merged.order_id,
+          litres: (merged as Record<string, unknown>).litres as number | null | undefined,
+          receiptDatetime: (merged as Record<string, unknown>).receipt_datetime as string | null | undefined,
         }, logger, registry);
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
@@ -1134,6 +1136,8 @@ interface PatchParams {
   storagePathId?: number;
   totalAmount?: number | null;
   orderId?: string | null;
+  litres?: number | null;
+  receiptDatetime?: string | null;
 }
 
 function patchPaperlessDocument(

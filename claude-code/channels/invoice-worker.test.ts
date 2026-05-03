@@ -1579,6 +1579,78 @@ describe("invoice-worker force-refresh (email pipeline)", () => {
     expect(output.outcome).toBe("refreshed");
     expect(output.paperless_document_id).toBe(411);
   });
+
+  test("force-refresh fuel doc: single PATCH includes litres + receipt_datetime", async () => {
+    // Task 7: force-refresh path must pass litres + receipt_datetime in the PATCH body.
+    // Registry with all 4 custom fields (same setup as Task 6 upload-path tests).
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        count: 4,
+        next: null,
+        results: [
+          { id: 1, name: "total_amount", data_type: "float" },
+          { id: 2, name: "litres", data_type: "float" },
+          { id: 3, name: "receipt_datetime", data_type: "string" },
+          { id: 4, name: "order_id", data_type: "string" },
+        ],
+      }),
+    })) as any;
+    const fullRegistry = new PaperlessFieldRegistry("https://test", "tok");
+    await fullRegistry.init();
+    globalThis.fetch = origFetch;
+
+    const input = makeInput({ force: true });
+    const existingDocId = 411;
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ is_fuel: true, doc_type: "receipt", total_amount: 45.30 }),
+      defaultDocClassification({ doc_type: "receipt", is_fuel: true, total_amount: 45.30, litres: 45.30, receipt_datetime: "2026-04-25T14:23:00" }),
+    );
+
+    let patchBody: Record<string, unknown> | null = null;
+
+    mockFetch(
+      // 1. get_attachments
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "fuel.pdf", content_type: "application/pdf", size: 512 }])),
+      // 2. download_attachment
+      () => jsonResponse(rpcResponse({ name: "fuel.pdf", content_type: "application/pdf", size: 512, content_base64: "AA" })),
+      // 3. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 4. dedup check → exact duplicate (triggers force-refresh path)
+      () => jsonResponse({ results: [{
+        id: existingDocId,
+        title: "Alza - FA2026030001",
+        custom_fields: [{ field: 4, value: "FA2026030001" }, { field: 1, value: 45.30 }],
+      }] }),
+      // 5. list_tags
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 6, name: "fuel" }, { id: 7, name: "2026-03" }])),
+      // 6. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      // 7. resolveStoragePath
+      storagePathsMockHandler(),
+      // 8. Single PATCH (force-refresh path — no post_document, no separate custom_fields PATCH)
+      (url, init) => {
+        expect(url).toContain(`/api/documents/${existingDocId}/`);
+        expect(init?.method).toBe("PATCH");
+        patchBody = JSON.parse(init?.body as string);
+        return jsonResponse({ id: existingDocId });
+      },
+    );
+
+    await executeInvoiceIntake(db, job, logger, fullRegistry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("refreshed");
+
+    expect(patchBody).not.toBeNull();
+    const cf = (patchBody as any).custom_fields as Array<{ field: number; value: unknown }>;
+    expect(cf).toContainEqual({ field: 2, value: 45.30 });                       // litres
+    expect(cf).toContainEqual({ field: 3, value: "2026-04-25T14:23:00" });       // receipt_datetime
+  });
 });
 
 describe("invoice-worker force-refresh (scan pipeline)", () => {
