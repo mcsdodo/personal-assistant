@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { openDb as openEmailDb, getLastChecked, setLastChecked } from "../../lib/email-db";
 import { openWorkflowDb } from "../../lib/workflow-db";
-import { seedFromInitialLookback, processWithOverflowGuard, type EmailInfo } from "./main";
+import { seedFromInitialLookback, processWithOverflowGuard, processNewEmails, type EmailInfo } from "./main";
 
 function tmpPath(prefix: string): string {
   return `/tmp/${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`;
@@ -73,5 +73,87 @@ describe("email-poller processWithOverflowGuard", () => {
     expect(getLastChecked(emailDb, "gmail")).toBeNull();
     const afterRows = wfDb.prepare("SELECT COUNT(*) as n FROM jobs").get() as { n: number };
     expect(afterRows.n).toBe(beforeRows.n);
+  });
+});
+
+describe("email-poller own-account reply filter", () => {
+  let emailDb: Database;
+  let wfDb: Database;
+
+  beforeEach(() => {
+    emailDb = openEmailDb(tmpPath("emails"));
+    wfDb = openWorkflowDb(tmpPath("workflow"));
+  });
+
+  const OWN_EMAIL = "me@gmail.com";
+
+  it("skips job creation for a Re: reply from the monitored account", async () => {
+    const reply: EmailInfo = {
+      id: "msg-reply-1",
+      source: "gmail",
+      sender: OWN_EMAIL,
+      subject: "Re: faktúra za spracovanie účtovníctva",
+      hasAttachments: false,
+      receivedAt: "2026-05-04T10:51:54.000Z",
+    };
+    await processNewEmails(emailDb, wfDb, [reply], 5, OWN_EMAIL);
+    const jobs = wfDb.prepare("SELECT COUNT(*) as n FROM jobs").get() as { n: number };
+    expect(jobs.n).toBe(0);
+  });
+
+  it("still inserts the audit record even when skipping", async () => {
+    const reply: EmailInfo = {
+      id: "msg-reply-2",
+      source: "gmail",
+      sender: OWN_EMAIL,
+      subject: "Re: invoice from vendor",
+      hasAttachments: false,
+      receivedAt: "2026-05-04T11:00:00.000Z",
+    };
+    await processNewEmails(emailDb, wfDb, [reply], 5, OWN_EMAIL);
+    const emails = emailDb.prepare("SELECT COUNT(*) as n FROM emails").get() as { n: number };
+    expect(emails.n).toBe(1);
+  });
+
+  it("does NOT skip a test email from the monitored account with a clean subject", async () => {
+    const testInvoice: EmailInfo = {
+      id: "msg-test-invoice",
+      source: "gmail",
+      sender: OWN_EMAIL,
+      subject: "Faktúra 1000000001 - Alza.sk",
+      hasAttachments: true,
+      receivedAt: "2026-05-04T12:00:00.000Z",
+    };
+    await processNewEmails(emailDb, wfDb, [testInvoice], 5, OWN_EMAIL);
+    const jobs = wfDb.prepare("SELECT COUNT(*) as n FROM jobs").get() as { n: number };
+    expect(jobs.n).toBe(1);
+  });
+
+  it("does NOT skip a Re: from an external sender", async () => {
+    const vendorReply: EmailInfo = {
+      id: "msg-vendor-reply",
+      source: "gmail",
+      sender: "vendor@example.com",
+      subject: "Re: your order",
+      hasAttachments: true,
+      receivedAt: "2026-05-04T13:00:00.000Z",
+    };
+    await processNewEmails(emailDb, wfDb, [vendorReply], 5, OWN_EMAIL);
+    const jobs = wfDb.prepare("SELECT COUNT(*) as n FROM jobs").get() as { n: number };
+    expect(jobs.n).toBe(1);
+  });
+
+  it("is case-insensitive on the sender email", async () => {
+    const reply: EmailInfo = {
+      id: "msg-reply-caps",
+      source: "gmail",
+      sender: "ME@GMAIL.COM",
+      subject: "Re: some invoice",
+      hasAttachments: false,
+      receivedAt: "2026-05-04T14:00:00.000Z",
+    };
+    await processNewEmails(emailDb, wfDb, [reply], 5, OWN_EMAIL);
+    const jobs = wfDb.prepare("SELECT COUNT(*) as n FROM jobs").get() as { n: number };
+    expect(jobs.n).toBe(0);
   });
 });

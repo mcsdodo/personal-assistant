@@ -119,7 +119,7 @@ export async function processWithOverflowGuard(
     );
     return { overflow: true, processed: 0 };
   }
-  await processNewEmails(emailDb, wfDb, newEmails, maxPerCycle);
+  await processNewEmails(emailDb, wfDb, newEmails, maxPerCycle, GMAIL_EMAIL || undefined);
   setLastChecked(emailDb, source, new Date().toISOString());
   return { overflow: false, processed: newEmails.length };
 }
@@ -130,6 +130,7 @@ export async function processNewEmails(
   wfDb: Database,
   emails: EmailInfo[],
   maxPerCycle: number,
+  ownEmail?: string,
 ): Promise<void> {
   if (emails.length === 0) return;
   const capped = emails.slice(0, maxPerCycle);
@@ -150,6 +151,16 @@ export async function processNewEmails(
       invoiceLinks: email.invoiceLinks?.length
         ? JSON.stringify(email.invoiceLinks) : null,
     } as InsertEmail);
+
+    if (
+      ownEmail &&
+      email.source === "gmail" &&
+      email.sender?.toLowerCase() === ownEmail.toLowerCase() &&
+      /^re:\s/i.test(email.subject ?? "")
+    ) {
+      log(`↩ Skipping own-account reply: ${email.id} "${email.subject}"`);
+      continue;
+    }
 
     const jobInput = {
       email_source: email.source,
