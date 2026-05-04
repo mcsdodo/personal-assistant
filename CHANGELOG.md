@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## [unreleased] — 2026-05-04
+
+### Fixed
+- **email-poller**: own-account Gmail replies (sender == monitored account, subject starts with `Re:`) are now silently skipped — audited but no workflow job is created, so classification never runs. Prevents spurious "No attachments found" failures when replying to a vendor invoice thread.
+
 ## [unreleased] — 2026-05-03 — Task 63 — Car-expense fields + `/car` on-demand tagging
 
 ### Added
