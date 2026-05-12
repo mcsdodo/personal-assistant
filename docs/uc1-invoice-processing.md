@@ -715,10 +715,10 @@ Paperless instead of running its own LLM-OCR. Contract:
   - `custom_fields[]` — resolves field IDs once per session via `GET /api/custom_fields/`. Reads:
     - `total_amount` (float, EUR) — set by PA's invoice pipeline.
     - `litres` (float) — fuel volume; only present on fuel docs.
-    - `receipt_datetime` (string `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD`) — receipt timestamp.
+    - `receipt_datetime` (string `YYYY-MM-DDTHH:MM:SS`) — receipt timestamp; PA always emits the full form, using `T00:00:00` when the receipt didn't print a clock time.
     - `order_id` (string) — invoice number, optional.
 - **Triage:** kniha-jazd treats absent fields as NeedsReview per its own spec.
-  Date-only `receipt_datetime` also flips to NeedsReview.
+  `T00:00:00` is a signal that no clock time was readable — kniha-jazd may flip to NeedsReview on that pattern if time-of-day matters for the trip window.
 - **Direction of flow:** kniha-jazd is read-only against Paperless. User edits in
   kniha-jazd's UI stay in kniha-jazd; force-refresh in PA can resync metadata
   to Paperless on next poll.

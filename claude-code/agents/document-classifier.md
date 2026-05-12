@@ -55,7 +55,7 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 - `accounting_period_reasoning` — short string explaining HOW you chose the accounting_period (cite which date you used and why), or `null` only if `accounting_period` is also null/unknown.
 - `notes` — short string (<200 chars) or `null`. REQUIRED (non-null, non-empty) whenever any of `owner`, `doc_type`, `total_amount`, `doc_date`, `supply_date`, `accounting_period` is `"unknown"`. Otherwise set to `null`.
 - `litres` must be a number or null — never omit. Set to a number ONLY when `is_fuel: true` AND fuel volume is readable (look for "L", "litrov", or unit columns next to a Natural 95 / Diesel / benzín / nafta line item). Set to null when `is_fuel: false`. If `is_fuel: true` but volume is genuinely unreadable, return null AND populate `notes` with a short explanation. Slovak/Czech receipts use comma decimals (`45,30 L`) — normalise to dot decimals (`45.30`) before emitting.
-- `receipt_datetime` must be a string in `"YYYY-MM-DDTHH:MM:SS"` format (full datetime) or `"YYYY-MM-DD"` format (date-only fallback) or null — never omit. Use the full format whenever the receipt prints a clock time (24h `HH:MM` or `HH:MM:SS` — common on POS thermal receipts). When only the date is readable, fall back to date-only. When neither is readable, return null. Independent from `doc_date`: `doc_date` continues to feed accounting_period; `receipt_datetime` exists for downstream consumers (kniha-jazd) that need the time-of-day.
+- `receipt_datetime` must be a string in `"YYYY-MM-DDTHH:MM:SS"` format (always full datetime, with time part) or null — never omit, never date-only. When the receipt prints a clock time (24h `HH:MM` or `HH:MM:SS` — common on POS thermal receipts), use it. When only the date is readable and no time can be inferred, use `T00:00:00`. Return null only when neither date nor time is readable. Independent from `doc_date`: `doc_date` continues to feed accounting_period; `receipt_datetime` exists for downstream consumers (kniha-jazd) that need the time-of-day.
 
 ## Classification Rules
 
@@ -188,11 +188,12 @@ The receipt's transaction timestamp. **Independent from `doc_date`** — this is
 - `2026-04-25 14:23:00` (rare; receipt formatters)
 
 **Output rules:**
-- Both date and time extracted: return `"YYYY-MM-DDTHH:MM:SS"`. Pad 2-digit times if needed: `14:23` → `14:23:00`.
-- Only date extracted (time missing/smudged/unreadable): return `"YYYY-MM-DD"`. The downstream system flips this to NeedsReview so the user can fill in the time.
+- ALWAYS return `"YYYY-MM-DDTHH:MM:SS"` — full datetime, time part included, even when only the date is readable.
+- Both date and time extracted: pad 2-digit times if needed (`14:23` → `14:23:00`).
+- Only date extracted (time missing/smudged/unreadable): use `T00:00:00` as the time placeholder.
 - Neither extractable: return `null`.
 
-For invoices and statements where there's no clock time at all (only an issue date), return the date-only form. For receipts that clearly print a time, prefer the full datetime — most fuel-station thermal printers do.
+For invoices and statements where there's no clock time at all (only an issue date), still emit the full form with `T00:00:00`. For receipts that clearly print a time, use the real clock time — most fuel-station thermal printers do.
 
 ### service_period
 The billing/service period as ISO 8601 interval `"YYYY-MM-DD/YYYY-MM-DD"`. Common on subscriptions, telecom, hosting, SaaS.

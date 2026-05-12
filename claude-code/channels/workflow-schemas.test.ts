@@ -412,9 +412,9 @@ describe("DocumentClassificationResult — litres + receipt_datetime", () => {
     expect(out.receipt_datetime).toBe("2026-04-25T14:23:00");
   });
 
-  test("accepts receipt_datetime in YYYY-MM-DD format (date-only fallback)", () => {
+  test("coerces date-only receipt_datetime to T00:00:00 (always emit full datetime)", () => {
     const out = validateDocumentClassificationResult({ ...base, receipt_datetime: "2026-04-25" });
-    expect(out.receipt_datetime).toBe("2026-04-25");
+    expect(out.receipt_datetime).toBe("2026-04-25T00:00:00");
   });
 
   test("accepts receipt_datetime as null and missing", () => {

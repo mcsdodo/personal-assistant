@@ -374,9 +374,10 @@ export interface DocumentClassificationResultSchema {
   litres?: number | null;
   /**
    * Receipt timestamp.
-   * - Full datetime: "YYYY-MM-DDTHH:MM:SS"
-   * - Date-only fallback: "YYYY-MM-DD"
-   * - Null/missing when neither was extractable.
+   * - Full datetime: "YYYY-MM-DDTHH:MM:SS" — always emitted with time part.
+   * - Date-only input ("YYYY-MM-DD") is coerced to "YYYY-MM-DDT00:00:00" so
+   *   downstream consumers (kniha-jazd) always see a uniform format.
+   * - Null/missing when neither date nor time was extractable.
    */
   receipt_datetime?: string | null;
 }
@@ -443,7 +444,12 @@ function numberOrUnknown(
   return v;
 }
 
-/** Validate "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD". Returns the string or throws. */
+/**
+ * Validate receipt_datetime. Always emits "YYYY-MM-DDTHH:MM:SS" downstream:
+ * a bare "YYYY-MM-DD" from the classifier is coerced to "YYYY-MM-DDT00:00:00"
+ * so kniha-jazd and other consumers see one uniform shape. Null/missing
+ * passes through.
+ */
 function receiptDatetimeOrNull(
   name: string,
   obj: Record<string, unknown>,
@@ -455,16 +461,14 @@ function receiptDatetimeOrNull(
   if (typeof v !== "string") {
     throw new WorkflowSchemaError(name, field, "string | null", v);
   }
-  // Accept "YYYY-MM-DD" (10 chars) or "YYYY-MM-DDTHH:MM:SS" (19 chars, with literal T)
-  if (!/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?$/.test(v)) {
-    throw new WorkflowSchemaError(
-      name,
-      field,
-      'string matching "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM:SS"',
-      v,
-    );
-  }
-  return v;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(v)) return v;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return `${v}T00:00:00`;
+  throw new WorkflowSchemaError(
+    name,
+    field,
+    'string matching "YYYY-MM-DDTHH:MM:SS" (date-only "YYYY-MM-DD" also accepted, coerced to T00:00:00)',
+    v,
+  );
 }
 
 export function validateDocumentClassificationResult(input: unknown): DocumentClassificationResultSchema {
