@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Web UI for invoice matching - terminal-style view of statement/invoice matching."""
 
+import io
 import os
 import re
+import zipfile
 from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, Response, request as req, stream_with_context
+from flask import Flask, Response, request as req
 
 from engine.client import PaperlessClient
 from engine.collection import collect_month, collect_pl, filter_resolved_unmatched
@@ -15,6 +17,7 @@ from engine.matching import MONTH_WINDOW, month_offset
 from match_invoices import (
     ACCOUNTING_TAG_NAME,
     ACCOUNT_STATEMENT_TAG_NAME,
+    FILENAME_NOTE_FIELD_NAME,
     INVOICE_TYPE_NAME,
     PAPERLESS_URL,
     TOTAL_AMOUNT_ALT_FIELD_NAME,
@@ -135,6 +138,21 @@ def index():
     return render_page(results, totals, list(reversed(months)))
 
 
+def _storage_path_category(path_template: str) -> str:
+    """Extract the category subfolder from a Paperless storage path template.
+
+    Takes the last static path segment before the first Jinja2 expression.
+    E.g. 'techlab/invoices/{%- for ... %}/{{ title }}' → 'invoices'
+    """
+    static_part = path_template.split("{")[0].rstrip("/")
+    segments = [s for s in static_part.split("/") if s]
+    return segments[-1] if segments else "other"
+
+
+def _safe_filename(name: str) -> str:
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip()
+
+
 @app.route("/zip")
 def zip_accounting():
     load_dotenv(Path(__file__).parent / ".env")
@@ -173,46 +191,52 @@ def zip_accounting():
             404,
         )
 
+    # Build storage_path_id → category subfolder from live Paperless config
+    sp_category: dict[int, str] = {
+        sp["id"]: _storage_path_category(sp["path"])
+        for sp in client.get_storage_paths()
+    }
+
+    popis_field_id = client.get_custom_field_id(FILENAME_NOTE_FIELD_NAME)
+
     docs = client.get_documents(tags__id__all=f"{accounting_tag},{month_tag}")
-    ids = [d["id"] for d in docs]
-    if not ids:
+    if not docs:
         return (
             f"<pre style='color:#8b949e;background:#0d1117;padding:2em'>No documents tagged '{_esc(month)}' + '{ACCOUNTING_TAG_NAME}'</pre>",
             404,
         )
 
-    upstream = client.session.post(
-        f"{PAPERLESS_URL.rstrip('/')}/api/documents/bulk_download/",
-        json={
-            "documents": ids,
-            "content": "archive",
-            "compression": "deflated",
-            "follow_formatting": True,
-        },
-        stream=True,
-    )
-    if upstream.status_code != 200:
-        body = upstream.text[:500]
-        upstream.close()
-        return (
-            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Paperless returned {upstream.status_code}: {_esc(body)}</pre>",
-            502,
-        )
+    buf = io.BytesIO()
+    used_entries: set[str] = set()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for doc in docs:
+            subfolder = sp_category.get(doc.get("storage_path"), "other")
 
-    filename = f"{month}-accounting.zip"
+            title = doc.get("title") or f"document-{doc['id']}"
+            popis = None
+            if popis_field_id is not None:
+                for cf in doc.get("custom_fields", []):
+                    if cf.get("field") == popis_field_id and cf.get("value"):
+                        popis = str(cf["value"])
+                        break
 
-    def generate():
-        try:
-            for chunk in upstream.iter_content(chunk_size=65536):
-                if chunk:
-                    yield chunk
-        finally:
-            upstream.close()
+            base = _safe_filename(title)
+            if popis:
+                base = f"{base} - {_safe_filename(popis)}"
+            entry = f"{subfolder}/{base}.pdf"
+            if entry in used_entries:
+                entry = f"{subfolder}/{base} ({doc['id']}).pdf"
+            used_entries.add(entry)
 
+            pdf = client.session.get(f"{PAPERLESS_URL}/api/documents/{doc['id']}/download/")
+            pdf.raise_for_status()
+            zf.writestr(entry, pdf.content)
+
+    buf.seek(0)
     return Response(
-        stream_with_context(generate()),
+        buf.read(),
         mimetype="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{month}.zip"'},
     )
 
 

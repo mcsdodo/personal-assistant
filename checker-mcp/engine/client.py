@@ -69,3 +69,7 @@ class PaperlessClient:
         resp = self.session.get(f"{self.url}/api/documents/{doc_id}/")
         resp.raise_for_status()
         return resp.json()
+
+    def get_storage_paths(self) -> list[dict]:
+        """Fetch all storage paths."""
+        return self._get_paginated("/api/storage_paths/")
