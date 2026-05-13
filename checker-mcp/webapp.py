@@ -497,10 +497,10 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
 
     # Group income items by month; accumulate gross per month for worked-days calc
     income_by_month: dict[str, list[dict]] = {}
-    gross_by_month: dict[str, float] = {}
+    net_by_month: dict[str, float] = {}
     for item in income_items:
         income_by_month.setdefault(item["month"], []).append(item)
-        gross_by_month[item["month"]] = gross_by_month.get(item["month"], 0.0) + (item.get("gross") or 0.0)
+        net_by_month[item["month"]] = net_by_month.get(item["month"], 0.0) + item["amount"]
 
     # All months with any data, filtered to requested year
     year_prefix = f"{year:04d}-"
@@ -536,7 +536,7 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
             m_year, m_mon = int(m[:4]), int(m[5:7])
             wd_total = sk_working_days(m_year, m_mon)
             m_rate = _rate_for_month(hourly_rates, m)
-            m_gross = gross_by_month.get(m, 0.0)
+            m_gross = net_by_month.get(m, 0.0)
             wd_worked = round(m_gross / (m_rate * 8)) if (m_gross and m_rate) else 0
             total_worked += wd_worked
             total_wd += wd_total
