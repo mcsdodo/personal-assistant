@@ -5,7 +5,7 @@ import io
 import os
 import re
 import zipfile
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -29,6 +29,45 @@ app = Flask(__name__)
 
 def _esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _easter_monday(year: int) -> date:
+    """Anonymous Gregorian algorithm for Easter Sunday, returns Easter Monday."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month, day = divmod(h + l - 7 * m + 114, 31)
+    easter_sunday = date(year, month, day + 1)
+    return easter_sunday + timedelta(days=1)
+
+
+def _sk_holidays(year: int) -> set[date]:
+    """Return Slovak public holidays for a given year."""
+    fixed = [
+        (1, 1), (1, 6), (5, 1), (5, 8), (7, 5), (8, 29),
+        (9, 1), (9, 15), (11, 1), (11, 17), (12, 24), (12, 25), (12, 26),
+    ]
+    holidays = {date(year, m, d) for m, d in fixed}
+    holidays.add(_easter_monday(year))
+    return holidays
+
+
+def sk_working_days(year: int, month: int) -> int:
+    """Count Mon–Fri days in the month that are not Slovak public holidays."""
+    holidays = _sk_holidays(year)
+    d = date(year, month, 1)
+    count = 0
+    while d.month == month:
+        if d.weekday() < 5 and d not in holidays:
+            count += 1
+        d += timedelta(days=1)
+    return count
 
 
 @app.route("/")
@@ -405,7 +444,9 @@ def profit_loss():
         ta_field,
         total_amount_alt_field_id=ta_alt_field,
     )
-    return render_pl(pl, available_years)
+    hourly_rate_raw = os.getenv("PL_HOURLY_RATE")
+    hourly_rate = float(hourly_rate_raw) if hourly_rate_raw else None
+    return render_pl(pl, available_years, hourly_rate=hourly_rate)
 
 
 def _render_year_nav(current: int, years: list[int]) -> str:
@@ -418,7 +459,7 @@ def _render_year_nav(current: int, years: list[int]) -> str:
     return " &middot; ".join(parts)
 
 
-def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
+def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rate: float | None = None) -> str:
     year = pl["year"]
     income = pl["income"]
     expenses = pl["expenses"]
@@ -430,16 +471,20 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
     expenses_detail = pl.get("expenses_detail", {})
     excluded_detail = pl.get("excluded_detail", {})
 
+    daily_rate = hourly_rate * 8 if hourly_rate else None
+
     # Transpose expenses_detail {cat: {month: amt}} → {month: {cat: amt}}
     exp_by_month: dict[str, dict[str, float]] = {}
     for cat, months in expenses_detail.items():
         for m, v in months.items():
             exp_by_month.setdefault(m, {})[cat] = v
 
-    # Group income items by month
+    # Group income items by month; accumulate gross per month for worked-days calc
     income_by_month: dict[str, list[dict]] = {}
+    gross_by_month: dict[str, float] = {}
     for item in income_items:
         income_by_month.setdefault(item["month"], []).append(item)
+        gross_by_month[item["month"]] = gross_by_month.get(item["month"], 0.0) + (item.get("gross") or 0.0)
 
     # All months with any data, filtered to requested year
     year_prefix = f"{year:04d}-"
@@ -448,6 +493,10 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
         for m in set(list(exp_by_month.keys()) + list(income_by_month.keys()))
         if m.startswith(year_prefix)
     )
+
+    # Working-days totals for the summary row
+    total_worked = 0
+    total_wd = 0
 
     # Build month rows
     month_rows_html = []
@@ -464,6 +513,17 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
             f"</div>"
             for cat, amt in sorted(m_expenses.items(), key=lambda x: x[1])
         )
+
+        # Working days for this month
+        days_html = ""
+        if daily_rate:
+            m_year, m_mon = int(m[:4]), int(m[5:7])
+            wd_total = sk_working_days(m_year, m_mon)
+            m_gross = gross_by_month.get(m, 0.0)
+            wd_worked = round(m_gross / daily_rate) if m_gross else 0
+            total_worked += wd_worked
+            total_wd += wd_total
+            days_html = f'<span class="pl-days dim">{wd_worked}/{wd_total}</span>'
 
         if m_income:
             # First income item goes in the summary row
@@ -517,6 +577,7 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
                 f'<span class="pl-amount pos">{first["amount"]:>12,.2f}</span>'
                 f"{gross_html}"
                 f"{exp_html}"
+                f"{days_html}"
                 f"</summary>"
                 f"{extra_income}"
                 f"{exp_detail_rows}"
@@ -530,6 +591,7 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
                 f'<span class="pl-month">{_esc(m)}</span>'
                 f'<span class="pl-label dim">(no income)</span>'
                 f'<span class="pl-exp neg">{m_exp_total:>10,.2f}</span>'
+                f"{days_html}"
                 f"</summary>"
                 f"{exp_detail_rows}"
                 f"</details>"
@@ -560,6 +622,18 @@ def render_pl(pl: dict, available_years: list[int] | None = None) -> str:
 
     net_class = "pos" if net >= 0 else "neg"
 
+    # Working-days summary row
+    days_summary_html = ""
+    if daily_rate and total_wd:
+        pct = round(total_worked / total_wd * 100)
+        pct_class = "pos" if pct >= 90 else ("warn" if pct >= 75 else "neg")
+        days_summary_html = (
+            f'<div class="pl-row">'
+            f'<span class="pl-label dim">Days worked</span>'
+            f'<span class="pl-days-summary {pct_class}">{total_worked}/{total_wd} &mdash; {pct}%</span>'
+            f'</div>'
+        )
+
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>P&amp;L {year}</title>
 <style>
@@ -582,11 +656,14 @@ h1{{color:#58a6ff;font-size:16px;font-weight:600}}
 .pl-label{{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 .pl-gross{{margin-left:1em;font-size:12px;white-space:nowrap;color:#484f58}}
 .pl-exp{{margin-left:1em;white-space:nowrap;min-width:100px;text-align:right}}
+.pl-days{{margin-left:1em;white-space:nowrap;font-size:12px;min-width:50px;text-align:right;flex-shrink:0}}
+.pl-days-summary{{margin-left:auto;white-space:nowrap;font-size:13px;flex-shrink:0}}
 .pl-row.total{{border-top:1px solid #30363d;margin-top:.4em;padding-top:.4em;font-weight:bold}}
 .pl-row.net{{border-top:2px solid #58a6ff;margin-top:.8em;padding-top:.6em;font-weight:bold;font-size:15px}}
 .pl-amount{{text-align:right;min-width:120px;margin-left:auto;flex-shrink:0}}
 .pos{{color:#3fb950}}
 .neg{{color:#f85149}}
+.warn{{color:#e3b341}}
 .dim{{color:#484f58}}
 .month-accordion{{margin:0}}
 .month-accordion summary{{cursor:pointer;list-style:none;color:#8b949e}}
@@ -637,6 +714,7 @@ h1{{color:#58a6ff;font-size:16px;font-weight:600}}
     <span class="pl-label">Net income</span>
     <span class="pl-amount {net_class}">{net:>12,.2f}</span>
   </div>
+{days_summary_html}
 </div>
 <div class="pl-section">
   <details class="totals-accordion">
