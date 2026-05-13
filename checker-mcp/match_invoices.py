@@ -41,7 +41,7 @@ ACCOUNT_STATEMENT_TAG_NAME = "account-statement"  # bank statements
 INVOICE_TYPE_NAME = "Invoice"  # only Invoice-typed docs are matched as candidates
 TOTAL_AMOUNT_FIELD_NAME = "total_amount"  # Paperless custom field name
 TOTAL_AMOUNT_ALT_FIELD_NAME = "total_amount_alt"  # alt amount for split payments
-FILENAME_NOTE_FIELD_NAME = "Popis"  # optional label appended to filename in ZIP exports
+FILENAME_NOTE_FIELD_NAME = "filename_note"  # optional label appended to filename in ZIP exports
 
 
 # ── CLI output ────────────────────────────────────────────────────────────
