@@ -537,10 +537,10 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
             wd_total = sk_working_days(m_year, m_mon)
             m_rate = _rate_for_month(hourly_rates, m)
             m_gross = net_by_month.get(m, 0.0)
-            wd_worked = round(m_gross / (m_rate * 8)) if (m_gross and m_rate) else 0
+            wd_worked = round(m_gross / (m_rate * 8), 2) if (m_gross and m_rate) else 0.0
             total_worked += wd_worked
             total_wd += wd_total
-            days_html = f'<span class="pl-days dim">{wd_worked}/{wd_total}</span>'
+            days_html = f'<span class="pl-days dim">{wd_worked:.2f}/{wd_total}</span>'
 
         if m_income:
             # First income item goes in the summary row
@@ -647,7 +647,7 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
         days_summary_html = (
             f'<div class="pl-row">'
             f'<span class="pl-label dim">Days worked</span>'
-            f'<span class="pl-days-summary {pct_class}">{total_worked}/{total_wd} &mdash; {pct}%</span>'
+            f'<span class="pl-days-summary {pct_class}">{total_worked:.2f}/{total_wd} &mdash; {pct}%</span>'
             f'</div>'
         )
 
