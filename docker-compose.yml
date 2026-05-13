@@ -245,10 +245,10 @@ services:
       # Comma-separated bank account numbers to skip as payroll/food-stamps
       # (e.g. "2938452410,1234567890"). Matched substring against raw movement block.
       - SKIP_PAYROLL_ACCOUNTS=${SKIP_PAYROLL_ACCOUNTS:-}
-      # Hourly rate (pre-VAT) used to derive worked days on the /pl view
-      - PL_HOURLY_RATE=${PL_HOURLY_RATE:-52.5}
       # Stateless HTTP: no session IDs, server restarts are transparent to Claude
       - FASTMCP_STATELESS_HTTP=true
+    volumes:
+      - ./checker-mcp/pl-rates.json:/app/pl-rates.json:ro
 
   gmail-mcp:
     image: ghcr.io/taylorwilsdon/google_workspace_mcp:1.16.2  # pinned 2026-03, body_format support

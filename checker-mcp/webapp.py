@@ -2,6 +2,7 @@
 """Web UI for invoice matching - terminal-style view of statement/invoice matching."""
 
 import io
+import json
 import os
 import re
 import zipfile
@@ -68,6 +69,22 @@ def sk_working_days(year: int, month: int) -> int:
             count += 1
         d += timedelta(days=1)
     return count
+
+
+def _load_rates() -> list[dict] | None:
+    """Load hourly rates from pl-rates.json (sorted by 'from'). Returns None if unavailable."""
+    path = Path(__file__).parent / "pl-rates.json"
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            rates = json.load(f)
+        return sorted(rates, key=lambda r: r["from"])
+    return None
+
+
+def _rate_for_month(rates: list[dict], month_ym: str) -> float | None:
+    """Return the hourly rate applicable to month_ym (YYYY-MM)."""
+    applicable = [r for r in rates if r["from"] <= month_ym]
+    return applicable[-1]["rate"] if applicable else None
 
 
 @app.route("/")
@@ -444,9 +461,7 @@ def profit_loss():
         ta_field,
         total_amount_alt_field_id=ta_alt_field,
     )
-    hourly_rate_raw = os.getenv("PL_HOURLY_RATE")
-    hourly_rate = float(hourly_rate_raw) if hourly_rate_raw else None
-    return render_pl(pl, available_years, hourly_rate=hourly_rate)
+    return render_pl(pl, available_years, hourly_rates=_load_rates())
 
 
 def _render_year_nav(current: int, years: list[int]) -> str:
@@ -459,7 +474,7 @@ def _render_year_nav(current: int, years: list[int]) -> str:
     return " &middot; ".join(parts)
 
 
-def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rate: float | None = None) -> str:
+def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: list[dict] | None = None) -> str:
     year = pl["year"]
     income = pl["income"]
     expenses = pl["expenses"]
@@ -471,7 +486,8 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rate: f
     expenses_detail = pl.get("expenses_detail", {})
     excluded_detail = pl.get("excluded_detail", {})
 
-    daily_rate = hourly_rate * 8 if hourly_rate else None
+    # daily_rate is computed per-month via _rate_for_month; this flag gates the column
+    show_days = bool(hourly_rates)
 
     # Transpose expenses_detail {cat: {month: amt}} → {month: {cat: amt}}
     exp_by_month: dict[str, dict[str, float]] = {}
@@ -516,11 +532,12 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rate: f
 
         # Working days for this month
         days_html = ""
-        if daily_rate:
+        if show_days:
             m_year, m_mon = int(m[:4]), int(m[5:7])
             wd_total = sk_working_days(m_year, m_mon)
+            m_rate = _rate_for_month(hourly_rates, m)
             m_gross = gross_by_month.get(m, 0.0)
-            wd_worked = round(m_gross / daily_rate) if m_gross else 0
+            wd_worked = round(m_gross / (m_rate * 8)) if (m_gross and m_rate) else 0
             total_worked += wd_worked
             total_wd += wd_total
             days_html = f'<span class="pl-days dim">{wd_worked}/{wd_total}</span>'
@@ -624,7 +641,7 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rate: f
 
     # Working-days summary row
     days_summary_html = ""
-    if daily_rate and total_wd:
+    if show_days and total_wd:
         pct = round(total_worked / total_wd * 100)
         pct_class = "pos" if pct >= 90 else ("warn" if pct >= 75 else "neg")
         days_summary_html = (
