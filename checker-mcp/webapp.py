@@ -540,7 +540,7 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
             wd_worked = round(m_gross / (m_rate * 8), 2) if (m_gross and m_rate) else 0.0
             total_worked += wd_worked
             total_wd += wd_total
-            days_html = f'<span class="pl-days dim">{wd_worked:.2f}/{wd_total}</span>'
+            days_html = f'<span class="pl-days">{wd_worked:.2f}/{wd_total}</span>'
 
         if m_income:
             # First income item goes in the summary row
@@ -646,7 +646,7 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
         pct_class = "pos" if pct >= 90 else ("warn" if pct >= 75 else "neg")
         days_summary_html = (
             f'<div class="pl-row">'
-            f'<span class="pl-label dim">Days worked</span>'
+            f'<span class="pl-label" style="color:#8b949e">Days worked</span>'
             f'<span class="pl-days-summary {pct_class}">{total_worked:.2f}/{total_wd} &mdash; {pct}%</span>'
             f'</div>'
         )
@@ -669,7 +669,7 @@ h1{{color:#58a6ff;font-size:16px;font-weight:600}}
 .pl-row.sub{{padding-left:2em;color:#8b949e}}
 .pl-row a{{color:#8b949e;text-decoration:none}}
 .pl-row a:hover{{text-decoration:underline}}
-.pl-month{{min-width:80px;color:#484f58;margin-right:1em;flex-shrink:0}}
+.pl-month{{min-width:80px;color:#8b949e;margin-right:1em;flex-shrink:0}}
 .pl-label{{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 .pl-gross{{margin-left:1em;font-size:12px;white-space:nowrap;color:#484f58}}
 .pl-exp{{margin-left:1em;white-space:nowrap;min-width:100px;text-align:right}}
@@ -735,9 +735,9 @@ h1{{color:#58a6ff;font-size:16px;font-weight:600}}
 </div>
 <div class="pl-section">
   <details class="totals-accordion">
-    <summary class="pl-row dim">
+    <summary class="pl-row" style="color:#8b949e">
       <span class="pl-label">Excluded (tax, dividends, loan principal)</span>
-      <span class="pl-amount dim">{excluded:>12,.2f}</span>
+      <span class="pl-amount">{excluded:>12,.2f}</span>
     </summary>
 {excl_cats_html}
   </details>
