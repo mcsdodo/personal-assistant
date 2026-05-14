@@ -1,14 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildSuggestedActions,
-  mergeClassifications,
-  resolveMonthTag,
-  validMonthTag,
-  parseServicePeriodStart,
-  resolveOwner,
+  buildScanTagNames,
   buildTagNames,
   generateTitle,
+  mergeClassifications,
+  parseServicePeriodStart,
+  resolveMonthTag,
+  resolveOwner,
   UNKNOWN_FIELDS,
+  validMonthTag,
   type EmailClassification,
 } from "./invoice-pipeline";
 
@@ -427,6 +428,42 @@ describe("buildTagNames", () => {
     expect(tags).toEqual(["personal", "2026-03"]);
     expect(tags).not.toContain("accounting");
     expect(tags).not.toContain("techlab");
+  });
+
+  test("owner-based accounting logic unchanged (email path)", () => {
+    const withTechlab = buildTagNames({ owner: "techlab", doc_type: "invoice", is_fuel: false }, "2026-03");
+    expect(withTechlab).toContain("accounting");
+    const withPersonal = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: false }, "2026-03");
+    expect(withPersonal).not.toContain("accounting");
+  });
+});
+
+// ── buildScanTagNames ────────────────────────────────────────────────────
+
+describe("buildScanTagNames", () => {
+  test("accounting folder adds accounting tag", () => {
+    const tags = buildScanTagNames("techlab/accounting", { doc_type: "invoice", is_fuel: false }, "2026-03");
+    expect(tags).toContain("techlab");
+    expect(tags).toContain("accounting");
+    expect(tags).toContain("2026-03");
+  });
+
+  test("DOCUMENTS folder does not add accounting tag", () => {
+    const tags = buildScanTagNames("techlab/DOCUMENTS", { doc_type: "invoice", is_fuel: false }, "2026-03");
+    expect(tags).toContain("techlab");
+    expect(tags).not.toContain("accounting");
+  });
+
+  test("fuel classification adds fuel tag regardless of folder", () => {
+    const tags = buildScanTagNames("techlab/accounting", { doc_type: "receipt", is_fuel: true }, "2026-03");
+    expect(tags).toContain("fuel");
+  });
+
+  test("owner comes from level1 segment", () => {
+    const tags = buildScanTagNames("personal/receipts", { doc_type: "receipt", is_fuel: false }, null);
+    expect(tags).toContain("personal");
+    expect(tags).not.toContain("techlab");
+    expect(tags).not.toContain("accounting");
   });
 });
 

@@ -1329,7 +1329,7 @@ function makeScanInput(overrides: Partial<ScanIntakeInput> = {}): ScanIntakeInpu
     file_id: "gdrive-file-abc",
     filename: "scan_invoice.pdf",
     month_tag: "2026-03",
-    watch_folder: "techlab/invoicing",
+    watch_folder: "techlab/accounting",
     ...overrides,
   };
 }
@@ -2034,6 +2034,81 @@ describe("executeScanIntake", () => {
     const output = JSON.parse(updated.output_json!);
     // Only owner tag from LEVEL1 + fuel + month — no "receipts" from LEVEL2
     expect(output.tags).toEqual(["personal", "fuel", "2026-01"]);
+  });
+
+  test("DOCUMENTS folder scan does NOT get accounting tag", async () => {
+    // Hard rule: the accounting tag is driven exclusively by the watch_folder
+    // level-2 segment. A scan dropped in "DOCUMENTS" must never land in the
+    // accounting cycle regardless of what the document-classifier returned.
+    const filePath = join(tmpDir, "documents_folder_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const input = makeScanInput({
+      file_path: filePath,
+      watch_folder: "techlab/DOCUMENTS",
+    });
+    const job = createRunningScanJob(input, defaultScanClassification({ owner: "techlab" }));
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 2. dedup check → no duplicate
+      () => jsonResponse({ results: [] }),
+      // 3. list_tags → techlab + accounting exist (current code still produces "accounting" — this test verifies the fix removes it)
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }])),
+      // 4. create_tag for "2026-03"
+      () => jsonResponse(rpcResponse({ id: 20 })),
+      // 5. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 6. resolveStoragePath
+      storagePathsMockHandler(),
+      // 7. post_document
+      () => new Response('"task-uuid-docs"', { status: 200 }),
+      // 8-10. setDocumentCustomFields
+      ...customFieldsMockHandlers(),
+      // 11-13. moveGdriveFile
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.tags).toContain("techlab");
+    expect(output.tags).not.toContain("accounting");
+  });
+
+  test("accounting folder scan gets accounting tag", async () => {
+    // Hard rule: accounting tag is added when level-2 is exactly "accounting".
+    const filePath = join(tmpDir, "accounting_folder_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const input = makeScanInput({
+      file_path: filePath,
+      watch_folder: "techlab/accounting",
+    });
+    const job = createRunningScanJob(input, defaultScanClassification({ owner: "techlab" }));
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }])),
+      () => jsonResponse(rpcResponse({ id: 20 })),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      storagePathsMockHandler(),
+      () => new Response('"task-uuid-acct"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.tags).toContain("techlab");
+    expect(output.tags).toContain("accounting");
   });
 
   test("title uses subtitle when no order_id", async () => {

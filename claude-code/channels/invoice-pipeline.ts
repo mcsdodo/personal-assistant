@@ -229,6 +229,26 @@ export function buildTagNames(
   return tags;
 }
 
+/**
+ * Build tag names for a GDrive scan. Tags are derived from the watch_folder
+ * path — owner from LEVEL1, accounting from LEVEL2 — not from classification.
+ */
+export function buildScanTagNames(
+  watchFolder: string,
+  classification: { doc_type: string | null; is_fuel: boolean },
+  monthTag: string | null,
+): string[] {
+  const [owner, level2] = watchFolder.split("/").filter(Boolean);
+  const tags: string[] = [owner];
+  if (level2 === "accounting") tags.push("accounting");
+  if (classification.doc_type === "credit_note") tags.push("credit-note");
+  if (classification.doc_type === "account_statement") tags.push("account-statement");
+  if (classification.is_fuel) tags.push("fuel");
+  const validatedMonth = validMonthTag(monthTag);
+  if (validatedMonth) tags.push(validatedMonth);
+  return tags;
+}
+
 // ── generateTitle ───────────────────────────────────────────────────────
 
 /**

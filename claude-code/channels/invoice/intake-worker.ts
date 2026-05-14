@@ -79,6 +79,7 @@ import { readFileAsDownload } from "../download-helper";
 import { formatGuidanceRequest, formatNotification, type NotifyFn } from "../telegram-notify";
 import {
   buildSuggestedActions,
+  buildScanTagNames,
   buildTagNames,
   generateTitle,
   getCompletedSteps,
@@ -1420,13 +1421,10 @@ export async function executeScanIntake(
         addJobEvent(db, job.id, "step_completed", { step: "deduplicate", outcome: "no_duplicate" });
       }
 
-      // Step 5: Resolve tags — owner from watch folder LEVEL1
+      // Step 5: Resolve tags — folder-driven (owner from LEVEL1, accounting from LEVEL2)
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
       const scanTagOwner = watch_folder.split("/").filter(Boolean)[0];
-      const allTagNames = buildTagNames(
-        { owner: scanTagOwner, doc_type: classification.doc_type, is_fuel: classification.is_fuel },
-        resolvedMonthTag,
-      );
+      const allTagNames = buildScanTagNames(watch_folder, classification, resolvedMonthTag);
       const tagIds = await resolveTags(allTagNames, logger, registry);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
 
