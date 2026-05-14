@@ -26,7 +26,7 @@ import {
   sweepOrphanedDownloads,
   type JobRow,
 } from "./workflow-db";
-import { initTracing, createLogger } from "./tracing";
+import { initTracing, createLogger, shutdownTracing } from "./tracing";
 
 const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
 const WORKFLOW_POLL_MS = parseInt(process.env.WORKFLOW_POLL_MS ?? "2000", 10);
@@ -180,13 +180,14 @@ export async function main(): Promise<void> {
   // is crash-safe but a clean close avoids leaving a *.db-shm/*.db-wal
   // pair that the next boot has to recover.
   let shuttingDown = false;
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     log(`Received ${signal}, shutting down...`);
     clearInterval(tickHandle);
     clearInterval(guidanceSweepHandle);
     healthServer.stop();
+    await shutdownTracing();
     try { db.close(); } catch (err) {
       log(`db.close() failed: ${err instanceof Error ? err.message : String(err)}`);
     }

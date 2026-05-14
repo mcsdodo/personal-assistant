@@ -23,7 +23,7 @@ import {
   submitClassification,
 } from "./workflow-db";
 
-import { initTracing, createLogger, getMeter, getTracer, remoteParentContext, SpanStatusCode } from "./tracing";
+import { initTracing, createLogger, getMeter, getTracer, remoteParentContext, SpanStatusCode, shutdownTracing } from "./tracing";
 
 // Re-export from worker.ts (task 64) so existing tests/callers using
 // `import { sweepStaleGuidance, GUIDANCE_* } from "./workflow-mcp"` keep
@@ -810,6 +810,16 @@ async function main(): Promise<void> {
       log(`pushPendingClassifications failed: ${err instanceof Error ? err.message : String(err)}`);
     });
   }, WORKFLOW_POLL_MS);
+
+  // Graceful shutdown — each entry point owns its own signal handlers so
+  // there is a single, deterministic cleanup sequence (no race with tracing.ts).
+  const shutdown = async (signal: string) => {
+    log(`Received ${signal}, shutting down...`);
+    await shutdownTracing();
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 if (import.meta.main) {

@@ -85,14 +85,17 @@ export function initTracing(component: string): void {
   });
   metrics.setGlobalMeterProvider(meterProvider);
 
-  // Graceful shutdown
-  const shutdown = async () => {
-    await meterProvider?.shutdown();
-    await provider?.shutdown();
-    process.exit(0);
-  };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+}
+
+/**
+ * Flush and shut down OTel exporters. Safe to call even if initTracing was
+ * not called (no-op when tracing is disabled). Does NOT call process.exit —
+ * callers are responsible for that.
+ */
+export async function shutdownTracing(): Promise<void> {
+  if (!initialized) return;
+  await meterProvider?.shutdown();
+  await provider?.shutdown();
 }
 
 /**
