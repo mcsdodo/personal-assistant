@@ -45,7 +45,10 @@ def main() -> int:
     print(f"Using OAuth client: {CREDENTIALS_FILE.resolve()}")
     print("A browser window will open for Google consent.")
     flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
-    creds = flow.run_local_server(port=0)
+    # access_type=offline + prompt=consent forces Google to return a refresh_token even when
+    # the app's scopes are already granted; without this the token has no refresh capability
+    # and gmail_service() crashes the next time the access token expires (~1h).
+    creds = flow.run_local_server(port=0, access_type="offline", prompt="consent")
 
     TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     TOKEN_FILE.write_text(creds.to_json())
