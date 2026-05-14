@@ -42,13 +42,7 @@ import {
   type JobEventRow,
   type JobRow,
 } from "../workflow-db";
-// Task 57 / 4.2: counter is defined in workflow-mcp (spec home); we
-// import the handle so increments happen where the pause decision
-// actually lives (pauseAndNotify below). The cycle
-// workflow-mcp → workflow-core → invoice/intake-worker → workflow-mcp
-// is safe in ESM because we only USE the binding at call time, never at
-// module init.
-import { guidanceRequestsTotal } from "../workflow-mcp";
+import { guidanceRequestsTotal } from "../metrics";
 import type { PaperlessFieldRegistry } from "../paperless-fields";
 import { PaperlessAdapter, type CorrespondentInfo } from "../paperless-adapter";
 import {

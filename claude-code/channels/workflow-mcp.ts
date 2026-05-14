@@ -23,7 +23,7 @@ import {
   submitClassification,
 } from "./workflow-db";
 
-import { initTracing, createLogger, getMeter, getTracer, remoteParentContext, SpanStatusCode, shutdownTracing } from "./tracing";
+import { initTracing, createLogger, getTracer, remoteParentContext, SpanStatusCode, shutdownTracing } from "./tracing";
 
 // Re-export from worker.ts (task 64) so existing tests/callers using
 // `import { sweepStaleGuidance, GUIDANCE_* } from "./workflow-mcp"` keep
@@ -35,28 +35,16 @@ export {
   GUIDANCE_REMINDER_COOLDOWN_HOURS,
 } from "./worker";
 
+// Re-export from metrics.ts (task 79 §4.4) for back-compat — callers that
+// import guidanceRequestsTotal from this module continue to work unchanged.
+export { guidanceRequestsTotal } from "./metrics";
+
 const WORKFLOW_DB_PATH = process.env.WORKFLOW_DB_PATH ?? "/data/email-watcher/workflow.db";
 const WORKFLOW_POLL_MS = parseInt(process.env.WORKFLOW_POLL_MS ?? "2000", 10);
 
 initTracing("workflow");
 const log = createLogger("workflow");
 
-// Task 57 / 4.2: Observability counter for guidance pauses. Incremented
-// every time the worker parks a job in `awaiting_user_guidance` (via
-// `pauseAndNotify` in invoice/intake-worker.ts). Exported so the worker
-// can `.add()` to it directly; the Prometheus series is keyed by
-// `reason` (classifier_unknown, encrypted_pdf, ...). Zero-cardinality in
-// the happy path — only non-zero when jobs actually get stuck.
-//
-// `email_watcher_jobs{state="awaiting_user_guidance"}` already captures
-// the instantaneous backlog since that gauge groups by (type, state),
-// so we don't need a separate backlog metric for paused jobs. This
-// counter is the trend view — "how often are we pausing, and for what".
-const workflowMeter = getMeter("workflow");
-export const guidanceRequestsTotal = workflowMeter.createCounter(
-  "personal_assistant_guidance_requests_total",
-  { description: "Job pauses for user guidance, by trigger reason" },
-);
 
 function text(value: unknown): { type: "text"; text: string } {
   return {
