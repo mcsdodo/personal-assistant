@@ -3146,6 +3146,94 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
+
+  test("patch-covers-classification: encrypted PDF with prior guidance_applied(action=patch, owner+doc_type) bypasses second pause and uploads", async () => {
+    // Regression: when isPdfEncrypted returns true BUT a guidance_applied event
+    // with action=patch carrying both owner and doc_type is unconsumed,
+    // patchCoversClassification fires and the worker MUST NOT pause again.
+    // Instead it synthesizes classify_document with { __from_guidance_patch: true }
+    // and continues to upload. Previously uncovered (grep found zero matches).
+    const decryptSpy = spyOn(downloadHelper, "tryDecrypt").mockImplementation(() => {});
+    const isEncSpy = spyOn(downloadHelper, "isPdfEncrypted").mockImplementation(() => true);
+    try {
+      const filePath = join(tmpDir, "patch_covers_enc.pdf");
+      writeFileSync(filePath, Buffer.from("%PDF-1.4 encrypted"));
+      const input = makeInput({ file_path: filePath });
+
+      // Create a job with ONLY classify_email pre-seeded — no classify_document.
+      // This mirrors the state after the first pause (Trigger B fired, user replied
+      // with action=patch carrying owner+doc_type, job was re-queued).
+      const job = createJob(db, {
+        workflowType: "invoice_intake",
+        inputJson: JSON.stringify(input),
+        sourceRef: `${input.email_source}:${input.message_id}`,
+        idempotencyKey: `${input.email_source}:${input.message_id}`,
+      });
+      db.prepare("UPDATE jobs SET state = 'running', started_at = ? WHERE id = ?").run(
+        new Date().toISOString(),
+        job.id,
+      );
+      addJobEvent(db, job.id, "step_completed", {
+        step: "classify_email",
+        result: defaultEmailClassification({ sender: "kontakt@mbank.sk", subject: "mBank – výpis" }),
+      });
+      // The guidance patch that makes patchCoversClassification true.
+      // Both owner AND doc_type must be present (strings).
+      addJobEvent(db, job.id, "guidance_applied", {
+        action: "patch",
+        patch: { owner: "techlab", doc_type: "invoice" },
+        decrypt_password_provided: false,
+      });
+      const runningJob = getJob(db, job.id)!;
+
+      // Full Paperless mock sequence — same as Trigger B resume (line 3050).
+      mockFetch(
+        () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+        () => jsonResponse({ results: [] }),
+        () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+        () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+        storagePathsMockHandler(),
+        () => new Response('"task-uuid"', { status: 200 }),
+        ...customFieldsMockHandlers(),
+      );
+
+      await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+
+      const updated = getJob(db, job.id)!;
+
+      // Must complete with uploaded outcome — no re-pause for encrypted_pdf.
+      expect(updated.state).toBe("completed");
+      const output = JSON.parse(updated.output_json!);
+      expect(output.outcome).toBe("uploaded");
+      expect(output.paperless_document_id).toBe(999);
+
+      // No guidance_request event for encrypted_pdf must have been emitted.
+      const events = getJobEvents(db, job.id);
+      const encPause = events.find(
+        (e) =>
+          e.event_type === "guidance_request" &&
+          JSON.parse(e.payload_json ?? "{}").reason === "encrypted_pdf",
+      );
+      expect(encPause).toBeUndefined();
+
+      // The synthesized classify_document step_completed with __from_guidance_patch
+      // must appear in the event log.
+      const synthStep = events.find(
+        (e) =>
+          e.event_type === "step_completed" &&
+          JSON.parse(e.payload_json ?? "{}").step === "classify_document" &&
+          JSON.parse(e.payload_json ?? "{}").result?.__from_guidance_patch === true,
+      );
+      expect(synthStep).toBeDefined();
+
+      // Patch fields (owner=techlab, doc_type=invoice) must have been applied —
+      // the output tags reflect the techlab owner.
+      expect(output.tags).toContain("techlab");
+    } finally {
+      decryptSpy.mockRestore();
+      isEncSpy.mockRestore();
+    }
+  });
 });
 
 // ── Task 3.2 — Telegram notification on pause ───────────────────────────
