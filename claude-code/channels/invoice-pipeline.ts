@@ -32,6 +32,30 @@ export interface EmailClassification {
   currency?: string | null;
 }
 
+/**
+ * Document-classifier-only fields that are NOT part of EmailClassification.
+ * mergeClassifications carries these forward from the doc result so that
+ * downstream code can read them without Record<string, unknown> casts.
+ */
+export interface DocumentClassificationFields {
+  /** Issue date as printed on the document ("YYYY-MM-DD" or "unknown"). */
+  doc_date?: string | null;
+  /** Slovak "deň dodania" — legal tax point per § 19 Zákon 222/2004. */
+  supply_date?: string | null;
+  /** ISO 8601 interval for subscriptions ("YYYY-MM-DD/YYYY-MM-DD"). */
+  service_period?: string | null;
+  /** LLM's reasoned accounting-period decision ("YYYY-MM"). */
+  accounting_period?: string | null;
+  /** Short reasoning string explaining the accounting_period choice. */
+  accounting_period_reasoning?: string | null;
+  /** Free-form classifier notes; required when any UNKNOWN_CAPABLE field is "unknown". */
+  notes?: string | null;
+  /** Fuel volume in litres; only set when is_fuel: true. */
+  litres?: number | null;
+  /** Receipt timestamp ("YYYY-MM-DDTHH:MM:SS"); null/missing when not extractable. */
+  receipt_datetime?: string | null;
+}
+
 /** Inputs for {@link resolveMonthTag}. All fields optional — chain walks them in priority order. */
 export interface MonthTagInputs {
   /** LLM's final answer from document-classifier — preferred when present and valid. */
@@ -56,18 +80,24 @@ export interface MonthTagInputs {
  * Merge document-classifier results on top of email-classifier results.
  * Non-null doc values override email values; null/undefined doc values
  * are ignored (email values preserved).
+ *
+ * The generic parameter T lets callers use a wider email type (e.g.
+ * InvoiceClassification) while still getting a precisely typed return.
+ * Doc-only fields (DocumentClassificationFields) are always carried
+ * forward, so downstream code never needs `as Record<string, unknown>`.
  */
-export function mergeClassifications(
-  email: EmailClassification,
-  doc: Partial<EmailClassification>,
-): EmailClassification {
-  const merged = { ...email };
-  for (const key of Object.keys(doc) as (keyof EmailClassification)[]) {
-    if (doc[key] != null) {
-      (merged as any)[key] = doc[key];
-    }
+export function mergeClassifications<T>(
+  email: T,
+  doc: Partial<EmailClassification> & Partial<DocumentClassificationFields>,
+): T & DocumentClassificationFields {
+  // Implementation uses `any` for the generic mutation; type safety is enforced
+  // by the function signature. Callers get T & DocumentClassificationFields back.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const merged: any = { ...email };
+  for (const [key, value] of Object.entries(doc as Record<string, unknown>)) {
+    if (value != null) merged[key] = value;
   }
-  return merged;
+  return merged as T & DocumentClassificationFields;
 }
 
 // ── Month tag validation + helpers ──────────────────────────────────────
@@ -302,14 +332,25 @@ export function generateTitle(
 // ── Unknown field detection + guidance actions ─────────────────────────
 
 /**
- * Fields the classifier is permitted to mark as `"unknown"`. The intake
- * worker scans the merged classification for these fields after the
- * document-classifier returns and pauses the job if any are unknown.
+ * Union of field names the classifier is permitted to mark as `"unknown"`.
+ * All of these are present in both InvoiceClassification & DocumentClassificationFields
+ * (invoice path) and ScanClassification (scan path), so using this type as the
+ * array element type lets callers index a classification object without a
+ * `Record<string, unknown>` cast.
  *
- * Keep this list in sync with the permissive-`"unknown"` additions in
+ * Keep in sync with the permissive-`"unknown"` additions in
  * `workflow-schemas.ts` (task 57, Task 1.2).
  */
-export const UNKNOWN_FIELDS: string[] = [
+export type UnknownCapableField =
+  | "owner"
+  | "doc_type"
+  | "total_amount"
+  | "doc_date"
+  | "supply_date"
+  | "service_period"
+  | "accounting_period";
+
+export const UNKNOWN_FIELDS: UnknownCapableField[] = [
   "owner",
   "doc_type",
   "total_amount",

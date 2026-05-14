@@ -84,6 +84,7 @@ import {
   resolveMonthTag,
   resolveOwner,
   UNKNOWN_FIELDS,
+  type DocumentClassificationFields,
 } from "../invoice-pipeline";
 import {
   validateInvoiceIntakeInput,
@@ -178,6 +179,12 @@ export interface ScanClassification {
   accounting_period?: string | null;
   /** Short reasoning string explaining the accounting_period choice. Optional. */
   accounting_period_reasoning?: string | null;
+  /** Free-form classifier notes; required when any UNKNOWN_CAPABLE field is "unknown". */
+  notes?: string | null;
+  /** Fuel volume in litres; only set when is_fuel: true. */
+  litres?: number | null;
+  /** Receipt timestamp ("YYYY-MM-DDTHH:MM:SS"); null/missing when not extractable. */
+  receipt_datetime?: string | null;
 }
 
 export interface InvoiceIntakeResult {
@@ -658,20 +665,13 @@ export async function executeInvoiceIntake(
         return;
       }
 
-      // Merge doc classification into email classification
-      const docResult = cachedDocClassification.result as Partial<InvoiceClassification> & Record<string, unknown>;
-      const mergedClassification: Partial<InvoiceClassification> & Record<string, unknown> = {
-        ...mergeClassifications(classification, docResult),
-      };
-      // Carry forward doc-only fields (doc_date, supply_date, service_period,
-      // accounting_period, accounting_period_reasoning, notes) that
-      // mergeClassifications doesn't know about but Trigger A / month_tag
-      // derivation below rely on.
-      for (const k of Object.keys(docResult)) {
-        if (!(k in mergedClassification)) {
-          mergedClassification[k] = docResult[k];
-        }
-      }
+      // Merge doc classification into email classification.
+      // mergeClassifications carries forward ALL doc keys (shared + doc-only),
+      // so the returned type is InvoiceClassification & DocumentClassificationFields.
+      const docResult = cachedDocClassification.result as Partial<InvoiceClassification> &
+        Partial<DocumentClassificationFields>;
+      const mergedClassification: InvoiceClassification & DocumentClassificationFields =
+        mergeClassifications(classification, docResult);
 
       // Trigger A resume — apply the most recent unconsumed `guidance_applied`
       // event. For `patch`, merge the user-supplied fields into the cached
@@ -702,13 +702,13 @@ export async function executeInvoiceIntake(
         );
       }
 
-      const merged = mergedClassification as InvoiceClassification;
+      const merged = mergedClassification;
       logger.log(`Merged doc classification (owner=${merged.owner})`);
 
       // Trigger A: classifier returned `"unknown"` for at least one required
       // field. Pause the job and ask the user via Telegram. Task 57, Trigger A.
       const unknownFields = UNKNOWN_FIELDS.filter(
-        (f) => (mergedClassification as Record<string, unknown>)[f] === "unknown",
+        (f) => mergedClassification[f] === "unknown",
       );
       if (unknownFields.length > 0) {
         await pauseAndNotify(db, job.id, {
@@ -724,9 +724,8 @@ export async function executeInvoiceIntake(
             subject: classification.subject,
             vendor: mergedClassification.vendor ?? null,
             total_amount: mergedClassification.total_amount ?? null,
-            doc_date: (mergedClassification as Record<string, unknown>).doc_date ?? null,
-            classifier_notes:
-              ((mergedClassification as Record<string, unknown>).notes as string | undefined) ?? null,
+            doc_date: mergedClassification.doc_date ?? null,
+            classifier_notes: mergedClassification.notes ?? null,
           },
         }, notify, logger);
         logger.log(
@@ -742,21 +741,14 @@ export async function executeInvoiceIntake(
       // Document-classifier is the authority — its `accounting_period` reflects
       // explicit reasoning over supply date / service period / doc type / Slovak
       // VAT rules. The deterministic chain is a hardened safety net only.
-      const docExt = docResult as {
-        doc_date?: string | null;
-        supply_date?: string | null;
-        service_period?: string | null;
-        accounting_period?: string | null;
-        accounting_period_reasoning?: string | null;
-      };
-      if (docExt.accounting_period_reasoning) {
-        logger.log(`accounting_period: ${docExt.accounting_period} — ${docExt.accounting_period_reasoning}`);
+      if (merged.accounting_period_reasoning) {
+        logger.log(`accounting_period: ${merged.accounting_period} — ${merged.accounting_period_reasoning}`);
       }
       const monthTag = resolveMonthTag({
-        accountingPeriod: docExt.accounting_period,
-        supplyDate: docExt.supply_date,
-        servicePeriodStart: parseServicePeriodStart(docExt.service_period),
-        docDate: docExt.doc_date,
+        accountingPeriod: merged.accounting_period,
+        supplyDate: merged.supply_date,
+        servicePeriodStart: parseServicePeriodStart(merged.service_period),
+        docDate: merged.doc_date,
         subject: classification.subject,
         receivedAt: classification.received_at,
       });
@@ -883,8 +875,8 @@ export async function executeInvoiceIntake(
           storagePathId,
           totalAmount: merged.total_amount,
           orderId: merged.order_id,
-          litres: (merged as Record<string, unknown>).litres as number | null | undefined,
-          receiptDatetime: (merged as Record<string, unknown>).receipt_datetime as string | null | undefined,
+          litres: merged.litres,
+          receiptDatetime: merged.receipt_datetime,
         }, logger, registry);
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
@@ -923,8 +915,8 @@ export async function executeInvoiceIntake(
           uploadResult.task_uuid,
           merged.total_amount,
           merged.order_id,
-          (merged as Record<string, unknown>).litres as number | null | undefined,
-          (merged as Record<string, unknown>).receipt_datetime as string | null | undefined,
+          merged.litres,
+          merged.receipt_datetime,
           logger,
           registry,
         );
@@ -1273,12 +1265,11 @@ export async function executeScanIntake(
         return;
       }
 
-      const cachedClassification = cachedDocClassification.result as ScanClassification &
-        Record<string, unknown>;
+      const cachedClassification = cachedDocClassification.result as ScanClassification;
       // Apply any pending `guidance_applied` patch so the user's choices
       // override the classifier's "unknown" (scan Trigger A resume). Make a
       // shallow copy so we don't mutate the cached event payload in place.
-      const classification: ScanClassification & Record<string, unknown> = { ...cachedClassification };
+      const classification: ScanClassification = { ...cachedClassification };
       const scanEvents = getJobEvents(db, job.id);
       const scanUnconsumed = findUnconsumedGuidance(scanEvents);
       if (scanUnconsumed) {
@@ -1309,7 +1300,7 @@ export async function executeScanIntake(
       // Trigger A (scan): classifier returned `"unknown"` for a required
       // field. Pause for user guidance before any Paperless work.
       const scanUnknownFields = UNKNOWN_FIELDS.filter(
-        (f) => (classification as Record<string, unknown>)[f] === "unknown",
+        (f) => classification[f] === "unknown",
       );
       if (scanUnknownFields.length > 0) {
         await pauseAndNotify(db, job.id, {
@@ -1324,9 +1315,8 @@ export async function executeScanIntake(
             watch_folder,
             vendor: classification.vendor ?? null,
             total_amount: classification.total_amount ?? null,
-            doc_date: (classification as Record<string, unknown>).doc_date ?? null,
-            classifier_notes:
-              ((classification as Record<string, unknown>).notes as string | undefined) ?? null,
+            doc_date: classification.doc_date ?? null,
+            classifier_notes: classification.notes ?? null,
           },
         }, notify, logger);
         logger.log(
@@ -1458,8 +1448,8 @@ export async function executeScanIntake(
           storagePathId,
           totalAmount: classification.total_amount,
           orderId: classification.order_id,
-          litres: (classification as Record<string, unknown>).litres as number | null | undefined,
-          receiptDatetime: (classification as Record<string, unknown>).receipt_datetime as string | null | undefined,
+          litres: classification.litres,
+          receiptDatetime: classification.receipt_datetime,
         }, logger, registry);
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
@@ -1484,8 +1474,8 @@ export async function executeScanIntake(
         addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
         const cfResult = await setDocumentCustomFields(
           uploadResult.task_uuid, classification.total_amount, classification.order_id,
-          (classification as Record<string, unknown>).litres as number | null | undefined,
-          (classification as Record<string, unknown>).receipt_datetime as string | null | undefined,
+          classification.litres,
+          classification.receipt_datetime,
           logger, registry,
         );
         addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
