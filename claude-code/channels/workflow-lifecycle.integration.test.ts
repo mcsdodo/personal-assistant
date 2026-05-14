@@ -16,7 +16,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { executeNextJob } from "./workflow-core";
-import type { InvoiceIntakeInput, InvoiceClassification, ScanIntakeInput } from "./invoice/intake-worker";
+import type { InvoiceClassification, ScanIntakeInput } from "./invoice/intake-worker";
+import type { InvoiceIntakeInputSchema as InvoiceIntakeInput } from "./workflow-schemas";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import {
   addJobEvent,

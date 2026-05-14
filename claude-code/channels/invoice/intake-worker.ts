@@ -89,6 +89,7 @@ import {
   validateInvoiceIntakeInput,
   validateScanIntakeInput,
   WorkflowSchemaError,
+  type InvoiceIntakeInputSchema,
 } from "../workflow-schemas";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -101,17 +102,6 @@ export type DownloadStrategy =
   | "manual_review"
   | "claude_download";
 
-export interface InvoiceIntakeInput {
-  /** "gmail" or "outlook" */
-  email_source: string;
-  /** Email message ID from the email provider */
-  message_id: string;
-  /** Path to pre-downloaded file on disk (worker reads instead of downloading via MCP) */
-  file_path?: string;
-  /** Force reprocess: if dedup finds an existing Paperless doc, PATCH it in place
-   *  instead of short-circuiting. Set by `create_invoice_intake_job(force=true)`. */
-  force?: boolean;
-}
 
 /** Classification fields produced by the email-classifier + document-classifier channel roundtrips.
  *  Stored in step_completed events, read back via getCompletedSteps. */
@@ -443,12 +433,12 @@ export async function executeInvoiceIntake(
     failJob(db, job.id, { code: "invalid_input", message: "Missing or invalid input_json" });
     return;
   }
-  let input: InvoiceIntakeInput;
+  let input: InvoiceIntakeInputSchema;
   try {
     // Validate input_json against the schema. This catches drift between
     // the watcher and the worker, and rejects manually-edited workflow.db
     // entries that don't match the contract.
-    input = validateInvoiceIntakeInput(rawInput) as InvoiceIntakeInput;
+    input = validateInvoiceIntakeInput(rawInput);
   } catch (err) {
     if (err instanceof WorkflowSchemaError) {
       failJob(db, job.id, {
@@ -1019,7 +1009,7 @@ export async function executeInvoiceIntake(
 // (executeInvoiceIntake) doesn't need to know about MCP URLs.
 
 function downloadInvoice(
-  input: InvoiceIntakeInput,
+  input: InvoiceIntakeInputSchema,
   classification: InvoiceClassification,
   logger: WorkerLogger,
 ): Promise<DownloadedFile> {
