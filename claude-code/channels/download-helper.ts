@@ -4,7 +4,7 @@
  * Used by file-ops MCP (tryDecrypt) and invoice-worker (readFileAsDownload).
  */
 
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { basename } from "path";
 
@@ -37,10 +37,11 @@ export function readFileAsDownload(filePath: string): {
 export function tryDecrypt(filePath: string): void {
   if (!BANK_PDF_PASSWORD) return;
   try {
-    execSync(`qpdf --is-encrypted "${filePath}"`, { stdio: "ignore" });
+    execFileSync("qpdf", ["--is-encrypted", filePath], { stdio: "ignore" });
     // Exit 0 = encrypted — decrypt in place
-    execSync(
-      `qpdf --password="${BANK_PDF_PASSWORD}" --decrypt "${filePath}" --replace-input`,
+    execFileSync(
+      "qpdf",
+      [`--password=${BANK_PDF_PASSWORD}`, "--decrypt", filePath, "--replace-input"],
       { stdio: "ignore", timeout: 10000 },
     );
     console.error(`[download-helper] Decrypted ${filePath}`);
@@ -61,7 +62,7 @@ export function tryDecrypt(filePath: string): void {
  */
 export function isPdfEncrypted(filePath: string): boolean {
   try {
-    execSync(`qpdf --is-encrypted "${filePath}"`, { stdio: "ignore" });
+    execFileSync("qpdf", ["--is-encrypted", filePath], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -79,10 +80,11 @@ export function isPdfEncrypted(filePath: string): boolean {
 export function tryDecryptWithPassword(filePath: string, password: string): void {
   if (!password) return;
   try {
-    execSync(`qpdf --is-encrypted "${filePath}"`, { stdio: "ignore" });
+    execFileSync("qpdf", ["--is-encrypted", filePath], { stdio: "ignore" });
     // Exit 0 = encrypted — decrypt in place
-    execSync(
-      `qpdf --password="${password}" --decrypt "${filePath}" --replace-input`,
+    execFileSync(
+      "qpdf",
+      [`--password=${password}`, "--decrypt", filePath, "--replace-input"],
       { stdio: "ignore", timeout: 10000 },
     );
     console.error(`[download-helper] Decrypted ${filePath} with user-supplied password`);
