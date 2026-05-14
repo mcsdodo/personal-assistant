@@ -2036,37 +2036,53 @@ describe("executeScanIntake", () => {
     expect(output.tags).toEqual(["personal", "fuel", "2026-01"]);
   });
 
-  test("DOCUMENTS folder scan does NOT get accounting tag", async () => {
-    // Hard rule: the accounting tag is driven exclusively by the watch_folder
-    // level-2 segment. A scan dropped in "DOCUMENTS" must never land in the
-    // accounting cycle regardless of what the document-classifier returned.
+  test("documents folder scan: classifier 'invoice' is overridden to 'document' end-to-end", async () => {
+    // The doc 465 scenario: user scanned to gdrive/techlab/documents, classifier
+    // visually saw an invoice and returned doc_type=invoice with order_id+amount.
+    // Folder is authoritative — the worker must treat this as a 'document':
+    // no accounting tag, Document doc_type, Techlab Documents storage path,
+    // and total_amount/order_id custom fields are skipped.
     const filePath = join(tmpDir, "documents_folder_scan.pdf");
     writeFileSync(filePath, Buffer.from("fake-pdf"));
 
     const input = makeScanInput({
       file_path: filePath,
-      watch_folder: "techlab/DOCUMENTS",
+      watch_folder: "techlab/documents",
     });
-    const job = createRunningScanJob(input, defaultScanClassification({ owner: "techlab" }));
+    const job = createRunningScanJob(input, defaultScanClassification({
+      owner: "techlab",
+      doc_type: "invoice",
+      total_amount: 914.9,
+      order_id: "26051300558",
+    }));
+
+    let documentTypeAssigned: number | undefined;
+    let storagePathAssigned: number | undefined;
 
     mockFetch(
-      // 1. list_correspondents
+      // 1. list_correspondents — match default vendor "Alza"
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
-      // 2. dedup check → no duplicate
-      () => jsonResponse({ results: [] }),
-      // 3. list_tags → techlab + accounting exist (current code still produces "accounting" — this test verifies the fix removes it)
+      // (dedup search SKIPPED — order_id nulled by folder override)
+      // 2. list_tags
       () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }])),
-      // 4. create_tag for "2026-03"
+      // 3. create_tag for "2026-03"
       () => jsonResponse(rpcResponse({ id: 20 })),
-      // 5. list_document_types
-      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
-      // 6. resolveStoragePath
+      // 4. list_document_types — must return "Document" for the override to find
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }, { id: 6, name: "Document" }])),
+      // 5. resolveStoragePath
       storagePathsMockHandler(),
-      // 7. post_document
-      () => new Response('"task-uuid-docs"', { status: 200 }),
-      // 8-10. setDocumentCustomFields
+      // 6. post_document — parse multipart body for document_type and storage_path
+      (_url, init) => {
+        const body = String(init?.body);
+        const dt = body.match(/name="document_type"\r\n\r\n(\d+)/);
+        const sp = body.match(/name="storage_path"\r\n\r\n(\d+)/);
+        documentTypeAssigned = dt ? Number(dt[1]) : undefined;
+        storagePathAssigned = sp ? Number(sp[1]) : undefined;
+        return new Response('"task-uuid-docs"', { status: 200 });
+      },
+      // 7-9. custom fields: task poll, PATCH, verify GET (no-op when both fields nulled)
       ...customFieldsMockHandlers(),
-      // 11-13. moveGdriveFile
+      // 10-12. moveGdriveFile
       ...moveGdriveMockHandlers(),
     );
 
@@ -2075,8 +2091,18 @@ describe("executeScanIntake", () => {
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
     const output = JSON.parse(updated.output_json!);
+
     expect(output.tags).toContain("techlab");
     expect(output.tags).not.toContain("accounting");
+
+    // Document doc_type (id 6 = Document, NOT id 5 = Invoice)
+    expect(documentTypeAssigned).toBe(6);
+
+    // Techlab Documents storage path (id 3 per storagePathsMockHandler)
+    expect(storagePathAssigned).toBe(3);
+
+    // total_amount and order_id stripped by folder override
+    expect(output.total_amount).toBeNull();
   });
 
   test("accounting folder scan gets accounting tag", async () => {

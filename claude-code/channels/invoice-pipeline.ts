@@ -249,6 +249,28 @@ export function buildScanTagNames(
   return tags;
 }
 
+/**
+ * Apply folder-driven overrides to a scan classification. The watch_folder
+ * LEVEL2 segment expresses user intent and overrides content-based classifier
+ * decisions: a file dropped in `documents` is a non-monetary document even if
+ * the classifier visually identifies it as an invoice. Forces `doc_type` to
+ * `"document"` and nulls `total_amount` / `order_id` to maintain the
+ * non-monetary invariants. No-op for other folders (e.g. `accounting`).
+ *
+ * Pure / immutable — does not mutate the input.
+ */
+export function applyScanFolderOverrides<T extends {
+  doc_type: string | null;
+  total_amount?: number | null;
+  order_id?: string | null;
+}>(classification: T, watchFolder: string): T {
+  const level2 = watchFolder.split("/").filter(Boolean)[1];
+  if (level2 === "documents") {
+    return { ...classification, doc_type: "document", total_amount: null, order_id: null };
+  }
+  return classification;
+}
+
 // ── generateTitle ───────────────────────────────────────────────────────
 
 /**

@@ -78,6 +78,7 @@ import * as downloadHelper from "../download-helper";
 import { readFileAsDownload } from "../download-helper";
 import { formatGuidanceRequest, formatNotification, type NotifyFn } from "../telegram-notify";
 import {
+  applyScanFolderOverrides,
   buildSuggestedActions,
   buildScanTagNames,
   buildTagNames,
@@ -1314,6 +1315,11 @@ export async function executeScanIntake(
           `guidance.applied job_id=${job.id} action=${scanUnconsumed.action} latency_seconds=${scanLatency}`,
         );
       }
+
+      // Folder-driven overrides: watch_folder LEVEL2 expresses user intent
+      // and overrides the classifier's content-based decisions (e.g. dropping
+      // an invoice-shaped doc in `documents` makes it a non-monetary document).
+      Object.assign(classification, applyScanFolderOverrides(classification, watch_folder));
 
       vendorForSpan = classification.vendor;
       span.setAttribute("invoice.vendor", classification.vendor);

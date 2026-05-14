@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  applyScanFolderOverrides,
   buildSuggestedActions,
   buildScanTagNames,
   buildTagNames,
@@ -464,6 +465,57 @@ describe("buildScanTagNames", () => {
     expect(tags).toContain("personal");
     expect(tags).not.toContain("techlab");
     expect(tags).not.toContain("accounting");
+  });
+});
+
+// ── applyScanFolderOverrides ─────────────────────────────────────────────
+
+describe("applyScanFolderOverrides", () => {
+  const base = {
+    doc_type: "invoice",
+    vendor: "twd SK",
+    total_amount: 914.9,
+    currency: "EUR",
+    is_fuel: false,
+    owner: "techlab",
+    confidence: "high",
+    order_id: "26051300558",
+    subtitle: null,
+    doc_date: null,
+  };
+
+  test("documents folder forces doc_type to document", () => {
+    const result = applyScanFolderOverrides(base, "techlab/documents");
+    expect(result.doc_type).toBe("document");
+  });
+
+  test("documents folder nulls total_amount and order_id", () => {
+    const result = applyScanFolderOverrides(base, "techlab/documents");
+    expect(result.total_amount).toBeNull();
+    expect(result.order_id).toBeNull();
+  });
+
+  test("documents folder preserves vendor, owner, is_fuel, dates", () => {
+    const result = applyScanFolderOverrides(base, "techlab/documents");
+    expect(result.vendor).toBe("twd SK");
+    expect(result.owner).toBe("techlab");
+    expect(result.is_fuel).toBe(false);
+  });
+
+  test("accounting folder leaves classification unchanged", () => {
+    const result = applyScanFolderOverrides(base, "techlab/accounting");
+    expect(result).toEqual(base);
+  });
+
+  test("unrecognized level2 leaves classification unchanged", () => {
+    const result = applyScanFolderOverrides(base, "techlab/somethingelse");
+    expect(result).toEqual(base);
+  });
+
+  test("returns new object, does not mutate input", () => {
+    const original = { ...base };
+    applyScanFolderOverrides(base, "techlab/documents");
+    expect(base).toEqual(original);
   });
 });
 
