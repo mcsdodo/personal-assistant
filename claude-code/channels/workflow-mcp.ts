@@ -53,7 +53,7 @@ function text(value: unknown): { type: "text"; text: string } {
   };
 }
 
-const JOB_STATES: readonly JobState[] = [
+const JOB_STATES = [
   "queued",
   "running",
   "retryable",
@@ -63,9 +63,15 @@ const JOB_STATES: readonly JobState[] = [
   "completed",
   "failed",
   "cancelled",
-] as const;
+] as const satisfies readonly JobState[];
 
-function isJobState(value: unknown): value is JobState {
+// Compile-time check that JOB_STATES covers every JobState union member.
+// If a new state is added to JobState, this line stops compiling until
+// JOB_STATES is updated. The runtime contract is pinned by isJobState tests.
+const _jobStatesExhaustive: JobState extends (typeof JOB_STATES)[number] ? true : false = true;
+void _jobStatesExhaustive;
+
+export function isJobState(value: unknown): value is JobState {
   return typeof value === "string" && (JOB_STATES as readonly string[]).includes(value);
 }
 

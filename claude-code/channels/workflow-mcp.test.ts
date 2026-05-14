@@ -5,7 +5,55 @@ import {
   handleGetRecentEmails, handleGetEmailStats,
   handleGetGdriveScanStatus, handleGetGdriveScanStats,
   buildInvoiceIntakeInputPayload,
+  isJobState,
 } from "./workflow-mcp";
+import type { JobState } from "./workflow-db";
+
+describe("isJobState", () => {
+  // Hand-listed JobState members. The `satisfies` keeps each entry checked
+  // against JobState (catches typos / removed states); the `_exhaustive`
+  // assertion below catches NEW states added to the union.
+  const ALL_STATES = [
+    "queued",
+    "running",
+    "retryable",
+    "awaiting_approval",
+    "awaiting_classification",
+    "awaiting_user_guidance",
+    "completed",
+    "failed",
+    "cancelled",
+  ] as const satisfies readonly JobState[];
+
+  // Compile-time exhaustiveness: if a new member is added to JobState
+  // without being added to ALL_STATES above, this line stops compiling.
+  // That forces the test author to update ALL_STATES, which forces production
+  // JOB_STATES to be reviewed too (since the test is the contract).
+  type _Exhaustive = JobState extends (typeof ALL_STATES)[number] ? true : false;
+  const _exhaustive: _Exhaustive = true;
+  void _exhaustive;
+
+  for (const state of ALL_STATES) {
+    it(`accepts JobState "${state}"`, () => {
+      expect(isJobState(state)).toBe(true);
+    });
+  }
+
+  it("rejects unknown strings", () => {
+    expect(isJobState("nonsense")).toBe(false);
+    expect(isJobState("QUEUED")).toBe(false);
+    expect(isJobState("")).toBe(false);
+    expect(isJobState("queued ")).toBe(false);
+  });
+
+  it("rejects non-strings", () => {
+    expect(isJobState(undefined)).toBe(false);
+    expect(isJobState(null)).toBe(false);
+    expect(isJobState(123)).toBe(false);
+    expect(isJobState({})).toBe(false);
+    expect(isJobState([])).toBe(false);
+  });
+});
 
 function tmpPath(prefix: string): string {
   return `/tmp/${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`;
