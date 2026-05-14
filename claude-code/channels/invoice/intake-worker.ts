@@ -425,6 +425,129 @@ function seedCounterFromDb(db: import("bun:sqlite").Database): void {
   } catch {}
 }
 
+// ── Shared decrypt + guidance phase ────────────────────────────────────
+//
+// Both `executeInvoiceIntake` and `executeScanIntake` carry the same three
+// steps right after the file lands on disk:
+//
+//   1. `tryDecrypt(filePath)` — best-effort decrypt with BANK_PDF_PASSWORD.
+//   2. `applyGuidancePassword` — consume any `guidance_password` event and
+//      scrub it from the audit trail.
+//   3. If the PDF is still encrypted: pause the job and ask the user.
+//
+// The ONE invoice-only twist (Task 57 / §5.10b): if a prior
+// `guidance_applied(action="patch")` event carries both `owner` AND
+// `doc_type`, treat that as the operator's "upload anyway, with manual
+// classification" override — synthesize a `classify_document` step_completed
+// stub (`{ __from_guidance_patch: true }`) so the downstream classify step
+// short-circuits, and continue past the pause. Scan path has no equivalent.
+//
+// Path-specific bits surfaced as parameters:
+//   • `allowPatchCoversClassification` — true for invoice, false for scan
+//   • `pauseContext` — invoice carries sender/subject, scan carries watch_folder
+//   • `pauseLogSuffix` — scan log line ends in " (scan)" so ops can tell paths apart
+//   • `completedSteps` — invoice mutates the in-scope Map after synthesizing
+//     classify_document so step 1.5's `completedSteps.get("classify_document")`
+//     check below short-circuits on the same tick
+
+type IntakePhaseOutcome =
+  | { kind: "pause"; reason: string }
+  | { kind: "continue"; mergedPatchFields?: { owner?: string; doc_type?: string } };
+
+async function runDecryptAndGuidancePhase(
+  db: Database,
+  job: JobRow,
+  filePath: string,
+  file: DownloadedFile,
+  ctx: {
+    notify: NotifyFn | undefined;
+    logger: WorkerLogger;
+    allowPatchCoversClassification: boolean;
+    pauseContext: GuidanceRequestPayload["context"];
+    pauseLogSuffix: string;
+    completedSteps?: Map<string, Record<string, unknown>>;
+  },
+): Promise<IntakePhaseOutcome> {
+  // Step 1: Try to decrypt the PDF if it's password-protected.
+  // No-op when BANK_PDF_PASSWORD is unset or the file isn't encrypted.
+  // Closes the gap between the email and GDrive paths (task 57).
+  downloadHelper.tryDecrypt(filePath);
+
+  // Step 2: Resume-decrypt with a user-supplied password, if the
+  // provide_guidance tool wrote one to a `guidance_password` event. The
+  // password is consumed and the event payload is scrubbed so it never
+  // lingers in the audit trail. Task 57, Trigger B resume.
+  applyGuidancePassword(db, job.id, filePath, ctx.logger);
+
+  // Step 3: Trigger B — if the PDF is still encrypted after both decrypt
+  // attempts, we have no classifier output to trust. Pause the job and ask
+  // the user for the password (or permission to skip). On the invoice path,
+  // an unconsumed `guidance_applied(action=patch, owner+doc_type)` lets the
+  // operator override the pause with manual classification.
+  if (!downloadHelper.isPdfEncrypted(filePath)) {
+    return { kind: "continue" };
+  }
+
+  if (ctx.allowPatchCoversClassification) {
+    const allEvents = getJobEvents(db, job.id);
+    const pendingPatch = findUnconsumedGuidance(allEvents);
+    const patchCoversClassification =
+      pendingPatch?.action === "patch" &&
+      pendingPatch.patch != null &&
+      typeof pendingPatch.patch.owner === "string" &&
+      typeof pendingPatch.patch.doc_type === "string";
+
+    if (patchCoversClassification) {
+      // Operator chose "upload anyway" via patch. Mark classify_document
+      // complete with an empty result so the downstream classify step
+      // short-circuits; the unconsumed guidance_applied event is consumed
+      // at the normal merge point and the patch fields fill in
+      // owner/doc_type/etc. for upload.
+      if (!ctx.completedSteps?.has("classify_document")) {
+        addJobEvent(db, job.id, "step_completed", {
+          step: "classify_document",
+          result: { __from_guidance_patch: true },
+        });
+        ctx.completedSteps?.set("classify_document", { result: { __from_guidance_patch: true } });
+      }
+      ctx.logger.log(
+        `Job ${job.id}: encrypted PDF accepted via guidance patch — skipping decrypt-pause`,
+      );
+      const patch = pendingPatch!.patch as { owner: string; doc_type: string };
+      return {
+        kind: "continue",
+        mergedPatchFields: { owner: patch.owner, doc_type: patch.doc_type },
+      };
+    }
+  }
+
+  await pauseAndNotify(
+    db,
+    job.id,
+    {
+      step: "decrypt_pdf",
+      reason: "encrypted_pdf",
+      missing_fields: [],
+      suggested_actions: [
+        "skip",
+        "set:owner=personal,doc_type=account_statement",
+        "set:owner=techlab,doc_type=account_statement",
+        "send_password",
+        "retry",
+      ],
+      context: ctx.pauseContext,
+    },
+    ctx.notify,
+    ctx.logger,
+  );
+  ctx.logger.log(`Job ${job.id} paused: encrypted_pdf${ctx.pauseLogSuffix}`);
+  // Silence unused-var on `file` — callers pass it for parity with future
+  // cleanup branches (currently the guidance pause is "soft" and the file
+  // stays on disk so the job can resume after the user supplies a password).
+  void file;
+  return { kind: "pause", reason: "encrypted_pdf" };
+}
+
 // ── Main executor ──────────────────────────────────────────────────────
 
 export async function executeInvoiceIntake(
@@ -573,77 +696,31 @@ export async function executeInvoiceIntake(
         });
       }
 
-      // Step 1.1: Try to decrypt the PDF if it's password-protected.
-      // No-op when BANK_PDF_PASSWORD is unset or the file isn't encrypted.
-      // Closes the gap between the email and GDrive paths (task 57).
-      downloadHelper.tryDecrypt(filePath);
-
-      // Step 1.2: Resume-decrypt with a user-supplied password, if the
-      // provide_guidance tool wrote one to a `guidance_password` event. The
-      // password is consumed and the event payload is scrubbed so it never
-      // lingers in the audit trail. Task 57, Trigger B resume.
-      applyGuidancePassword(db, job.id, filePath, logger);
-
-      // Step 1.3: Trigger B — if the PDF is still encrypted after both
-      // decrypt attempts, we have no classifier output to trust. Pause the
-      // job and ask the user for the password (or permission to skip).
-      //
-      // Exception: if the user has already responded to a prior pause with
-      // `action: patch` carrying both `owner` and `doc_type`, that's the
-      // explicit "set:owner=...,doc_type=..." action surfaced in
-      // `suggested_actions`. The operator is acknowledging they can't decrypt
-      // and want the file uploaded with manual classification. Skip the
-      // re-pause and synthesize a `step_completed` for `classify_document` so
-      // the next step short-circuits — the patch fields will be merged onto
-      // the empty doc classification at the normal merge point below.
-      if (downloadHelper.isPdfEncrypted(filePath)) {
-        const allEvents = getJobEvents(db, job.id);
-        const pendingPatch = findUnconsumedGuidance(allEvents);
-        const patchCoversClassification =
-          pendingPatch?.action === "patch" &&
-          pendingPatch.patch != null &&
-          typeof pendingPatch.patch.owner === "string" &&
-          typeof pendingPatch.patch.doc_type === "string";
-
-        if (!patchCoversClassification) {
-          await pauseAndNotify(db, job.id, {
-            step: "decrypt_pdf",
-            reason: "encrypted_pdf",
-            missing_fields: [],
-            suggested_actions: [
-              "skip",
-              "set:owner=personal,doc_type=account_statement",
-              "set:owner=techlab,doc_type=account_statement",
-              "send_password",
-              "retry",
-            ],
-            context: {
-              filename: file.filename,
-              sender: classification.sender,
-              subject: classification.subject,
-              classifier_notes:
-                "PDF is encrypted; decrypt failed (no password configured or wrong password).",
-            },
-          }, notify, logger);
-          logger.log(`Job ${job.id} paused: encrypted_pdf`);
-          outcome = "awaiting_user_guidance";
-          span.setAttribute("invoice.outcome", "awaiting_user_guidance");
-          span.setStatus({ code: SpanStatusCode.OK });
-          return;
-        }
-
-        // Operator chose "upload anyway" via patch. Mark classify_document
-        // complete with an empty result so step 1.5 short-circuits; the
-        // unconsumed guidance_applied event is consumed at the normal merge
-        // point and the patch fields fill in owner/doc_type/etc. for upload.
-        if (!completedSteps.has("classify_document")) {
-          addJobEvent(db, job.id, "step_completed", {
-            step: "classify_document",
-            result: { __from_guidance_patch: true },
-          });
-          completedSteps.set("classify_document", { result: { __from_guidance_patch: true } });
-        }
-        logger.log(`Job ${job.id}: encrypted PDF accepted via guidance patch — skipping decrypt-pause`);
+      // Steps 1.1-1.3: decrypt + guidance-password resume + Trigger B pause.
+      // Shared with `executeScanIntake` via `runDecryptAndGuidancePhase`.
+      // Invoice-only: `allowPatchCoversClassification` lets the operator
+      // force-upload an encrypted PDF after a prior `guidance_applied(
+      // action=patch, owner+doc_type)`; the helper synthesizes a
+      // `classify_document` step_completed stub so step 1.5 short-circuits.
+      const decryptPhase = await runDecryptAndGuidancePhase(db, job, filePath, file, {
+        notify,
+        logger,
+        allowPatchCoversClassification: true,
+        pauseContext: {
+          filename: file.filename,
+          sender: classification.sender,
+          subject: classification.subject,
+          classifier_notes:
+            "PDF is encrypted; decrypt failed (no password configured or wrong password).",
+        },
+        pauseLogSuffix: "",
+        completedSteps,
+      });
+      if (decryptPhase.kind === "pause") {
+        outcome = "awaiting_user_guidance";
+        span.setAttribute("invoice.outcome", "awaiting_user_guidance");
+        span.setStatus({ code: SpanStatusCode.OK });
+        return;
       }
 
       // Step 1.5: Document classification via channel (non-blocking)
@@ -1215,31 +1292,26 @@ export async function executeScanIntake(
         });
       }
 
-      // Step 1.1-1.3: Decrypt + Trigger B pause (task 57). Scan path mirrors
-      // the email path — tryDecrypt, honour any user-supplied password from
-      // guidance_password, then pause if still encrypted.
-      downloadHelper.tryDecrypt(filePath);
-      applyGuidancePassword(db, job.id, filePath, logger);
-      if (downloadHelper.isPdfEncrypted(filePath)) {
-        await pauseAndNotify(db, job.id, {
-          step: "decrypt_pdf",
-          reason: "encrypted_pdf",
-          missing_fields: [],
-          suggested_actions: [
-            "skip",
-            "set:owner=personal,doc_type=account_statement",
-            "set:owner=techlab,doc_type=account_statement",
-            "send_password",
-            "retry",
-          ],
-          context: {
-            filename: file.filename,
-            watch_folder,
-            classifier_notes:
-              "PDF is encrypted; decrypt failed (no password configured or wrong password).",
-          },
-        }, notify, logger);
-        logger.log(`Job ${job.id} paused: encrypted_pdf (scan)`);
+      // Step 1.1-1.3: decrypt + guidance-password resume + Trigger B pause.
+      // Shared with `executeInvoiceIntake` via `runDecryptAndGuidancePhase`.
+      // Scan path opts out of `allowPatchCoversClassification` — there is no
+      // operator-managed "upload anyway with manual classification" override
+      // for scans (the email path needs it because bank-statement emails
+      // arrive encrypted and the operator wants to set owner/doc_type by
+      // hand; gdrive scans don't have that workflow).
+      const scanDecryptPhase = await runDecryptAndGuidancePhase(db, job, filePath, file, {
+        notify,
+        logger,
+        allowPatchCoversClassification: false,
+        pauseContext: {
+          filename: file.filename,
+          watch_folder,
+          classifier_notes:
+            "PDF is encrypted; decrypt failed (no password configured or wrong password).",
+        },
+        pauseLogSuffix: " (scan)",
+      });
+      if (scanDecryptPhase.kind === "pause") {
         outcome = "awaiting_user_guidance";
         span.setAttribute("invoice.outcome", "awaiting_user_guidance");
         span.setStatus({ code: SpanStatusCode.OK });
