@@ -116,9 +116,7 @@ export async function workerTick(
   workerBusy = true;
   try {
     reclaimStaleJobs(db, { log });
-    // channel parameter is undefined: classification notifications are pushed
-    // by workflow-mcp via pushPendingClassifications, not by the worker.
-    await executeNextJob(db, { log }, fieldRegistry, notifyFn, undefined);
+    await executeNextJob(db, { log }, fieldRegistry, notifyFn);
   } finally {
     workerBusy = false;
   }

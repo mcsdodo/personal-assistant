@@ -96,7 +96,6 @@ import {
   validateScanIntakeInput,
   WorkflowSchemaError,
 } from "../workflow-schemas";
-import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -443,7 +442,6 @@ export async function executeInvoiceIntake(
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
   notify?: NotifyFn,
-  channel?: Server,
 ): Promise<void> {
   seedCounterFromDb(db);
   const rawInput = parseJobJson<unknown>(job.input_json);
@@ -1160,7 +1158,6 @@ export async function executeScanIntake(
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
   notify?: NotifyFn,
-  channel?: Server,
 ): Promise<void> {
   seedCounterFromDb(db);
   const rawInput = parseJobJson<unknown>(job.input_json);
