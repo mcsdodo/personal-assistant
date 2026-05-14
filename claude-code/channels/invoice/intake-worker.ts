@@ -452,13 +452,12 @@ function seedCounterFromDb(db: import("bun:sqlite").Database): void {
 
 type IntakePhaseOutcome =
   | { kind: "pause"; reason: string }
-  | { kind: "continue"; mergedPatchFields?: { owner?: string; doc_type?: string } };
+  | { kind: "continue" };
 
 async function runDecryptAndGuidancePhase(
   db: Database,
   job: JobRow,
   filePath: string,
-  file: DownloadedFile,
   ctx: {
     notify: NotifyFn | undefined;
     logger: WorkerLogger;
@@ -513,11 +512,7 @@ async function runDecryptAndGuidancePhase(
       ctx.logger.log(
         `Job ${job.id}: encrypted PDF accepted via guidance patch — skipping decrypt-pause`,
       );
-      const patch = pendingPatch!.patch as { owner: string; doc_type: string };
-      return {
-        kind: "continue",
-        mergedPatchFields: { owner: patch.owner, doc_type: patch.doc_type },
-      };
+      return { kind: "continue" };
     }
   }
 
@@ -541,10 +536,6 @@ async function runDecryptAndGuidancePhase(
     ctx.logger,
   );
   ctx.logger.log(`Job ${job.id} paused: encrypted_pdf${ctx.pauseLogSuffix}`);
-  // Silence unused-var on `file` — callers pass it for parity with future
-  // cleanup branches (currently the guidance pause is "soft" and the file
-  // stays on disk so the job can resume after the user supplies a password).
-  void file;
   return { kind: "pause", reason: "encrypted_pdf" };
 }
 
@@ -702,7 +693,7 @@ export async function executeInvoiceIntake(
       // force-upload an encrypted PDF after a prior `guidance_applied(
       // action=patch, owner+doc_type)`; the helper synthesizes a
       // `classify_document` step_completed stub so step 1.5 short-circuits.
-      const decryptPhase = await runDecryptAndGuidancePhase(db, job, filePath, file, {
+      const decryptPhase = await runDecryptAndGuidancePhase(db, job, filePath, {
         notify,
         logger,
         allowPatchCoversClassification: true,
@@ -1299,7 +1290,7 @@ export async function executeScanIntake(
       // for scans (the email path needs it because bank-statement emails
       // arrive encrypted and the operator wants to set owner/doc_type by
       // hand; gdrive scans don't have that workflow).
-      const scanDecryptPhase = await runDecryptAndGuidancePhase(db, job, filePath, file, {
+      const scanDecryptPhase = await runDecryptAndGuidancePhase(db, job, filePath, {
         notify,
         logger,
         allowPatchCoversClassification: false,
