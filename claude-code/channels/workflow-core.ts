@@ -14,6 +14,7 @@ import {
   type JobRow,
 } from "./workflow-db";
 import { executeInvoiceIntake, executeScanIntake } from "./invoice/intake-worker";
+import { createPaperlessAdapter } from "./paperless-adapter";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 
@@ -124,12 +125,21 @@ export async function executeNextJob(
         case "synthetic":
           executeSyntheticJob(db, job, logger);
           break;
-        case "invoice_intake":
-          await executeInvoiceIntake(db, job, logger, registry!, notify);
+        case "invoice_intake": {
+          // Build the Paperless adapter once per executor invocation. The
+          // executors thread this same instance into every postprocess-service
+          // / dedup-service / paperless-adapter call site — the lazy singleton
+          // it replaces existed only to bridge the registry-per-call API to
+          // the stateless executor body. Construction is cheap (no I/O).
+          const adapter = createPaperlessAdapter(registry!);
+          await executeInvoiceIntake(db, job, logger, registry!, adapter, notify);
           break;
-        case "scan_intake":
-          await executeScanIntake(db, job, logger, registry!, notify);
+        }
+        case "scan_intake": {
+          const adapter = createPaperlessAdapter(registry!);
+          await executeScanIntake(db, job, logger, registry!, adapter, notify);
           break;
+        }
         default:
           failJob(db, job.id, {
             code: "unsupported_workflow_type",

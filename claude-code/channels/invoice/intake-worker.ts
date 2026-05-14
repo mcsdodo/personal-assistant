@@ -44,7 +44,7 @@ import {
 } from "../workflow-db";
 import { guidanceRequestsTotal } from "../metrics";
 import type { PaperlessFieldRegistry } from "../paperless-fields";
-import { PaperlessAdapter, type CorrespondentInfo } from "../paperless-adapter";
+import type { PaperlessAdapter } from "../paperless-adapter";
 import {
   downloadInvoice as downloadInvoiceImpl,
   downloadFromGdrive as downloadFromGdriveImpl,
@@ -52,8 +52,6 @@ import {
 } from "./download-service";
 import {
   checkDuplicate as checkDuplicateImpl,
-  type DedupeResult,
-  type RefreshDecisionContext,
 } from "./dedup-service";
 import { parkForClassification } from "./classification-state";
 import {
@@ -66,8 +64,6 @@ import {
   resolveTagIds,
   setDocumentCustomFields as setDocumentCustomFieldsImpl,
   uploadToPaperless as uploadToPaperlessImpl,
-  type CustomFieldResult,
-  type UploadResult,
 } from "./postprocess-service";
 import * as downloadHelper from "../download-helper";
 import { readFileAsDownload } from "../download-helper";
@@ -212,31 +208,13 @@ interface WorkerLogger {
 const OUTLOOK_MCP_URL = process.env.OUTLOOK_MCP_URL ?? "http://outlook-mcp:8002/mcp";
 const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const GOOGLE_EMAIL = process.env.GMAIL_EMAIL ?? "";
-const PAPERLESS_MCP_URL = process.env.PAPERLESS_MCP_URL ?? "http://paperless-mcp:3000/mcp";
 
-// ── Paperless adapter (lazy singleton) ──────────────────────────────────
-//
-// The adapter unifies the two Paperless transports (paperless-mcp HTTP for
-// CRUD + direct REST API for upload/dedup/PATCH/tasks). It depends on the
-// PaperlessFieldRegistry which the worker receives per call, so the singleton
-// is rebuilt whenever the registry instance changes (e.g. between tests).
-let _paperlessAdapter: PaperlessAdapter | null = null;
-let _paperlessAdapterRegistry: PaperlessFieldRegistry | null = null;
-function getPaperlessAdapter(registry: PaperlessFieldRegistry): PaperlessAdapter {
-  if (_paperlessAdapter && _paperlessAdapterRegistry === registry) {
-    return _paperlessAdapter;
-  }
-  const paperlessUrl = process.env.PAPERLESS_URL;
-  if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
-  _paperlessAdapter = new PaperlessAdapter({
-    paperlessUrl,
-    paperlessToken: process.env.PAPERLESS_API_TOKEN ?? "",
-    paperlessMcpUrl: PAPERLESS_MCP_URL,
-    fieldRegistry: registry,
-  });
-  _paperlessAdapterRegistry = registry;
-  return _paperlessAdapter;
-}
+// The Paperless adapter is built once per dispatch in workflow-core.executeNextJob
+// and threaded into both executors as an explicit parameter. The executors pass
+// it directly into postprocess-service / dedup-service / download-service calls.
+// (Before this refactor, intake-worker carried a lazy module-level singleton
+// rebuilt-on-registry-change to bridge the registry-per-call API to a stateless
+// adapter — that singleton and ~9 one-liner wrappers around it are gone now.)
 
 const tracer = getTracer("invoice-worker");
 const meter = getMeter("invoice-worker");
@@ -546,6 +524,7 @@ export async function executeInvoiceIntake(
   job: JobRow,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
+  adapter: PaperlessAdapter,
   notify?: NotifyFn,
 ): Promise<void> {
   seedCounterFromDb(db);
@@ -830,7 +809,7 @@ export async function executeInvoiceIntake(
 
       // Step 2: Resolve correspondent
       addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
-      const correspondent = await resolveCorrespondent(merged.vendor, logger, registry);
+      const correspondent = await resolveCorrespondentImpl(merged.vendor, adapter, logger);
       addJobEvent(db, job.id, "step_completed", {
         step: "resolve_correspondent",
         correspondent,
@@ -845,7 +824,7 @@ export async function executeInvoiceIntake(
       // the same PATCH path automatically when a newer email for the same
       // order arrives (multi-stage vendors like Alza).
       addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
-      const dedupeResult = await checkDuplicate(merged, correspondent, logger, registry, {
+      const dedupeResult = await checkDuplicateImpl(merged, correspondent, adapter, registry, logger, {
         newReceivedAt: input.received_at ?? null,
         lookupExistingReceivedAt: async (docId) => getLatestReceivedAtForDoc(db, docId),
       });
@@ -916,14 +895,14 @@ export async function executeInvoiceIntake(
         { owner, doc_type: merged.doc_type, is_fuel: merged.is_fuel },
         monthTag,
       );
-      const tagIds = await resolveTags(allTagNames, logger, registry);
+      const tagIds = await resolveTagIds(allTagNames, adapter, logger);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
 
       // Step 5: Resolve document type
-      const documentTypeId = await resolveDocumentType(merged.doc_type, logger, registry);
+      const documentTypeId = await resolveDocumentTypeId(merged.doc_type, adapter, logger);
 
       // Step 5b: Resolve storage path (uses the SAME resolved owner as tags)
-      const storagePathId = await resolveStoragePath(owner, merged.doc_type, logger, registry);
+      const storagePathId = await resolveStoragePathId(owner, merged.doc_type, adapter, logger);
 
       // Step 6: Upload to Paperless — or PATCH the existing doc if force-refresh.
       addJobEvent(db, job.id, "step_started", { step: "upload" });
@@ -934,7 +913,7 @@ export async function executeInvoiceIntake(
       if (forceTargetDocId) {
         // Force-refresh path: PATCH the existing doc with fresh metadata.
         // Single request handles title/correspondent/document_type/tags/storage_path/custom_fields.
-        const patchResult = await patchPaperlessDocument({
+        const patchResult = await patchExistingDocument({
           documentId: forceTargetDocId,
           title,
           correspondentId: correspondent.id,
@@ -945,7 +924,7 @@ export async function executeInvoiceIntake(
           orderId: merged.order_id,
           litres: merged.litres,
           receiptDatetime: merged.receipt_datetime,
-        }, logger, registry);
+        }, adapter, registry, logger);
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
           mode: "patch",
@@ -955,7 +934,7 @@ export async function executeInvoiceIntake(
         finalDocId = patchResult.document_id;
         finalOutcome = "refreshed";
       } else {
-        const uploadResult = await uploadToPaperless({
+        const uploadResult = await uploadToPaperlessImpl({
           title,
           file,
           correspondentId: correspondent.id,
@@ -964,7 +943,7 @@ export async function executeInvoiceIntake(
           storagePathId,
           totalAmount: merged.total_amount,
           orderId: merged.order_id,
-        }, logger, registry);
+        }, adapter, logger);
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
           mode: "post",
@@ -979,14 +958,15 @@ export async function executeInvoiceIntake(
         // no custom fields to set. The force-refresh path above already has
         // doc id from the patch endpoint.
         addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
-        const cfResult = await setDocumentCustomFields(
+        const cfResult = await setDocumentCustomFieldsImpl(
           uploadResult.task_uuid,
           merged.total_amount,
           merged.order_id,
           merged.litres,
           merged.receipt_datetime,
-          logger,
+          adapter,
           registry,
+          logger,
         );
         addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
         finalDocId = cfResult.doc_id;
@@ -1086,114 +1066,6 @@ function downloadInvoice(
   );
 }
 
-// ── Paperless operation wrappers ───────────────────────────────────────
-// All Paperless interaction lives in postprocess-service / paperless-adapter.
-// These thin wrappers preserve the orchestrator call shape (no need to thread
-// the adapter through every step site).
-
-function resolveCorrespondent(
-  vendor: string | null,
-  logger: WorkerLogger,
-  registry: PaperlessFieldRegistry,
-): Promise<CorrespondentInfo> {
-  return resolveCorrespondentImpl(vendor, getPaperlessAdapter(registry), logger);
-}
-
-function checkDuplicate(
-  classification: { order_id: string | null; total_amount: number | null },
-  correspondent: CorrespondentInfo,
-  logger: WorkerLogger,
-  registry: PaperlessFieldRegistry,
-  refreshCtx?: RefreshDecisionContext,
-): Promise<DedupeResult | null> {
-  return checkDuplicateImpl(
-    classification,
-    correspondent,
-    getPaperlessAdapter(registry),
-    registry,
-    logger,
-    refreshCtx,
-  );
-}
-
-function resolveTags(
-  tagNames: string[],
-  logger: WorkerLogger,
-  registry: PaperlessFieldRegistry,
-): Promise<number[]> {
-  return resolveTagIds(tagNames, getPaperlessAdapter(registry), logger);
-}
-
-function resolveDocumentType(
-  docType: string,
-  logger: WorkerLogger,
-  registry: PaperlessFieldRegistry,
-): Promise<number | undefined> {
-  return resolveDocumentTypeId(docType, getPaperlessAdapter(registry), logger);
-}
-
-function resolveStoragePath(
-  owner: string,
-  docType: string,
-  logger: WorkerLogger,
-  registry: PaperlessFieldRegistry,
-): Promise<number | undefined> {
-  return resolveStoragePathId(owner, docType, getPaperlessAdapter(registry), logger);
-}
-
-interface UploadParams {
-  title: string;
-  file: DownloadedFile;
-  correspondentId: number;
-  tagIds: number[];
-  documentTypeId?: number;
-  storagePathId?: number;
-  totalAmount?: number | null;
-  orderId?: string | null;
-}
-
-function uploadToPaperless(
-  params: UploadParams,
-  logger: WorkerLogger,
-  registry: PaperlessFieldRegistry,
-): Promise<UploadResult> {
-  return uploadToPaperlessImpl(
-    {
-      title: params.title,
-      file: params.file,
-      correspondentId: params.correspondentId,
-      tagIds: params.tagIds,
-      documentTypeId: params.documentTypeId,
-      storagePathId: params.storagePathId,
-      totalAmount: params.totalAmount,
-      orderId: params.orderId,
-    },
-    getPaperlessAdapter(registry),
-    logger,
-  );
-}
-
-interface PatchParams {
-  documentId: number;
-  title: string;
-  correspondentId: number;
-  tagIds: number[];
-  documentTypeId?: number;
-  storagePathId?: number;
-  totalAmount?: number | null;
-  orderId?: string | null;
-  litres?: number | null;
-  receiptDatetime?: string | null;
-}
-
-function patchPaperlessDocument(
-  params: PatchParams,
-  logger: WorkerLogger,
-  registry: PaperlessFieldRegistry,
-): Promise<{ document_id: number; title: string }> {
-  return patchExistingDocument(params, getPaperlessAdapter(registry), registry, logger);
-}
-
 // ── Scan intake (GDrive) ──────────────────────────────────────────────
 
 export async function executeScanIntake(
@@ -1201,6 +1073,7 @@ export async function executeScanIntake(
   job: JobRow,
   logger: WorkerLogger,
   registry: PaperlessFieldRegistry,
+  adapter: PaperlessAdapter,
   notify?: NotifyFn,
 ): Promise<void> {
   seedCounterFromDb(db);
@@ -1416,7 +1289,7 @@ export async function executeScanIntake(
 
       // Step 3: Resolve correspondent
       addJobEvent(db, job.id, "step_started", { step: "resolve_correspondent" });
-      const correspondent = await resolveCorrespondent(classification.vendor, logger, registry);
+      const correspondent = await resolveCorrespondentImpl(classification.vendor, adapter, logger);
       addJobEvent(db, job.id, "step_completed", {
         step: "resolve_correspondent",
         correspondent,
@@ -1447,7 +1320,7 @@ export async function executeScanIntake(
       }
       const dedupeResult = forceTargetDocId !== undefined
         ? null
-        : await checkDuplicate(classification, correspondent, logger, registry);
+        : await checkDuplicateImpl(classification, correspondent, adapter, registry, logger);
       if (dedupeResult) {
         addJobEvent(db, job.id, "step_completed", { step: "deduplicate", ...dedupeResult });
 
@@ -1462,7 +1335,7 @@ export async function executeScanIntake(
             duplicate_of: dedupeResult.existing_id,
             duplicate_message: dedupeResult.message,
           });
-          await moveGdriveFile(file_id, "processed", watch_folder, logger);
+          await moveGdriveFileImpl(file_id, "processed", watch_folder, GMAIL_MCP_URL, GOOGLE_EMAIL, logger);
           logger.log(`Job ${job.id} completed: duplicate`);
           outcome = "duplicate";
           span.setAttribute("invoice.outcome", "duplicate");
@@ -1488,12 +1361,12 @@ export async function executeScanIntake(
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
       const scanTagOwner = watch_folder.split("/").filter(Boolean)[0];
       const allTagNames = buildScanTagNames(watch_folder, classification, resolvedMonthTag);
-      const tagIds = await resolveTags(allTagNames, logger, registry);
+      const tagIds = await resolveTagIds(allTagNames, adapter, logger);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
 
       // Step 6: Resolve document type + storage path
-      const documentTypeId = await resolveDocumentType(classification.doc_type, logger, registry);
-      const storagePathId = await resolveStoragePath(scanTagOwner, classification.doc_type, logger, registry);
+      const documentTypeId = await resolveDocumentTypeId(classification.doc_type, adapter, logger);
+      const storagePathId = await resolveStoragePathId(scanTagOwner, classification.doc_type, adapter, logger);
 
       // Step 7: Upload to Paperless — or PATCH the existing doc if force-refresh.
       addJobEvent(db, job.id, "step_started", { step: "upload" });
@@ -1502,7 +1375,7 @@ export async function executeScanIntake(
       let finalOutcome: "uploaded" | "refreshed";
 
       if (forceTargetDocId) {
-        const patchResult = await patchPaperlessDocument({
+        const patchResult = await patchExistingDocument({
           documentId: forceTargetDocId,
           title,
           correspondentId: correspondent.id,
@@ -1513,7 +1386,7 @@ export async function executeScanIntake(
           orderId: classification.order_id,
           litres: classification.litres,
           receiptDatetime: classification.receipt_datetime,
-        }, logger, registry);
+        }, adapter, registry, logger);
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
           mode: "patch",
@@ -1523,11 +1396,11 @@ export async function executeScanIntake(
         finalDocId = patchResult.document_id;
         finalOutcome = "refreshed";
       } else {
-        const uploadResult = await uploadToPaperless({
+        const uploadResult = await uploadToPaperlessImpl({
           title, file,
           correspondentId: correspondent.id, tagIds, documentTypeId, storagePathId,
           totalAmount: classification.total_amount, orderId: classification.order_id,
-        }, logger, registry);
+        }, adapter, logger);
         addJobEvent(db, job.id, "step_completed", { step: "upload", mode: "post", ...uploadResult });
 
         // Step 8: Resolve doc_id via waitForConsumption and set custom fields
@@ -1535,11 +1408,11 @@ export async function executeScanIntake(
         // setDocumentCustomFields returns doc_id even when there are no fields
         // to set, so we always invoke it to resolve the upload's doc id.
         addJobEvent(db, job.id, "step_started", { step: "set_custom_fields" });
-        const cfResult = await setDocumentCustomFields(
+        const cfResult = await setDocumentCustomFieldsImpl(
           uploadResult.task_uuid, classification.total_amount, classification.order_id,
           classification.litres,
           classification.receipt_datetime,
-          logger, registry,
+          adapter, registry, logger,
         );
         addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });
         finalDocId = cfResult.doc_id;
@@ -1547,7 +1420,7 @@ export async function executeScanIntake(
       }
 
       // Step 9: Move GDrive file to Processed/
-      await moveGdriveFile(file_id, "processed", watch_folder, logger);
+      await moveGdriveFileImpl(file_id, "processed", watch_folder, GMAIL_MCP_URL, GOOGLE_EMAIL, logger);
 
       const result: InvoiceIntakeResult = {
         outcome: finalOutcome, title,
@@ -1589,7 +1462,7 @@ export async function executeScanIntake(
         span.setAttribute("invoice.outcome", "retryable");
       } else {
         failJob(db, job.id, errPayload);
-        await moveGdriveFile(file_id, "errors", watch_folder, logger).catch((moveErr) => {
+        await moveGdriveFileImpl(file_id, "errors", watch_folder, GMAIL_MCP_URL, GOOGLE_EMAIL, logger).catch((moveErr) => {
           logger.log(`Failed to move file to errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
         });
         logger.log(`Job ${job.id} failed permanently: ${message}`);
@@ -1616,6 +1489,10 @@ export async function executeScanIntake(
 }
 
 // ── GDrive helpers ────────────────────────────────────────────────────
+//
+// `downloadFromGdrive` is kept as an in-file wrapper to bind the MCP URL +
+// GOOGLE_EMAIL env vars at the call site (the orchestrator should not have
+// to thread those through). It is NOT a Paperless adapter wrapper.
 
 function downloadFromGdrive(
   fileId: string,
@@ -1623,34 +1500,4 @@ function downloadFromGdrive(
   logger: WorkerLogger,
 ): Promise<DownloadedFile> {
   return downloadFromGdriveImpl(fileId, filename, GMAIL_MCP_URL, GOOGLE_EMAIL, logger);
-}
-
-function setDocumentCustomFields(
-  taskUuid: string | undefined,
-  totalAmount: number | null | undefined,
-  orderId: string | null | undefined,
-  litres: number | null | undefined,
-  receiptDatetime: string | null | undefined,
-  logger: WorkerLogger,
-  registry: PaperlessFieldRegistry,
-): Promise<CustomFieldResult> {
-  return setDocumentCustomFieldsImpl(
-    taskUuid,
-    totalAmount,
-    orderId,
-    litres,
-    receiptDatetime,
-    getPaperlessAdapter(registry),
-    registry,
-    logger,
-  );
-}
-
-function moveGdriveFile(
-  fileId: string,
-  targetFolder: string,
-  watchFolder: string,
-  logger: WorkerLogger,
-): Promise<void> {
-  return moveGdriveFileImpl(fileId, targetFolder, watchFolder, GMAIL_MCP_URL, GOOGLE_EMAIL, logger);
 }

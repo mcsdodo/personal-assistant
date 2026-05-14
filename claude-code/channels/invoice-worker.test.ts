@@ -15,6 +15,7 @@ import { join } from "path";
 import { executeInvoiceIntake, executeScanIntake, type InvoiceClassification, type ScanIntakeInput, type ScanClassification } from "./invoice/intake-worker";
 import type { InvoiceIntakeInputSchema as InvoiceIntakeInput } from "./workflow-schemas";
 import * as downloadHelper from "./download-helper";
+import { createPaperlessAdapter } from "./paperless-adapter";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 import {
@@ -254,7 +255,7 @@ describe("invoice-worker approval gates (removed)", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -278,7 +279,7 @@ describe("invoice-worker approval gates (removed)", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -299,7 +300,7 @@ describe("invoice-worker approval gates (removed)", () => {
       }] }),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("awaiting_approval");
   });
@@ -345,7 +346,7 @@ describe("invoice-worker attachment download + upload", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -414,7 +415,7 @@ describe("invoice-worker attachment download + upload", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
 
@@ -455,7 +456,7 @@ describe("invoice-worker attachment download + upload", () => {
       }] }),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -489,7 +490,7 @@ describe("invoice-worker attachment download + upload", () => {
       }] }),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("awaiting_approval");
@@ -535,7 +536,7 @@ describe("invoice-worker attachment download + upload", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -578,7 +579,7 @@ describe("invoice-worker attachment download + upload", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -630,7 +631,7 @@ describe("invoice-worker link download", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -656,7 +657,7 @@ describe("invoice-worker link download", () => {
       () => new Response("Forbidden", { status: 403 }),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("retryable");
@@ -674,7 +675,7 @@ describe("invoice-worker error handling", () => {
       () => jsonResponse(rpcResponse([])),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("retryable");
@@ -690,7 +691,7 @@ describe("invoice-worker error handling", () => {
     const runningJob = getJob(db, job.id)!;
 
     // parseJobJson will throw on invalid JSON, which gets caught
-    await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+    await executeInvoiceIntake(db, runningJob, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -705,7 +706,7 @@ describe("invoice-worker error handling", () => {
       () => jsonResponse({ error: "Internal server error" }, 500),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("retryable");
@@ -716,7 +717,7 @@ describe("invoice-worker error handling", () => {
     const input = makeInput();
     const job = createRunningJob(input, defaultEmailClassification({ download_strategy: "browser_required" as any }));
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("awaiting_approval");
@@ -731,7 +732,7 @@ describe("invoice-worker error handling", () => {
       () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 100, content_base64: "X" })),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("retryable");
@@ -763,7 +764,7 @@ describe("invoice-worker title building", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.title).toBe("Alza - FA2026030001");
@@ -791,7 +792,7 @@ describe("invoice-worker title building", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     // Subject has "Fwd:" stripped
@@ -820,7 +821,7 @@ describe("invoice-worker file_path from disk", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -846,7 +847,7 @@ describe("invoice-worker file_path from disk", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -870,7 +871,7 @@ describe("invoice-worker file_path from disk", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -900,7 +901,7 @@ describe("invoice-worker unified tag derivation", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("accounting");
@@ -928,7 +929,7 @@ describe("invoice-worker unified tag derivation", () => {
       () => new Response('"task-uuid"', { status: 200 }),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("accounting");
@@ -957,7 +958,7 @@ describe("invoice-worker unified tag derivation", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("techlab");
@@ -990,7 +991,7 @@ describe("invoice-worker unified tag derivation", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("personal");
@@ -1023,7 +1024,7 @@ describe("invoice-worker unified tag derivation", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.tags).toContain("personal");
@@ -1050,7 +1051,7 @@ describe("invoice-worker unified tag derivation", () => {
       () => jsonResponse({ results: [] }),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -1126,7 +1127,7 @@ describe("invoice-worker upload path: litres + receipt_datetime custom fields", 
       () => jsonResponse({ id: 999, custom_fields: [{ field: 1, value: 45.30 }, { field: 2, value: 45.30 }, { field: 3, value: "2026-04-25T14:23:00" }] }),
     );
 
-    await executeInvoiceIntake(db, job, logger, fullRegistry, notify);
+    await executeInvoiceIntake(db, job, logger, fullRegistry, createPaperlessAdapter(fullRegistry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
     expect(patchBody).not.toBeNull();
@@ -1172,7 +1173,7 @@ describe("invoice-worker upload path: litres + receipt_datetime custom fields", 
       () => jsonResponse({ id: 998, custom_fields: [{ field: 1, value: 12.50 }, { field: 3, value: "2026-04-25T11:05:00" }] }),
     );
 
-    await executeInvoiceIntake(db, job, logger, fullRegistry, notify);
+    await executeInvoiceIntake(db, job, logger, fullRegistry, createPaperlessAdapter(fullRegistry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
     expect(patchBody).not.toBeNull();
@@ -1205,7 +1206,7 @@ describe("invoice-worker channel classification flow", () => {
     const input = makeInput();
     const job = createJobWithoutClassification(input);
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("awaiting_classification");
@@ -1232,7 +1233,7 @@ describe("invoice-worker channel classification flow", () => {
       () => jsonResponse(rpcResponse({ name: "invoice.pdf", content_type: "application/pdf", size: 100, content_base64: "JVBER" })),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("awaiting_classification");
@@ -1252,7 +1253,7 @@ describe("invoice-worker channel classification flow", () => {
       result: defaultEmailClassification({ action: "ignore" }),
     });
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1282,7 +1283,7 @@ describe("invoice-worker channel classification flow", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1312,7 +1313,7 @@ describe("invoice-worker channel classification flow", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1429,7 +1430,7 @@ describe("invoice-worker force-refresh (email pipeline)", () => {
       },
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1465,7 +1466,7 @@ describe("invoice-worker force-refresh (email pipeline)", () => {
       },
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1493,7 +1494,7 @@ describe("invoice-worker force-refresh (email pipeline)", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1517,7 +1518,7 @@ describe("invoice-worker force-refresh (email pipeline)", () => {
       // No further fetches — pipeline must short-circuit
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1572,7 +1573,7 @@ describe("invoice-worker force-refresh (email pipeline)", () => {
       },
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1640,7 +1641,7 @@ describe("invoice-worker force-refresh (email pipeline)", () => {
       },
     );
 
-    await executeInvoiceIntake(db, job, logger, fullRegistry, notify);
+    await executeInvoiceIntake(db, job, logger, fullRegistry, createPaperlessAdapter(fullRegistry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1693,7 +1694,7 @@ describe("invoice-worker force-refresh (scan pipeline)", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1773,7 +1774,7 @@ describe("invoice-worker force-refresh (scan pipeline)", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1820,7 +1821,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1891,7 +1892,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1921,7 +1922,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -1949,7 +1950,7 @@ describe("executeScanIntake", () => {
       // No moveGdriveFile — job pauses for approval
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("awaiting_approval");
@@ -1990,7 +1991,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -2030,7 +2031,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("retryable");
@@ -2068,7 +2069,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -2111,7 +2112,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -2170,7 +2171,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -2212,7 +2213,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -2252,7 +2253,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.title).toBe("Alza - Dochádzka marec 2026");
@@ -2292,7 +2293,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.title).toBe("Alza - 20260325_blok_tankovanie");
@@ -2324,7 +2325,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.outcome).toBe("uploaded");
@@ -2381,7 +2382,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -2420,7 +2421,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const output = JSON.parse(getJob(db, job.id)!.output_json!);
     expect(output.outcome).toBe("uploaded");
@@ -2435,7 +2436,7 @@ describe("executeScanIntake", () => {
     db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
     const runningJob = getJob(db, job.id)!;
 
-    await executeScanIntake(db, runningJob, logger, registry, notify);
+    await executeScanIntake(db, runningJob, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("failed");
@@ -2482,7 +2483,7 @@ describe("executeScanIntake", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
 
@@ -2573,7 +2574,7 @@ describe("scan-worker upload path: litres + receipt_datetime custom fields", () 
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, fullRegistry, notify);
+    await executeScanIntake(db, job, logger, fullRegistry, createPaperlessAdapter(fullRegistry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
     expect(patchBody).not.toBeNull();
@@ -2634,7 +2635,7 @@ describe("scan-worker upload path: litres + receipt_datetime custom fields", () 
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, job, logger, fullRegistry, notify);
+    await executeScanIntake(db, job, logger, fullRegistry, createPaperlessAdapter(fullRegistry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -2666,7 +2667,7 @@ describe("scan-worker trigger A (classifier unknown)", () => {
     // No fetch mocks — worker must pause before Paperless.
     mockFetch();
 
-    await executeScanIntake(db, job, logger, registry, notify);
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const reloaded = getJob(db, job.id)!;
     expect(reloaded.state).toBe("awaiting_user_guidance");
@@ -2711,7 +2712,7 @@ describe("scan-worker trigger A (classifier unknown)", () => {
       ...moveGdriveMockHandlers(),
     );
 
-    await executeScanIntake(db, runningJob, logger, registry, notify);
+    await executeScanIntake(db, runningJob, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -2741,7 +2742,7 @@ describe("scan-worker trigger B (encrypted PDF)", () => {
 
       mockFetch();
 
-      await executeScanIntake(db, runningJob, logger, registry, notify);
+      await executeScanIntake(db, runningJob, logger, registry, createPaperlessAdapter(registry), notify);
 
       expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
       const evt = getJobEvents(db, job.id).find((e) => e.event_type === "guidance_request");
@@ -2794,7 +2795,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
     // No fetch mocks — worker must pause before touching Paperless.
     mockFetch();
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     const reloaded = getJob(db, job.id)!;
     expect(reloaded.state).toBe("awaiting_user_guidance");
@@ -2828,7 +2829,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
 
     mockFetch();
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
     const evt = getJobEvents(db, job.id).find((e) => e.event_type === "guidance_request");
@@ -2864,7 +2865,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
 
     mockFetch();
 
-    await executeInvoiceIntake(db, job, spyLogger, registry, notify);
+    await executeInvoiceIntake(db, job, spyLogger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
 
@@ -2893,7 +2894,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -2945,7 +2946,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+    await executeInvoiceIntake(db, runningJob, logger, registry, createPaperlessAdapter(registry), notify);
 
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
@@ -2974,7 +2975,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
         ...customFieldsMockHandlers(),
       );
 
-      await executeInvoiceIntake(db, job, logger, registry, notify);
+      await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
       expect(spy).toHaveBeenCalled();
       // The filename it was called with must be the resolved download path.
@@ -3016,7 +3017,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
       // No fetch mocks — the worker must not reach Paperless (classifier never runs).
       mockFetch();
 
-      await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+      await executeInvoiceIntake(db, runningJob, logger, registry, createPaperlessAdapter(registry), notify);
 
       const updated = getJob(db, job.id)!;
       expect(updated.state).toBe("awaiting_user_guidance");
@@ -3083,7 +3084,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
         ...customFieldsMockHandlers(),
       );
 
-      await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+      await executeInvoiceIntake(db, runningJob, logger, registry, createPaperlessAdapter(registry), notify);
 
       expect(decryptPwSpy).toHaveBeenCalled();
       const args = decryptPwSpy.mock.calls[0];
@@ -3143,7 +3144,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+    await executeInvoiceIntake(db, runningJob, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -3198,7 +3199,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
         ...customFieldsMockHandlers(),
       );
 
-      await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+      await executeInvoiceIntake(db, runningJob, logger, registry, createPaperlessAdapter(registry), notify);
 
       const updated = getJob(db, job.id)!;
 
@@ -3262,7 +3263,7 @@ describe("worker sends Telegram notification on pause (task 3.2)", () => {
 
     mockFetch();
 
-    await executeInvoiceIntake(db, job, logger, registry, notify);
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
     expect(notifyCalls.length).toBeGreaterThanOrEqual(1);
@@ -3296,7 +3297,7 @@ describe("worker sends Telegram notification on pause (task 3.2)", () => {
 
       mockFetch();
 
-      await executeInvoiceIntake(db, runningJob, logger, registry, notify);
+      await executeInvoiceIntake(db, runningJob, logger, registry, createPaperlessAdapter(registry), notify);
 
       expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
       expect(notifyCalls.length).toBeGreaterThanOrEqual(1);

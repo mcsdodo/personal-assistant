@@ -553,3 +553,24 @@ export class PaperlessAdapter {
     return { ok: true, verified };
   }
 }
+
+// ── Factory ────────────────────────────────────────────────────────────
+
+/**
+ * Build a `PaperlessAdapter` from the ambient environment + a field registry.
+ *
+ * Reads `PAPERLESS_URL`, `PAPERLESS_API_TOKEN`, and `PAPERLESS_MCP_URL` from
+ * `process.env`. Throws if `PAPERLESS_URL` is unset (the adapter cannot work
+ * without it). Used by `workflow-core.executeNextJob` to build the adapter
+ * once per dispatch and thread it into both executors.
+ */
+export function createPaperlessAdapter(registry: PaperlessFieldRegistry): PaperlessAdapter {
+  const paperlessUrl = process.env.PAPERLESS_URL;
+  if (!paperlessUrl) throw new Error("PAPERLESS_URL environment variable is required");
+  return new PaperlessAdapter({
+    paperlessUrl,
+    paperlessToken: process.env.PAPERLESS_API_TOKEN ?? "",
+    paperlessMcpUrl: process.env.PAPERLESS_MCP_URL ?? "http://paperless-mcp:3000/mcp",
+    fieldRegistry: registry,
+  });
+}
