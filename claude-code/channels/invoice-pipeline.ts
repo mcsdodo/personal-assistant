@@ -391,17 +391,27 @@ export function buildSuggestedActions(
 
 // ── Step resume ─────────────────────────────────────────────────────────
 
-import { getJobEvents } from "./workflow-db";
+import { getJobEvents, type JobEventRow } from "./workflow-db";
 import type { Database } from "bun:sqlite";
 
 /**
  * Read all step_completed events for a job and build a map of step → payload.
  * Used by the worker to skip already-completed steps on resume.
+ *
+ * Callers may pass a pre-read `events` array (T11: per-tick read coalescing)
+ * to avoid a redundant full scan of `job_events`. When omitted, the function
+ * performs a fresh read itself — this fallback keeps unit tests
+ * (workflow-resume.test.ts) and any future direct caller working without
+ * having to materialize events first.
  */
-export function getCompletedSteps(db: Database, jobId: string): Map<string, Record<string, unknown>> {
-  const events = getJobEvents(db, jobId);
+export function getCompletedSteps(
+  db: Database,
+  jobId: string,
+  events?: JobEventRow[],
+): Map<string, Record<string, unknown>> {
+  const evts = events ?? getJobEvents(db, jobId);
   const completed = new Map<string, Record<string, unknown>>();
-  for (const evt of events) {
+  for (const evt of evts) {
     if (evt.event_type === "step_completed" && evt.payload_json) {
       const payload = JSON.parse(evt.payload_json);
       if (payload.step) completed.set(payload.step, payload);

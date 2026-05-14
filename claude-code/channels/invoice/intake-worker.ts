@@ -321,11 +321,12 @@ function applyGuidancePassword(
   jobId: string,
   filePath: string,
   logger: WorkerLogger,
+  events?: JobEventRow[],
 ): void {
-  const events = getJobEvents(db, jobId);
+  const evts = events ?? getJobEvents(db, jobId);
   // findLast: walk in reverse for the most recent event with a non-empty payload.
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
+  for (let i = evts.length - 1; i >= 0; i--) {
+    const e = evts[i];
     if (e.event_type !== "guidance_password") continue;
     let payload: { password?: string };
     try {
@@ -443,6 +444,9 @@ async function runDecryptAndGuidancePhase(
     pauseContext: GuidanceRequestPayload["context"];
     pauseLogSuffix: string;
     completedSteps?: Map<string, Record<string, unknown>>;
+    /** Pre-read events from the executor (T11). When passed, applyGuidancePassword
+     *  and the patchCoversClassification lookup use it instead of re-reading. */
+    events?: JobEventRow[];
   },
 ): Promise<IntakePhaseOutcome> {
   // Step 1: Try to decrypt the PDF if it's password-protected.
@@ -454,7 +458,7 @@ async function runDecryptAndGuidancePhase(
   // provide_guidance tool wrote one to a `guidance_password` event. The
   // password is consumed and the event payload is scrubbed so it never
   // lingers in the audit trail. Task 57, Trigger B resume.
-  applyGuidancePassword(db, job.id, filePath, ctx.logger);
+  applyGuidancePassword(db, job.id, filePath, ctx.logger, ctx.events);
 
   // Step 3: Trigger B — if the PDF is still encrypted after both decrypt
   // attempts, we have no classifier output to trust. Pause the job and ask
@@ -466,7 +470,7 @@ async function runDecryptAndGuidancePhase(
   }
 
   if (ctx.allowPatchCoversClassification) {
-    const allEvents = getJobEvents(db, job.id);
+    const allEvents = ctx.events ?? getJobEvents(db, job.id);
     const pendingPatch = findUnconsumedGuidance(allEvents);
     const patchCoversClassification =
       pendingPatch?.action === "patch" &&
@@ -567,8 +571,18 @@ export async function executeInvoiceIntake(
     let outcome = "unknown";
     let vendorForSpan = "unknown";
     try {
+      // T11: Read events once at the top and pass into helpers to avoid
+      // 3-4× linear scans of job_events per tick. Refreshed (Pattern A) at
+      // each point downstream code might see a write made earlier in the
+      // same tick — specifically before applyGuidancePassword (download
+      // step wrote rows) and after runDecryptAndGuidancePhase (may have
+      // synthesized a step_completed). Late writes after the trigger-A read
+      // (correspondent / dedup / tags / upload / set_custom_fields) are not
+      // followed by any same-tick events-consumer, so no refresh is needed.
+      let events = getJobEvents(db, job.id);
+
       // Resume logic — read completed steps to skip on re-entry
-      const completedSteps = getCompletedSteps(db, job.id);
+      const completedSteps = getCompletedSteps(db, job.id, events);
 
       // Step 0: Email classification via channel
       const cachedEmailClass = completedSteps.get("classify_email");
@@ -672,6 +686,11 @@ export async function executeInvoiceIntake(
       // force-upload an encrypted PDF after a prior `guidance_applied(
       // action=patch, owner+doc_type)`; the helper synthesizes a
       // `classify_document` step_completed stub so step 1.5 short-circuits.
+      //
+      // Refresh `events` here so the helper sees any download/read_from_disk
+      // step_completed rows written above. The helper passes the array into
+      // applyGuidancePassword and uses it for the patchCovers lookup.
+      events = getJobEvents(db, job.id);
       const decryptPhase = await runDecryptAndGuidancePhase(db, job, filePath, {
         notify,
         logger,
@@ -685,6 +704,7 @@ export async function executeInvoiceIntake(
         },
         pauseLogSuffix: "",
         completedSteps,
+        events,
       });
       if (decryptPhase.kind === "pause") {
         outcome = "awaiting_user_guidance";
@@ -727,8 +747,15 @@ export async function executeInvoiceIntake(
       // for re-running classify, which at worst produces another unknown.
       // Emitting `guidance_applied_consumed` immediately prevents double-apply
       // on subsequent ticks.
-      const allEvents = getJobEvents(db, job.id);
-      const unconsumed = findUnconsumedGuidance(allEvents);
+      //
+      // Refresh events here: runDecryptAndGuidancePhase above may have
+      // synthesized a `step_completed` for classify_document (patchCovers
+      // path). It does not write a guidance_applied_consumed row, but other
+      // step_started/step_completed rows may have been added; keeping the
+      // array fresh costs one read and avoids latent staleness if the
+      // helper grows new writes later.
+      events = getJobEvents(db, job.id);
+      const unconsumed = findUnconsumedGuidance(events);
       if (unconsumed) {
         if (unconsumed.action === "patch" && unconsumed.patch) {
           Object.assign(mergedClassification, unconsumed.patch);
@@ -743,7 +770,7 @@ export async function executeInvoiceIntake(
         // and guidance.received (user replied). `latency_seconds` is the
         // wall-clock gap between the guidance_request event and now, so
         // Loki alone can answer "how responsive is the operator?".
-        const latency = guidanceLatencySeconds(allEvents);
+        const latency = guidanceLatencySeconds(events);
         logger.log(
           `guidance.applied job_id=${job.id} action=${unconsumed.action} latency_seconds=${latency}`,
         );
@@ -1117,7 +1144,9 @@ export async function executeScanIntake(
     let outcome = "unknown";
     let vendorForSpan = "unknown";
     try {
-      const completedSteps = getCompletedSteps(db, job.id);
+      // T11: see executeInvoiceIntake — pre-read events and refresh after writes.
+      let events = getJobEvents(db, job.id);
+      const completedSteps = getCompletedSteps(db, job.id, events);
       const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/workspace/downloads";
 
       // Step 1: Download file from GDrive (or read from disk)
@@ -1163,6 +1192,9 @@ export async function executeScanIntake(
       // for scans (the email path needs it because bank-statement emails
       // arrive encrypted and the operator wants to set owner/doc_type by
       // hand; gdrive scans don't have that workflow).
+      //
+      // Refresh events so the helper sees download/read_from_disk writes above.
+      events = getJobEvents(db, job.id);
       const scanDecryptPhase = await runDecryptAndGuidancePhase(db, job, filePath, {
         notify,
         logger,
@@ -1174,6 +1206,7 @@ export async function executeScanIntake(
             "PDF is encrypted; decrypt failed (no password configured or wrong password).",
         },
         pauseLogSuffix: " (scan)",
+        events,
       });
       if (scanDecryptPhase.kind === "pause") {
         outcome = "awaiting_user_guidance";
@@ -1206,8 +1239,11 @@ export async function executeScanIntake(
       // override the classifier's "unknown" (scan Trigger A resume). Make a
       // shallow copy so we don't mutate the cached event payload in place.
       const classification: ScanClassification = { ...cachedClassification };
-      const scanEvents = getJobEvents(db, job.id);
-      const scanUnconsumed = findUnconsumedGuidance(scanEvents);
+      // Refresh events: the decrypt phase above doesn't currently write rows
+      // on the scan path (no patchCovers branch), but we keep the array fresh
+      // so future writes in the helper are visible here.
+      events = getJobEvents(db, job.id);
+      const scanUnconsumed = findUnconsumedGuidance(events);
       if (scanUnconsumed) {
         if (scanUnconsumed.action === "patch" && scanUnconsumed.patch) {
           Object.assign(classification, scanUnconsumed.patch);
@@ -1219,7 +1255,7 @@ export async function executeScanIntake(
           source_event_id: scanUnconsumed.eventId,
         });
         // Task 57 / 4.2: see email-intake path above for rationale.
-        const scanLatency = guidanceLatencySeconds(scanEvents);
+        const scanLatency = guidanceLatencySeconds(events);
         logger.log(
           `guidance.applied job_id=${job.id} action=${scanUnconsumed.action} latency_seconds=${scanLatency}`,
         );
