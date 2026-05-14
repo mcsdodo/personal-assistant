@@ -16,6 +16,7 @@ import {
   failJob,
   getJob,
   getJobEvents,
+  type JobState,
   listJobs,
   openWorkflowDb,
   setJobState,
@@ -62,6 +63,48 @@ function text(value: unknown): { type: "text"; text: string } {
     type: "text",
     text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
   };
+}
+
+const JOB_STATES: readonly JobState[] = [
+  "queued",
+  "running",
+  "retryable",
+  "awaiting_approval",
+  "awaiting_classification",
+  "awaiting_user_guidance",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+
+function isJobState(value: unknown): value is JobState {
+  return typeof value === "string" && (JOB_STATES as readonly string[]).includes(value);
+}
+
+function diagnoseSubmitClassificationFailure(
+  dbInstance: Database,
+  jobId: string,
+  step: string,
+): { content: Array<{ type: "text"; text: string }>; isError: true } {
+  const j = getJob(dbInstance, jobId);
+  if (!j) {
+    return { content: [text(`Error: job ${jobId} not found`)], isError: true };
+  }
+  if (j.state === "failed" && j.error_json) {
+    const errMsg = (() => {
+      try {
+        const e = JSON.parse(j.error_json);
+        if (e.code === "schema_validation_failed") {
+          return `Schema validation failed for ${step}: ${e.message} (field: ${e.field ?? "?"})`;
+        }
+        return e.message ?? j.error_json;
+      } catch {
+        return j.error_json;
+      }
+    })();
+    return { content: [text(`Error: job ${jobId} is failed — ${errMsg}`)], isError: true };
+  }
+  return { content: [text(`Error: job ${jobId} cannot accept submit_classification (state=${j.state}, expected awaiting_classification with matching step_started)`)], isError: true };
 }
 
 let db: Database;
@@ -437,7 +480,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "cancel_job",
-      description: "Cancel a queued, running, or approval-paused workflow job.",
+      description:
+        "Cancel a queued, running, approval-paused, or awaiting_classification workflow job. " +
+        "Jobs in awaiting_user_guidance cannot be cancelled this way — use provide_guidance(action: \"fail\") instead.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -628,8 +673,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "list_jobs": {
+        const rawState = args?.state;
+        if (rawState !== undefined && !isJobState(rawState)) {
+          return {
+            content: [text(`Error: invalid state "${rawState}". Allowed values: ${JOB_STATES.join(", ")}`)],
+            isError: true,
+          };
+        }
         const jobs = listJobs(db, {
-          state: (args?.state as any) ?? undefined,
+          state: rawState,
           workflowType: (args?.workflow_type as string | undefined) ?? undefined,
           limit: (args?.limit as number | undefined) ?? 20,
         });
@@ -659,7 +711,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
         const jobId = args?.job_id as string;
         const ok = cancelJob(db, jobId, (args?.reason as string | undefined) ?? null);
         if (!ok) {
-          return { content: [text(`Job ${jobId} cannot be cancelled`)], isError: true };
+          const j = getJob(db, jobId);
+          if (j?.state === "awaiting_user_guidance") {
+            return {
+              content: [text(`Job ${jobId} is in awaiting_user_guidance and cannot be cancelled via cancel_job. Use provide_guidance(action: "fail") instead.`)],
+              isError: true,
+            };
+          }
+          return {
+            content: [text(`Job ${jobId} cannot be cancelled (state=${j?.state ?? "not found"})`)],
+            isError: true,
+          };
         }
         return { content: [text(getJob(db, jobId))] };
       }
@@ -677,25 +739,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
           // Re-fetch the job to give the caller the actual reason instead of
           // a generic message — schema validation failures left for hours of
           // debugging in the past, see _tasks/46-mcp-oauth-state-cleanup/.
-          const j = getJob(db, jobId);
-          if (!j) {
-            return { content: [text(`Error: job ${jobId} not found`)], isError: true };
-          }
-          if (j.state === "failed" && j.error_json) {
-            const errMsg = (() => {
-              try {
-                const e = JSON.parse(j.error_json);
-                if (e.code === "schema_validation_failed") {
-                  return `Schema validation failed for ${step}: ${e.message} (field: ${e.field ?? "?"})`;
-                }
-                return e.message ?? j.error_json;
-              } catch {
-                return j.error_json;
-              }
-            })();
-            return { content: [text(`Error: job ${jobId} is failed — ${errMsg}`)], isError: true };
-          }
-          return { content: [text(`Error: job ${jobId} cannot accept submit_classification (state=${j.state}, expected awaiting_classification with matching step_started)`)], isError: true };
+          return diagnoseSubmitClassificationFailure(db, jobId, step);
         }
         return { content: [text({ success: true, job_id: jobId, step })] };
       }
