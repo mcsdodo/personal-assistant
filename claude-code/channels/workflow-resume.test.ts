@@ -5,7 +5,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { openWorkflowDb, createJob, addJobEvent } from "./workflow-db";
-import { getCompletedSteps } from "./invoice-pipeline";
+import { getCompletedSteps } from "./invoice/pipeline";
 
 let tmpDir: string;
 let db: Database;

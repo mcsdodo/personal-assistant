@@ -12,7 +12,7 @@ import {
   UNKNOWN_FIELDS,
   validMonthTag,
   type EmailClassification,
-} from "./invoice-pipeline";
+} from "./pipeline";
 
 // ── mergeClassifications ────────────────────────────────────────────────
 

@@ -391,7 +391,7 @@ export function buildSuggestedActions(
 
 // ── Step resume ─────────────────────────────────────────────────────────
 
-import { getJobEvents, type JobEventRow } from "./workflow-db";
+import { getJobEvents, type JobEventRow } from "../workflow-db";
 import type { Database } from "bun:sqlite";
 
 /**

@@ -81,7 +81,7 @@ import {
   resolveOwner,
   UNKNOWN_FIELDS,
   type DocumentClassificationFields,
-} from "../invoice-pipeline";
+} from "./pipeline";
 import {
   validateInvoiceIntakeInput,
   validateScanIntakeInput,
