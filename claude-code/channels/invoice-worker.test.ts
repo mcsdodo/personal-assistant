@@ -1700,6 +1700,89 @@ describe("invoice-worker force-refresh (scan pipeline)", () => {
     expect(output.outcome).toBe("refreshed");
     expect(output.paperless_document_id).toBe(222);
   });
+
+  test("force=true + prior scan in DB → PATCH by source_ref doc_id, bypassing classifier dedup", async () => {
+    // Reprocess scenario: a prior scan_intake job for the same file_id uploaded
+    // doc 465. On reprocess, the classifier might extract a different order_id
+    // (LLM non-determinism), which would make order_id-based dedup miss. The
+    // worker must use the deterministic source_ref → paperless_doc_id mapping
+    // instead, PATCH the existing doc directly, and skip the classifier dedup search.
+    const filePath = join(tmpDir, "prior_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    // Seed a prior completed scan for this file_id, uploading doc 465
+    const priorJob = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: JSON.stringify({ source: "gdrive", file_id: "gdrive-prior", watch_folder: "techlab/accounting", month_tag: "2026-05" }),
+      sourceRef: "gdrive:gdrive-prior",
+      idempotencyKey: "gdrive:gdrive-prior",
+    });
+    completeJob(db, priorJob.id, { outcome: "uploaded", paperless_document_id: 465 });
+
+    // New force-reprocess job: same file_id, same source_ref, but force-suffixed
+    // idempotency_key (matches production behaviour in workflow-mcp.ts).
+    const input = makeScanInput({
+      file_path: filePath,
+      file_id: "gdrive-prior",
+      force: true,
+      watch_folder: "techlab/accounting",
+    });
+    const newJob = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: JSON.stringify(input),
+      sourceRef: "gdrive:gdrive-prior",
+      idempotencyKey: `gdrive:gdrive-prior:force-${Date.now()}`,
+    });
+    db.prepare("UPDATE jobs SET state = 'running', started_at = ? WHERE id = ?").run(
+      new Date().toISOString(),
+      newJob.id,
+    );
+    addJobEvent(db, newJob.id, "step_completed", {
+      step: "classify_document",
+      result: defaultScanClassification({ order_id: "DIFFERENT-ORDER-ID-CLASSIFIER-MISREAD" }),
+    });
+    const job = getJob(db, newJob.id)!;
+
+    let dedupSearchCalled = false;
+    let patchedDocId: number | undefined;
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // (dedup search by order_id+correspondent should be SKIPPED — using source_ref instead)
+      // 2. list_tags
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      // 3. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 4. resolveStoragePath
+      storagePathsMockHandler(),
+      // 5. PATCH existing doc 465
+      (url, init) => {
+        if (url.includes("/documents/?") && url.includes("custom_field_query")) {
+          dedupSearchCalled = true;
+          return jsonResponse({ results: [] });
+        }
+        if (init?.method === "PATCH" && url.includes("/api/documents/465/")) {
+          patchedDocId = 465;
+          return jsonResponse({ id: 465 });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      },
+      // 6-8. moveGdriveFile
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry, notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("refreshed");
+    expect(output.paperless_document_id).toBe(465);
+    expect(patchedDocId).toBe(465);
+    // The classifier-based dedup search MUST NOT have been called
+    expect(dedupSearchCalled).toBe(false);
+  });
 });
 
 // ── Scan intake tests ───────────────────────────────────────────────────

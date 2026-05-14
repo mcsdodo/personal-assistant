@@ -16,6 +16,7 @@ import {
   getJobByIdempotencyKey,
   getJobEvents,
   getLatestReceivedAtForDoc,
+  getPaperlessDocIdForSource,
   listJobs,
   openWorkflowDb,
   pauseForGuidance,
@@ -292,5 +293,73 @@ describe("getLatestReceivedAtForDoc", () => {
     });
     completeJob(db, job.id, { outcome: "uploaded", paperless_document_id: 411 });
     expect(getLatestReceivedAtForDoc(db, 411)).toBeNull();
+  });
+});
+
+describe("getPaperlessDocIdForSource", () => {
+  test("returns null when no jobs match the source_ref", () => {
+    expect(getPaperlessDocIdForSource(db, "gdrive:nonexistent")).toBeNull();
+  });
+
+  test("returns null when source_ref matches but no job has paperless_doc_id", () => {
+    const job = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: JSON.stringify({ file_id: "abc" }),
+      sourceRef: "gdrive:abc",
+    });
+    failJob(db, job.id, { code: "x", message: "failed before upload" });
+    expect(getPaperlessDocIdForSource(db, "gdrive:abc")).toBeNull();
+  });
+
+  test("returns paperless_doc_id from the only matching completed job", () => {
+    const job = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: JSON.stringify({ file_id: "abc" }),
+      sourceRef: "gdrive:abc",
+    });
+    completeJob(db, job.id, { outcome: "uploaded", paperless_document_id: 465 });
+    expect(getPaperlessDocIdForSource(db, "gdrive:abc")).toBe(465);
+  });
+
+  test("picks the most recent job when multiple jobs share the source_ref", () => {
+    const older = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: JSON.stringify({ file_id: "abc" }),
+      sourceRef: "gdrive:abc",
+    });
+    completeJob(db, older.id, { outcome: "uploaded", paperless_document_id: 100 });
+
+    const newer = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: JSON.stringify({ file_id: "abc", force: true }),
+      sourceRef: "gdrive:abc",
+      idempotencyKey: `gdrive:abc:force-${Date.now()}`,
+    });
+    db.prepare("UPDATE jobs SET created_at = ? WHERE id = ?").run(
+      new Date(Date.now() + 1000).toISOString(),
+      newer.id,
+    );
+    completeJob(db, newer.id, { outcome: "refreshed", paperless_document_id: 100 });
+
+    expect(getPaperlessDocIdForSource(db, "gdrive:abc")).toBe(100);
+  });
+
+  test("ignores jobs with non-matching source_ref", () => {
+    const a = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: JSON.stringify({ file_id: "a" }),
+      sourceRef: "gdrive:a",
+    });
+    completeJob(db, a.id, { outcome: "uploaded", paperless_document_id: 200 });
+
+    const b = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: JSON.stringify({ file_id: "b" }),
+      sourceRef: "gdrive:b",
+    });
+    completeJob(db, b.id, { outcome: "uploaded", paperless_document_id: 300 });
+
+    expect(getPaperlessDocIdForSource(db, "gdrive:a")).toBe(200);
+    expect(getPaperlessDocIdForSource(db, "gdrive:b")).toBe(300);
   });
 });

@@ -31,6 +31,7 @@ import {
   failJob,
   getJobEvents,
   getLatestReceivedAtForDoc,
+  getPaperlessDocIdForSource,
   parseJobJson,
   pauseForGuidance,
   recordDownloadedFile,
@@ -1389,9 +1390,30 @@ export async function executeScanIntake(
 
       // Step 4: Deduplicate. force=true switches dedup hits from short-circuit
       // to in-place PATCH (forceTargetDocId captured here, used by upload step).
+      // Force-reprocess short-circuit: if a prior scan for this file_id already
+      // uploaded a doc, PATCH it directly. Bypasses the classifier-based dedup
+      // (order_id + correspondent + amount) — which can miss when the classifier
+      // extracts a different order_id on re-run (LLM non-determinism). The
+      // source_ref → paperless_doc_id link is deterministic and survives that.
       addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
-      const dedupeResult = await checkDuplicate(classification, correspondent, logger, registry);
       let forceTargetDocId: number | undefined;
+      if (input.force) {
+        const priorDocId = getPaperlessDocIdForSource(db, `gdrive:${file_id}`);
+        if (priorDocId) {
+          forceTargetDocId = priorDocId;
+          logger.log(`force=true: using prior paperless_doc_id=${priorDocId} from source_ref (skipping classifier dedup)`);
+          span.setAttribute("invoice.force_refresh", true);
+          span.setAttribute("invoice.force_target_doc_id", priorDocId);
+          addJobEvent(db, job.id, "step_completed", {
+            step: "deduplicate",
+            outcome: "force_prior_source",
+            existing_id: priorDocId,
+          });
+        }
+      }
+      const dedupeResult = forceTargetDocId !== undefined
+        ? null
+        : await checkDuplicate(classification, correspondent, logger, registry);
       if (dedupeResult) {
         addJobEvent(db, job.id, "step_completed", { step: "deduplicate", ...dedupeResult });
 
@@ -1423,7 +1445,8 @@ export async function executeScanIntake(
           span.setStatus({ code: SpanStatusCode.OK });
           return;
         }
-      } else {
+      } else if (forceTargetDocId === undefined) {
+        // No prior source_ref match AND no classifier dedup hit
         addJobEvent(db, job.id, "step_completed", { step: "deduplicate", outcome: "no_duplicate" });
       }
 

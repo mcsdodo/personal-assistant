@@ -171,6 +171,23 @@ export function getJobByIdempotencyKey(db: Database, key: string): JobRow | null
   return (row as JobRow | null) ?? null;
 }
 
+/**
+ * Find the most recent successfully-uploaded paperless_doc_id for a scan source_ref
+ * (e.g. `gdrive:<file_id>`). Used by force-reprocess to bypass classifier-based dedup:
+ * the file_id → doc_id link is deterministic and survives classifier non-determinism
+ * (e.g. extracting a different order_id on a re-run).
+ */
+export function getPaperlessDocIdForSource(db: Database, sourceRef: string): number | null {
+  const row = db
+    .prepare(
+      `SELECT paperless_doc_id FROM jobs
+         WHERE source_ref = ? AND paperless_doc_id IS NOT NULL
+         ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(sourceRef) as { paperless_doc_id: number | null } | undefined;
+  return row?.paperless_doc_id ?? null;
+}
+
 export function createJob(db: Database, input: CreateJobInput): JobRow {
   const idempotencyKey = input.idempotencyKey ?? null;
   if (idempotencyKey) {
