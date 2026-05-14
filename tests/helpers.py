@@ -153,7 +153,7 @@ def gmail_service():
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
-    creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), GMAIL_SCOPES)
+    creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), DRIVE_SCOPES)
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
         TOKEN_FILE.write_text(creds.to_json())
