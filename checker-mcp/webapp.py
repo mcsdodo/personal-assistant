@@ -127,49 +127,40 @@ def index():
     ta_field = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     ta_alt_field = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
 
-    # Determine months
+    # Discover all months that have account-statement docs — these are the
+    # months whose movements claim invoices in global_matched_ids. Matching
+    # must run over the full history so the result is independent of the
+    # view's display window (partial pre-processing causes window invoices
+    # from unprocessed months to steal matches that belong to displayed
+    # months — see the cascade reproduced in TestPreProcessingWarmup).
+    stmts = client.get_documents(tags__id=acct_stmt_tag)
+    stmt_month_tags = set()
+    for s in stmts:
+        for tid in s.get("tags", []):
+            name = tag_map.get(tid, "")
+            if re.match(r"\d{4}-\d{2}$", name):
+                stmt_month_tags.add(name)
+    today = date.today()
+    cur = f"{today.year:04d}-{today.month:02d}"
+    stmt_month_tags.add(cur)
+
+    # The view selection only chooses which months to display.
     month_param = req.args.get("month")
     all_param = req.args.get("all")
     if month_param:
-        months = [month_param]
+        display_months = [month_param]
     elif all_param:
-        stmts = client.get_documents(tags__id=acct_stmt_tag)
-        month_tags = set()
-        for s in stmts:
-            for tid in s.get("tags", []):
-                name = tag_map.get(tid, "")
-                if re.match(r"\d{4}-\d{2}$", name):
-                    month_tags.add(name)
-        today = date.today()
-        month_tags.add(f"{today.year:04d}-{today.month:02d}")
-        months = sorted(month_tags)
+        display_months = sorted(stmt_month_tags)
     else:
-        today = date.today()
-        cur = f"{today.year:04d}-{today.month:02d}"
-        months = [month_offset(cur, -2), month_offset(cur, -1), cur]
+        display_months = [month_offset(cur, -2), month_offset(cur, -1), cur]
 
+    # Process every statement-tagged month oldest-first. doc_cache and
+    # global_matched_ids accumulate across all months so each invoice gets
+    # claimed by its rightful statement before later months see it.
+    process_months = sorted(stmt_month_tags | set(display_months))
     doc_cache = {}
     global_matched_ids = set()
-    # Pre-process MONTH_WINDOW months before the display range so their
-    # matched invoices enter global_matched_ids.  Without this, window
-    # invoices from unprocessed months can steal matches from displayed
-    # months' invoices when they share the same amount.
-    if not all_param:
-        for i in range(MONTH_WINDOW, 0, -1):
-            collect_month(
-                client,
-                month_offset(months[0], -i),
-                acct_stmt_tag,
-                accounting_tag,
-                invoice_type,
-                ta_field,
-                doc_cache,
-                global_matched_ids,
-                total_amount_alt_field_id=ta_alt_field,
-            )
-    # Process oldest-first: same-month invoices are preferred, so older months
-    # claim their own invoices before newer months can steal them via window.
-    results = [
+    all_results = [
         collect_month(
             client,
             m,
@@ -181,9 +172,12 @@ def index():
             global_matched_ids,
             total_amount_alt_field_id=ta_alt_field,
         )
-        for m in months
+        for m in process_months
     ]
-    filter_resolved_unmatched(results)
+    filter_resolved_unmatched(all_results)
+
+    display_set = set(display_months)
+    results = [r for r in all_results if r["month"] in display_set]
     results.reverse()  # newest on top for display
 
     totals = {"total": 0, "skipped": 0, "ok": 0, "manual": 0, "missing": 0, "info": 0}
@@ -191,7 +185,7 @@ def index():
         for k in totals:
             totals[k] += r["stats"][k]
 
-    return render_page(results, totals, list(reversed(months)))
+    return render_page(results, totals, list(reversed(display_months)))
 
 
 def _storage_path_category(path_template: str) -> str:

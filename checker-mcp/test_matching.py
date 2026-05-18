@@ -46,6 +46,7 @@ TAG_IDS = {
     "2026-02": 102,
     "2026-03": 103,
     "2026-04": 104,
+    "2026-05": 105,
     "accounting": 200,
     "account-statement": 201,
 }
@@ -1946,3 +1947,124 @@ class TestPreProcessingWarmup:
             "Pre-processed month should not be in results"
         )
         assert result_months == ["2026-01", "2026-02", "2026-03"]
+
+
+def _process_with_full_history(client, all_months, display_months):
+    """New default-view behavior: process the full statement history,
+    return only the months selected for display.
+
+    Replicates webapp.py index() processing. The view selection only
+    controls which months render; matching always runs on the full set.
+    """
+    doc_cache = {}
+    global_matched_ids = set()
+    all_results = [
+        collect_month(
+            client,
+            m,
+            TAG_IDS["account-statement"],
+            TAG_IDS["accounting"],
+            INVOICE_TYPE_ID,
+            TOTAL_AMOUNT_FIELD_ID,
+            doc_cache,
+            global_matched_ids,
+            total_amount_alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID,
+        )
+        for m in all_months
+    ]
+    filter_resolved_unmatched(all_results)
+    display_set = set(display_months)
+    return [r for r in all_results if r["month"] in display_set]
+
+
+class TestFullHistoryProcessing:
+    """Default view must process the full statement history, not just the
+    display window — otherwise window invoices from unprocessed months
+    cascade-steal matches that belong to displayed months.
+
+    Real-world reproducer: monthly Anthropic subscription. Each month has
+    one 90.00 invoice and one 90.00- statement movement. With MONTH_WINDOW=1
+    warmup, the warmup month's window reaches one month further back,
+    pulling that invoice in. It gets iterated first (oldest-first) and
+    steals the warmup month's match, cascading forward until the newest
+    invoice has nothing to match against.
+    """
+
+    def _setup_cascade_scenario(self):
+        """5 months (Dec 2025 → Apr 2026), each with own 90.00- payment and own 90.00 invoice."""
+        stmts_invs = {}
+        for i, ym in enumerate(
+            ["2025-12", "2026-01", "2026-02", "2026-03", "2026-04"]
+        ):
+            day = "06" if ym != "2026-04" else "08"
+            stmts_invs[ym] = (
+                _make_statement(
+                    800 + i,
+                    ym,
+                    _stmt(
+                        (f"{day}.{ym[5:7]}.{ym[:4]}", "INT NÁKUP POS EUR", -90.00),
+                    ),
+                ),
+                _make_invoice(
+                    900 + i, f"Anthropic-{i:04d}", f"inv_{ym}.pdf", ym, 90.00
+                ),
+            )
+        client = _mock_client(
+            {
+                TAG_IDS["2025-11"]: [],
+                TAG_IDS["2025-12"]: list(stmts_invs["2025-12"]),
+                TAG_IDS["2026-01"]: list(stmts_invs["2026-01"]),
+                TAG_IDS["2026-02"]: list(stmts_invs["2026-02"]),
+                TAG_IDS["2026-03"]: list(stmts_invs["2026-03"]),
+                TAG_IDS["2026-04"]: list(stmts_invs["2026-04"]),
+                TAG_IDS["2026-05"]: [],
+            }
+        )
+        return client, {ym: stmts_invs[ym][1] for ym in stmts_invs}
+
+    def test_warmup_alone_causes_cascade(self):
+        """Old default-view behavior (warmup only) cascade-mismatches every month."""
+        client, invs = self._setup_cascade_scenario()
+        # Display Feb–Apr with MONTH_WINDOW=1 warmup → only Jan pre-processed.
+        # Jan's window pulls Dec invoice → cascade through Feb, Mar, Apr.
+        results = _process_months_with_warmup(
+            client, ["2026-02", "2026-03", "2026-04"]
+        )
+        apr_matched = _matched_doc_ids(results[2])
+        assert invs["2026-04"]["id"] not in apr_matched, (
+            "Bug: warmup-only causes April invoice to be stolen via cascade"
+        )
+
+    def test_full_history_matches_each_month_to_own_invoice(self):
+        """New behavior: process all months, display only the window — no cascade."""
+        client, invs = self._setup_cascade_scenario()
+        results = _process_with_full_history(
+            client,
+            ["2025-12", "2026-01", "2026-02", "2026-03", "2026-04"],
+            ["2026-02", "2026-03", "2026-04"],
+        )
+        # Each displayed month must match its own invoice
+        feb_matched = _matched_doc_ids(results[0])
+        mar_matched = _matched_doc_ids(results[1])
+        apr_matched = _matched_doc_ids(results[2])
+        assert invs["2026-02"]["id"] in feb_matched
+        assert invs["2026-03"]["id"] in mar_matched
+        assert invs["2026-04"]["id"] in apr_matched
+
+    def test_display_window_does_not_change_matches(self):
+        """Same matches regardless of how many months are displayed."""
+        client, invs = self._setup_cascade_scenario()
+        all_months = ["2025-12", "2026-01", "2026-02", "2026-03", "2026-04"]
+        wide = _process_with_full_history(client, all_months, all_months)
+        narrow_client, _ = self._setup_cascade_scenario()
+        narrow = _process_with_full_history(
+            narrow_client, all_months, ["2026-03", "2026-04"]
+        )
+        # The two displayed months in `narrow` must have identical matches
+        # to the same months in `wide`.
+        wide_by_month = {r["month"]: _matched_doc_ids(r) for r in wide}
+        narrow_by_month = {r["month"]: _matched_doc_ids(r) for r in narrow}
+        for m in ["2026-03", "2026-04"]:
+            assert wide_by_month[m] == narrow_by_month[m], (
+                f"Matches for {m} differ between display windows"
+            )
