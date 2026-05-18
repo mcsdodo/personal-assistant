@@ -4,7 +4,7 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
-## [unreleased] — 2026-05-14
+## 2026-05-14
 
 ### Changed
 - **workflow-mcp**: `list_jobs` returns `isError: true` on invalid `state` argument — was silently returning empty result
@@ -19,7 +19,7 @@ This project was developed as part of a private monorepo. This changelog was gen
 - **personal-assistant**: gdrive `documents` folder forces `doc_type=document`, overriding classifier output for storage path
 - **personal-assistant**: scan force-reprocess PATCHes existing Paperless doc by `source_ref → paperless_doc_id` — bypasses `order_id` dedup that missed when LLM extracted a different `order_id` on re-run
 
-## [unreleased] — 2026-05-13
+## 2026-05-13
 
 ### Added
 - **checker-mcp**: `/pl` view shows worked/total days per month and year — derived from gross income ÷ (hourly_rate × 8), Slovak public holidays included
