@@ -4,6 +4,33 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## [unreleased] — 2026-05-14
+
+### Changed
+- **workflow-mcp**: `list_jobs` returns `isError: true` on invalid `state` argument — was silently returning empty result
+- **workflow-mcp**: `cancel_job` description and error now include hint for jobs in `awaiting_classification` or needing `provide_guidance(fail)`
+
+### Fixed
+- **personal-assistant**: `decrypt_pdf` now uses `execFileSync` — passwords no longer flow through shell expansion (shell-injection fix)
+- **personal-assistant**: `db.close()` now runs before tracing flush in pa-worker — prevents WAL non-checkpoint on SIGTERM
+- **checker-mcp**: consistent `#8b949e` gray for `pl-month`, `pl-days`, "Days worked", and Excluded row — was `#484f58` (too dark in dark mode)
+- **checker-mcp**: worked-days per month derived from main invoice only, not sum of all month income
+- **personal-assistant**: gdrive scan `accounting` tag driven by watch-folder path, not classifier-returned owner — `DOCUMENTS` folder scans no longer enter the accounting cycle
+- **personal-assistant**: gdrive `documents` folder forces `doc_type=document`, overriding classifier output for storage path
+- **personal-assistant**: scan force-reprocess PATCHes existing Paperless doc by `source_ref → paperless_doc_id` — bypasses `order_id` dedup that missed when LLM extracted a different `order_id` on re-run
+
+## [unreleased] — 2026-05-13
+
+### Added
+- **checker-mcp**: `/pl` view shows worked/total days per month and year — derived from gross income ÷ (hourly_rate × 8), Slovak public holidays included
+- **checker-mcp**: `pl-rates.json` (user-provided, copy from `pl-rates.json.example`) — time-varying hourly rates by date range, replaces `PL_HOURLY_RATE` env var
+- **checker-mcp**: `/zip` download uses flat structure with `Popis` custom field included
+
+### Fixed
+- **checker-mcp**: worked-days calculation uses net income (ex-VAT) — was using gross, yielding ~23% too many days
+- **checker-mcp**: worked days shown with two decimal places; summary uses exact value for percentage
+- **checker-mcp**: `FILENAME_NOTE_FIELD_NAME` constant corrected — was resolving wrong Paperless field, note column was blank in match output
+
 ## [unreleased] — 2026-05-04
 
 ### Fixed
