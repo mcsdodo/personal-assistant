@@ -21,6 +21,7 @@
 
 import type { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { extname } from "path";
 
 import { getTracer, getMeter, SpanStatusCode } from "../tracing";
 import type { Span } from "../tracing";
@@ -668,7 +669,11 @@ export async function executeInvoiceIntake(
         addJobEvent(db, job.id, "step_started", { step: "download", strategy });
         file = await downloadInvoice(input, classification, logger);
         mkdirSync(DOWNLOAD_DIR, { recursive: true });
-        filePath = `${DOWNLOAD_DIR}/${file.filename}`;
+        // On-disk path uses the job UUID + extension so it stays ASCII no
+        // matter what the source filename contains. The original filename is
+        // preserved on `file.filename` and survives downstream to the
+        // Paperless upload as `original_filename`.
+        filePath = `${DOWNLOAD_DIR}/${job.id}${extname(file.filename) || ".pdf"}`;
         writeFileSync(filePath, Buffer.from(file.content_base64, "base64"));
         recordDownloadedFile(db, job.id, filePath);
         addJobEvent(db, job.id, "step_completed", {
@@ -1173,7 +1178,8 @@ export async function executeScanIntake(
         addJobEvent(db, job.id, "step_started", { step: "download", source: "gdrive" });
         file = await downloadFromGdrive(file_id, input.filename, logger);
         mkdirSync(DOWNLOAD_DIR, { recursive: true });
-        filePath = `${DOWNLOAD_DIR}/${file.filename}`;
+        // On-disk path uses the job UUID + extension (see invoice path above).
+        filePath = `${DOWNLOAD_DIR}/${job.id}${extname(file.filename) || ".pdf"}`;
         writeFileSync(filePath, Buffer.from(file.content_base64, "base64"));
         recordDownloadedFile(db, job.id, filePath);
         addJobEvent(db, job.id, "step_completed", {

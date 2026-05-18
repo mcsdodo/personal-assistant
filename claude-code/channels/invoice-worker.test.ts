@@ -431,6 +431,49 @@ describe("invoice-worker attachment download + upload", () => {
     expect(recorded.size).not.toBe(METADATA_SIZE);
   });
 
+  // Regression: source attachment filenames can contain anything — Slovak
+  // diacritics, commas, spaces. We don't sanitise them at the download layer;
+  // we use job.id + extension for the on-disk path so file-ops / Read tool /
+  // any other downstream consumer never sees the source bytes. The original
+  // filename is preserved on the download step_completed event for Paperless.
+  test("on-disk path uses job.id; original filename preserved on event", async () => {
+    const NFD_NAME = "diaľničnej známka,_2026.pdf"; // NFD bytes, spaces, comma
+    const input = makeInput();
+    const job = createRunningJob(input);
+
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: NFD_NAME, content_type: "application/pdf", size: 2048 }])),
+      () => jsonResponse(rpcResponse({ name: NFD_NAME, content_type: "application/pdf", size: 2048, content_base64: "JVBER" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
+      () => new Response('"task-uuid"', { status: 200 }),
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+
+    expect(getJob(db, job.id)!.state).toBe("completed");
+
+    const events = getJobEvents(db, job.id);
+    const downloadCompleted = events.find((e) => {
+      if (e.event_type !== "step_completed") return false;
+      const payload = JSON.parse(e.payload_json ?? "{}");
+      return payload.step === "download";
+    });
+    expect(downloadCompleted).toBeDefined();
+    const payload = JSON.parse(downloadCompleted!.payload_json ?? "{}");
+
+    // file_path is ASCII (job UUID + extension), regardless of source filename.
+    expect(payload.file_path).toMatch(/\/[0-9a-f-]{36}\.pdf$/i);
+    expect(payload.file_path).not.toContain(NFD_NAME);
+
+    // Original filename is preserved verbatim for downstream upload.
+    expect(payload.filename).toBe(NFD_NAME);
+  });
+
   test("detects exact duplicate and completes without upload", async () => {
     const input = makeInput();
     const job = createRunningJob(input);

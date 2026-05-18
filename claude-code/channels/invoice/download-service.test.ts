@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { downloadInvoice } from "./download-service";
 
-// NFD: ľ = l (U+006C) + combining caron (U+030C); č = c (U+0063) + U+030C
-// This mirrors what gmail-mcp returns for Slovak attachment filenames.
-const NFD_FILENAME = "diaľničnej.pdf";
-// NFC: ľ = U+013E, č = U+010D
-const NFC_FILENAME = "diaľničnej.pdf";
+// NFD: ľ = l (U+006C) + combining caron (U+030C); č = c (U+0063) + U+030C.
+// download-service must preserve whatever bytes the source returned — sanitisation
+// of the on-disk path happens in intake-worker.ts (uses job.id + extension).
+const NFD_FILENAME = "diaľničnej.pdf";
 
 function rpcText(text: string) {
   return {
@@ -40,18 +39,10 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-describe("downloadInvoice — NFC filename normalization", () => {
-  test("NFD and NFC test constants are actually different strings", () => {
-    expect(NFD_FILENAME).not.toBe(NFC_FILENAME);
-    expect(NFD_FILENAME.length).toBeGreaterThan(NFC_FILENAME.length);
-    expect(NFD_FILENAME.normalize("NFC")).toBe(NFC_FILENAME);
-  });
-
-  test("Outlook attachment: NFD filename normalized to NFC", async () => {
+describe("downloadInvoice — preserves source filename verbatim", () => {
+  test("Outlook attachment: NFD bytes survive unchanged", async () => {
     mockFetch(
-      // get_attachments → list with NFD filename
       jsonResp(jsonRpc([{ id: "att-1", name: NFD_FILENAME, content_type: "application/pdf", size: 100 }])),
-      // download_attachment → NFD name in response
       jsonResp(jsonRpc({ name: NFD_FILENAME, content_type: "application/pdf", size: 100, content_base64: "AA==" })),
     );
 
@@ -63,20 +54,16 @@ describe("downloadInvoice — NFC filename normalization", () => {
       { log: () => {} },
     );
 
-    expect(file.filename).toBe(NFC_FILENAME);
-    expect(file.filename.normalize("NFC")).toBe(file.filename);
+    expect(file.filename).toBe(NFD_FILENAME);
   });
 
-  test("Gmail attachment (HTTP mode): NFD filename normalized to NFC", async () => {
+  test("Gmail attachment (HTTP mode): NFD bytes survive unchanged", async () => {
     const attachmentListing = `--- ATTACHMENTS ---\n1. ${NFD_FILENAME} (application/pdf, 45.6 KB)\n   Attachment ID: att-nfd\n`;
     const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]); // %PDF-
 
     mockFetch(
-      // get_gmail_message_content → attachment listing text
       jsonResp(rpcText(attachmentListing)),
-      // get_gmail_attachment_content → Download URL
       jsonResp(rpcText("Download URL: http://fake-dl-host/attachment.bin")),
-      // fetch of the actual file
       new Response(pdfBytes, { status: 200, headers: { "Content-Type": "application/pdf" } }),
     );
 
@@ -88,7 +75,6 @@ describe("downloadInvoice — NFC filename normalization", () => {
       { log: () => {} },
     );
 
-    expect(file.filename).toBe(NFC_FILENAME);
-    expect(file.filename.normalize("NFC")).toBe(file.filename);
+    expect(file.filename).toBe(NFD_FILENAME);
   });
 });
