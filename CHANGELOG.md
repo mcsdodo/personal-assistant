@@ -4,6 +4,12 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-05-18
+
+### Fixed
+- **checker-mcp**: `pl-rates.json` removed from version control (instance-specific rate history); `pl-rates.json.example` added for initial setup
+- **personal-assistant**: Gmail attachment filenames with diacritics (NFD) normalized to NFC — fixes `total_amount` null when document classifier couldn't open the file
+
 ## 2026-05-14
 
 ### Changed
