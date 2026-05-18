@@ -46,3 +46,6 @@ desktop.ini
 # Golden test files (instance-specific, require live Paperless)
 checker-mcp/test_golden.py
 checker-mcp/test_golden.json
+
+# Instance-specific config — copy from .example and fill in your values
+checker-mcp/pl-rates.json
