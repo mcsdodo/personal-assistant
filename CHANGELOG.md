@@ -31,12 +31,12 @@ This project was developed as part of a private monorepo. This changelog was gen
 - **checker-mcp**: worked days shown with two decimal places; summary uses exact value for percentage
 - **checker-mcp**: `FILENAME_NOTE_FIELD_NAME` constant corrected — was resolving wrong Paperless field, note column was blank in match output
 
-## [unreleased] — 2026-05-04
+## 2026-05-04
 
 ### Fixed
 - **email-poller**: own-account Gmail replies (sender == monitored account, subject starts with `Re:`) are now silently skipped — audited but no workflow job is created, so classification never runs. Prevents spurious "No attachments found" failures when replying to a vendor invoice thread.
 
-## [unreleased] — 2026-05-03 — Task 63 — Car-expense fields + `/car` on-demand tagging
+## 2026-05-03 — Task 63 — Car-expense fields + `/car` on-demand tagging
 
 ### Added
 - `DocumentClassificationResult` schema extended with two new optional fields: `litres: number | null` (fuel volume, litres) and `receipt_datetime: string | null` (ISO datetime or date-only string, `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD`). Both are backward-compatible — missing values are treated as null. A new `receiptDatetimeOrNull` validator helper rejects strings that don't match the expected formats.
@@ -52,7 +52,7 @@ This project was developed as part of a private monorepo. This changelog was gen
 ### Changed
 - `paperless-fields.ts` Key Files entry updated to list all four registered custom fields and their semantics.
 
-## [unreleased] — 2026-05-02 — Task 64 review follow-ups
+## 2026-05-02 — Task 64 review follow-ups
 
 ### Changed
 - `openWorkflowDb` now sets `PRAGMA busy_timeout = 5000` after enabling WAL. With pa-worker writing on its own tick and workflow-mcp's push loop also writing `classification_pushed` events every 2s, four processes share `workflow.db`; the default `busy_timeout = 0` returned `SQLITE_BUSY` immediately on contention. 5s is conservative — actual writes are sub-millisecond.
@@ -61,7 +61,7 @@ This project was developed as part of a private monorepo. This changelog was gen
 ### Added
 - Graceful shutdown in `worker.ts` — SIGTERM/SIGINT handlers clear the tick + guidance-sweep intervals, stop the health server, and call `db.close()` before exiting. WAL is crash-safe regardless, but a clean close avoids leaving `*.db-shm` / `*.db-wal` recovery work for the next boot.
 
-## [unreleased] — 2026-04-30 — Decouple watchers from Claude Code
+## 2026-04-30 — Decouple watchers from Claude Code
 
 ### Breaking
 - `email-watcher` and `gdrive-watcher` no longer run as Claude Code stdio channels. Two new Docker services (`personal-assistant-email-poller`, `personal-assistant-gdrive-poller`) take over polling and write directly to `workflow.db`. Lifecycle fully decoupled from Claude Code — an MCP-spawn race can no longer break ingest.
