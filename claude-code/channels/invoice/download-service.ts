@@ -162,7 +162,7 @@ async function downloadAttachment(
     };
 
     return {
-      filename: dlParsed.name,
+      filename: dlParsed.name.normalize("NFC"),
       content_base64: dlParsed.content_base64,
       content_type: dlParsed.content_type,
       size: dlParsed.size,
@@ -210,7 +210,7 @@ async function downloadAttachment(
       if (!resp.ok) throw new Error(`Failed to fetch Gmail attachment: ${resp.status}`);
       const buf = Buffer.from(await resp.arrayBuffer());
       return {
-        filename: target.filename,
+        filename: target.filename.normalize("NFC"),
         content_base64: buf.toString("base64"),
         content_type: target.mimeType,
         size: buf.length,
@@ -220,7 +220,7 @@ async function downloadAttachment(
       const { readFileSync } = await import("fs");
       const buf = readFileSync(pathMatch[1]);
       return {
-        filename: target.filename,
+        filename: target.filename.normalize("NFC"),
         content_base64: buf.toString("base64"),
         content_type: target.mimeType,
         size: buf.length,
