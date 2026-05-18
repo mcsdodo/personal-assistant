@@ -61,7 +61,7 @@ def collect_month(
 
     # Statements: identified by account-statement tag (not document type)
     if tag_id not in doc_cache:
-        doc_cache[tag_id] = client.get_documents(tags__id=tag_id)
+        doc_cache[tag_id] = client.get_documents_by_tag(tag_id)
     statements = [d for d in doc_cache[tag_id] if acct_stmt_tag_id in d.get("tags", [])]
 
     # Fetch invoices for this month + window
@@ -74,7 +74,7 @@ def collect_month(
         if wm_tag_id is None:
             continue
         if wm_tag_id not in doc_cache:
-            doc_cache[wm_tag_id] = client.get_documents(tags__id=wm_tag_id)
+            doc_cache[wm_tag_id] = client.get_documents_by_tag(wm_tag_id)
         for doc in doc_cache[wm_tag_id]:
             if (
                 doc["id"] not in seen_ids
@@ -426,14 +426,24 @@ def collect_pl(
     filter_resolved_unmatched(results)
 
     # Build invoice month tag lookup: {doc_id: YYYY-MM from tags}
+    # Previously did one client.get_document(doc_id) per matched invoice —
+    # the doc list responses already have `tags`, so build a local index
+    # from doc_cache and only fall back to a remote fetch if the doc isn't
+    # there (defensive; shouldn't happen for matched invoices).
     tag_map = client.get_all_tags()
-    invoice_month_cache = {}
+    doc_tags_index: dict[int, list[int]] = {}
+    for docs in doc_cache.values():
+        for d in docs:
+            doc_tags_index[d["id"]] = d.get("tags", [])
+    invoice_month_cache: dict[int, str | None] = {}
 
     def get_invoice_month(doc_id: int) -> str | None:
         if doc_id in invoice_month_cache:
             return invoice_month_cache[doc_id]
-        doc = client.get_document(doc_id)
-        for tid in doc.get("tags", []):
+        tags = doc_tags_index.get(doc_id)
+        if tags is None:
+            tags = client.get_document(doc_id).get("tags", [])
+        for tid in tags:
             name = tag_map.get(tid, "")
             if re.match(r"\d{4}-\d{2}$", name):
                 invoice_month_cache[doc_id] = name

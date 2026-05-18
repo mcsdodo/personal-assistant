@@ -146,7 +146,7 @@ def main():
         months = [args.month]
     elif args.all:
         # Process all months that have statements + current month
-        statements = client.get_documents(tags__id=acct_stmt_tag_id)
+        statements = client.get_documents_by_tag(acct_stmt_tag_id)
         month_tags = set()
         for stmt in statements:
             for tid in stmt.get("tags", []):

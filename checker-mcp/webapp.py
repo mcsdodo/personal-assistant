@@ -3,14 +3,17 @@
 
 import io
 import json
+import logging
 import os
 import re
+import threading
+import time
 import zipfile
 from datetime import date, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, Response, request as req
+from flask import Flask, Response, jsonify, request as req
 
 from engine.client import PaperlessClient
 from engine.collection import collect_month, collect_pl, filter_resolved_unmatched
@@ -26,6 +29,45 @@ from match_invoices import (
 )
 
 app = Flask(__name__)
+log = logging.getLogger("checker-mcp.webapp")
+
+
+# ── Paperless client singleton + lazy env-load ──────────────────────────────
+
+class ConfigError(RuntimeError):
+    pass
+
+
+_client_lock = threading.Lock()
+_client: PaperlessClient | None = None
+
+
+def _get_client() -> PaperlessClient:
+    """Module-level lazy singleton. Holding one client across requests keeps
+    the lookup + per-tag-doc caches alive instead of being rebuilt per page
+    load. .env is read on first call only; readers fail fast if PAPERLESS_*
+    is missing."""
+    global _client
+    with _client_lock:
+        if _client is not None:
+            return _client
+        load_dotenv(Path(__file__).parent / ".env")
+        if not os.getenv("PAPERLESS_API_TOKEN"):
+            load_dotenv(Path(__file__).parent.parent / ".env")
+        token = os.getenv("PAPERLESS_API_TOKEN")
+        if not token:
+            raise ConfigError("PAPERLESS_API_TOKEN not set")
+        if not PAPERLESS_URL:
+            raise ConfigError("PAPERLESS_URL not set")
+        _client = PaperlessClient(PAPERLESS_URL, token)
+        return _client
+
+
+def _err(msg: str, code: int = 500):
+    return (
+        f"<pre style='color:#f85149;background:#0d1117;padding:2em'>{_esc(msg)}</pre>",
+        code,
+    )
 
 
 def _esc(s):
@@ -89,41 +131,20 @@ def _rate_for_month(rates: list[dict], month_ym: str) -> float | None:
 
 @app.route("/")
 def index():
-    load_dotenv(Path(__file__).parent / ".env")
-    if not os.getenv("PAPERLESS_API_TOKEN"):
-        load_dotenv(Path(__file__).parent.parent / ".env")
-    token = os.getenv("PAPERLESS_API_TOKEN")
-    if not token:
-        return (
-            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_API_TOKEN not set</pre>",
-            500,
-        )
-    if not PAPERLESS_URL:
-        return (
-            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_URL not set</pre>",
-            500,
-        )
-
-    client = PaperlessClient(PAPERLESS_URL, token)
+    try:
+        client = _get_client()
+    except ConfigError as e:
+        return _err(str(e))
     tag_map = client.get_all_tags()
     acct_stmt_tag = client.get_tag_id(ACCOUNT_STATEMENT_TAG_NAME)
     if acct_stmt_tag is None:
-        return (
-            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{ACCOUNT_STATEMENT_TAG_NAME}' not found</pre>",
-            500,
-        )
+        return _err(f"Tag '{ACCOUNT_STATEMENT_TAG_NAME}' not found")
     accounting_tag = client.get_tag_id(ACCOUNTING_TAG_NAME)
     if accounting_tag is None:
-        return (
-            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{ACCOUNTING_TAG_NAME}' not found</pre>",
-            500,
-        )
+        return _err(f"Tag '{ACCOUNTING_TAG_NAME}' not found")
     invoice_type = client.get_document_type_id(INVOICE_TYPE_NAME)
     if invoice_type is None:
-        return (
-            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Document type '{INVOICE_TYPE_NAME}' not found</pre>",
-            500,
-        )
+        return _err(f"Document type '{INVOICE_TYPE_NAME}' not found")
     ta_field = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     ta_alt_field = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
 
@@ -133,7 +154,7 @@ def index():
     # view's display window (partial pre-processing causes window invoices
     # from unprocessed months to steal matches that belong to displayed
     # months — see the cascade reproduced in TestPreProcessingWarmup).
-    stmts = client.get_documents(tags__id=acct_stmt_tag)
+    stmts = client.get_documents_by_tag(acct_stmt_tag)
     stmt_month_tags = set()
     for s in stmts:
         for tid in s.get("tags", []):
@@ -205,41 +226,21 @@ def _safe_filename(name: str) -> str:
 
 @app.route("/zip")
 def zip_accounting():
-    load_dotenv(Path(__file__).parent / ".env")
-    if not os.getenv("PAPERLESS_API_TOKEN"):
-        load_dotenv(Path(__file__).parent.parent / ".env")
-    token = os.getenv("PAPERLESS_API_TOKEN")
-    if not token:
-        return (
-            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_API_TOKEN not set</pre>",
-            500,
-        )
-    if not PAPERLESS_URL:
-        return (
-            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_URL not set</pre>",
-            500,
-        )
+    try:
+        client = _get_client()
+    except ConfigError as e:
+        return _err(str(e))
 
     month = req.args.get("month", "")
     if not re.match(r"^\d{4}-\d{2}$", month):
-        return (
-            "<pre style='color:#f85149;background:#0d1117;padding:2em'>month query param required, format YYYY-MM</pre>",
-            400,
-        )
+        return _err("month query param required, format YYYY-MM", 400)
 
-    client = PaperlessClient(PAPERLESS_URL, token)
     accounting_tag = client.get_tag_id(ACCOUNTING_TAG_NAME)
     if accounting_tag is None:
-        return (
-            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{ACCOUNTING_TAG_NAME}' not found</pre>",
-            500,
-        )
+        return _err(f"Tag '{ACCOUNTING_TAG_NAME}' not found")
     month_tag = client.get_tag_id(month)
     if month_tag is None:
-        return (
-            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{_esc(month)}' not found</pre>",
-            404,
-        )
+        return _err(f"Tag '{month}' not found", 404)
 
     # Build storage_path_id → category subfolder from live Paperless config
     sp_category: dict[int, str] = {
@@ -396,46 +397,25 @@ TOTAL: {totals["total"]} movements, \
 
 @app.route("/pl")
 def profit_loss():
-    load_dotenv(Path(__file__).parent / ".env")
-    if not os.getenv("PAPERLESS_API_TOKEN"):
-        load_dotenv(Path(__file__).parent.parent / ".env")
-    token = os.getenv("PAPERLESS_API_TOKEN")
-    if not token:
-        return (
-            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_API_TOKEN not set</pre>",
-            500,
-        )
-    if not PAPERLESS_URL:
-        return (
-            "<pre style='color:#f85149;background:#0d1117;padding:2em'>PAPERLESS_URL not set</pre>",
-            500,
-        )
-
-    client = PaperlessClient(PAPERLESS_URL, token)
+    try:
+        client = _get_client()
+    except ConfigError as e:
+        return _err(str(e))
     acct_stmt_tag = client.get_tag_id(ACCOUNT_STATEMENT_TAG_NAME)
     if acct_stmt_tag is None:
-        return (
-            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{ACCOUNT_STATEMENT_TAG_NAME}' not found</pre>",
-            500,
-        )
+        return _err(f"Tag '{ACCOUNT_STATEMENT_TAG_NAME}' not found")
     accounting_tag = client.get_tag_id(ACCOUNTING_TAG_NAME)
     if accounting_tag is None:
-        return (
-            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Tag '{ACCOUNTING_TAG_NAME}' not found</pre>",
-            500,
-        )
+        return _err(f"Tag '{ACCOUNTING_TAG_NAME}' not found")
     invoice_type = client.get_document_type_id(INVOICE_TYPE_NAME)
     if invoice_type is None:
-        return (
-            f"<pre style='color:#f85149;background:#0d1117;padding:2em'>Document type '{INVOICE_TYPE_NAME}' not found</pre>",
-            500,
-        )
+        return _err(f"Document type '{INVOICE_TYPE_NAME}' not found")
     ta_field = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     ta_alt_field = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
 
     # Find years with statement data
     tag_map = client.get_all_tags()
-    stmts = client.get_documents(tags__id=acct_stmt_tag)
+    stmts = client.get_documents_by_tag(acct_stmt_tag)
     years_with_data = set()
     for s in stmts:
         for tid in s.get("tags", []):
@@ -739,5 +719,97 @@ h1{{color:#58a6ff;font-size:16px;font-weight:600}}
 </body></html>"""
 
 
+@app.route("/healthz")
+def healthz():
+    """Cache stats + client init status. Returns 503 if PAPERLESS_* unset."""
+    try:
+        client = _get_client()
+    except ConfigError as e:
+        return jsonify({"status": "error", "msg": str(e)}), 503
+    return jsonify(
+        {
+            "status": "ok",
+            "cache": client.cache_stats(),
+            "tag_doc_keys": len(client.cached_tag_ids()),
+        }
+    )
+
+
+# ── pre-heat thread ─────────────────────────────────────────────────────────
+
+PREHEAT_INTERVAL_S = 90.0
+
+
+def _preheat_working_set(client: PaperlessClient) -> None:
+    """Warm the matching view's working set: tags map + statement docs +
+    every month tag that has statement data + the ±1 window around today."""
+    tag_map = client.get_all_tags()
+    acct_stmt_id = client.get_tag_id(ACCOUNT_STATEMENT_TAG_NAME)
+    if acct_stmt_id is None:
+        log.warning("preheat: tag %r missing; skipping initial warm", ACCOUNT_STATEMENT_TAG_NAME)
+        return
+    stmts = client.get_documents_by_tag(acct_stmt_id)
+    today = date.today()
+    cur = f"{today.year:04d}-{today.month:02d}"
+    months = {cur, month_offset(cur, -1), month_offset(cur, 1)}
+    for s in stmts:
+        for tid in s.get("tags", []):
+            name = tag_map.get(tid, "")
+            if re.match(r"\d{4}-\d{2}$", name):
+                months.add(name)
+    warmed = 0
+    for m in sorted(months):
+        tid = client.get_tag_id(m)
+        if tid is None:
+            continue
+        client.get_documents_by_tag(tid)
+        warmed += 1
+    log.info("preheat: warmed %d month tag(s) + statement docs (%d stmts)", warmed, len(stmts))
+
+
+def _revalidate_cached(client: PaperlessClient) -> None:
+    """Revalidate every tag currently in the per-tag doc cache. The cached
+    method handles probe → extend-or-refetch internally, so we just iterate."""
+    for tid in client.cached_tag_ids():
+        try:
+            client.get_documents_by_tag(tid)
+        except Exception:  # noqa: BLE001 — defensive in a daemon loop
+            log.exception("preheat: revalidate failed for tag %s", tid)
+
+
+def _preheat_loop(client: PaperlessClient, interval_s: float) -> None:
+    try:
+        _preheat_working_set(client)
+    except Exception:  # noqa: BLE001
+        log.exception("preheat: initial warm failed")
+    while True:
+        time.sleep(interval_s)
+        try:
+            _revalidate_cached(client)
+        except Exception:  # noqa: BLE001
+            log.exception("preheat: revalidation tick failed")
+
+
+def start_preheat(interval_s: float = PREHEAT_INTERVAL_S) -> threading.Thread | None:
+    """Start the daemon pre-heat thread. No-ops (with a warning) if the
+    client can't be created — webapp still serves error pages until config
+    is fixed."""
+    try:
+        client = _get_client()
+    except ConfigError as e:
+        log.warning("preheat: not starting: %s", e)
+        return None
+    t = threading.Thread(
+        target=_preheat_loop,
+        args=(client, interval_s),
+        daemon=True,
+        name="paperless-preheat",
+    )
+    t.start()
+    return t
+
+
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    start_preheat()
     app.run(host="0.0.0.0", port=5000)

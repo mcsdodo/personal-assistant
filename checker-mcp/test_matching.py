@@ -138,6 +138,10 @@ def _mock_client(documents_by_tag):
         return docs
 
     client.get_documents.side_effect = get_documents
+    # Mirror the cached path so collect_month tests don't have to know about
+    # the cache layer — they just provide {tag_id: [docs]} and get_documents_by_tag
+    # behaves identically to get_documents(tags__id=tag_id).
+    client.get_documents_by_tag.side_effect = lambda tag_id: documents_by_tag.get(tag_id, [])
     return client
 
 
@@ -1581,9 +1585,8 @@ class TestDocCache:
         # Count calls for tag 2026-01 docs — should be fetched only once
         calls = [
             c
-            for c in client.get_documents.call_args_list
-            if c[1].get("tags__id") == TAG_IDS["2026-01"]
-            and "document_type__id" not in c[1]
+            for c in client.get_documents_by_tag.call_args_list
+            if c.args and c.args[0] == TAG_IDS["2026-01"]
         ]
         assert len(calls) == 1
 
@@ -1651,6 +1654,36 @@ def _collect_pl(
         TOTAL_AMOUNT_FIELD_ID,
         total_amount_alt_field_id=alt_field_id,
     )
+
+
+class TestCollectPLNoNPlusOne:
+    """P&L must not fetch each matched invoice individually — tags are read
+    from the doc_cache list response. Regression guard for the N+1 in
+    get_invoice_month that hit Paperless once per matched invoice before
+    the doc_cache-backed index was introduced.
+    """
+
+    def test_get_document_not_called_for_cached_invoices(self):
+        content = _stmt(
+            ("11.01.2026", "Payment 1", 1000.00),
+            ("12.01.2026", "Payment 2", 500.00),
+            ("13.01.2026", "Vendor bill", -200.00),
+        )
+        stmt = _make_statement(1, "2026-01", content)
+        inv1 = _make_invoice(10, "Techlab_001", "Techlab_001.pdf", "2026-01", 1000.00)
+        inv2 = _make_invoice(11, "Techlab_002", "Techlab_002.pdf", "2026-01", 500.00)
+        inv3 = _make_invoice(12, "vendor_bill", "vendor.pdf", "2026-01", 200.00)
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv1, inv2, inv3],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
+        _collect_pl(client, 2026)
+        assert client.get_document.call_count == 0, (
+            "collect_pl should read tags from doc_cache, never from get_document"
+        )
 
 
 class TestCollectPLMatchedIncome:
