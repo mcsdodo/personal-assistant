@@ -623,6 +623,9 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
     excl_cats_html = "\n".join(excl_cat_rows)
 
     net_class = "pos" if net >= 0 else "neg"
+    payroll_addback = -pl["expenses"].get("payroll", 0.0)   # flip expense sign → positive
+    net_total = net + payroll_addback
+    net_total_class = "pos" if net_total >= 0 else "neg"
 
     # Working-days summary row
     days_summary_html = ""
@@ -634,6 +637,29 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
             f'<span class="pl-label" style="color:#8b949e">Days worked</span>'
             f'<span class="pl-days-summary {pct_class}">{total_worked:.2f}/{total_wd} &mdash; {pct}%</span>'
             f'</div>'
+        )
+
+    if payroll_addback > 0:
+        net_block = (
+            f'  <div class="pl-row total">\n'
+            f'    <span class="pl-label">Net company income</span>\n'
+            f'    <span class="pl-amount {net_class}">{net:>12,.2f}</span>\n'
+            f'  </div>\n'
+            f'  <div class="pl-row sub">\n'
+            f'    <span class="pl-label">+ payroll (personal)</span>\n'
+            f'    <span class="pl-amount dim">{payroll_addback:>12,.2f}</span>\n'
+            f'  </div>\n'
+            f'  <div class="pl-row net">\n'
+            f'    <span class="pl-label">Net total income</span>\n'
+            f'    <span class="pl-amount {net_total_class}">{net_total:>12,.2f}</span>\n'
+            f'  </div>'
+        )
+    else:
+        net_block = (
+            f'  <div class="pl-row net">\n'
+            f'    <span class="pl-label">Net income</span>\n'
+            f'    <span class="pl-amount {net_class}">{net:>12,.2f}</span>\n'
+            f'  </div>'
         )
 
     return f"""<!DOCTYPE html>
@@ -712,10 +738,7 @@ h1{{color:#58a6ff;font-size:16px;font-weight:600}}
     </summary>
 {exp_cat_rows}
   </details>
-  <div class="pl-row net">
-    <span class="pl-label">Net income</span>
-    <span class="pl-amount {net_class}">{net:>12,.2f}</span>
-  </div>
+{net_block}
 {days_summary_html}
 </div>
 <div class="pl-section">
