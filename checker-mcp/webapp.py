@@ -114,9 +114,20 @@ def sk_working_days(year: int, month: int) -> int:
 
 
 def _load_rates() -> list[dict] | None:
-    """Load hourly rates from pl-rates.json (sorted by 'from'). Returns None if unavailable."""
+    """Load hourly rates (sorted by 'from').
+
+    Sources (in priority order):
+    1. PL_RATES env var — JSON string, set via Komodo stack environment.
+    2. pl-rates.json in the app dir — local-dev fallback (gitignored, never mounted in prod).
+
+    Returns None if neither source is available, which disables the worked-days column.
+    """
+    env_rates = os.getenv("PL_RATES")
+    if env_rates:
+        rates = json.loads(env_rates)
+        return sorted(rates, key=lambda r: r["from"])
     path = Path(__file__).parent / "pl-rates.json"
-    if path.exists():
+    if path.is_file():
         with open(path, encoding="utf-8") as f:
             rates = json.load(f)
         return sorted(rates, key=lambda r: r["from"])
