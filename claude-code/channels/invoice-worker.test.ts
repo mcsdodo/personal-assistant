@@ -83,6 +83,7 @@ function defaultDocClassification(overrides: Record<string, unknown> = {}): Reco
     vendor: "Alza",
     total_amount: 59.99,
     owner: "techlab",
+    owner_match_evidence: "Techlab s. r. o.",
     doc_type: "invoice",
     doc_date: "2026-03-25",
     ...overrides,

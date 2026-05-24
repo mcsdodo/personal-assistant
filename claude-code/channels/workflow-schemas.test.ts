@@ -277,6 +277,7 @@ const VALID_DOC_CLASS = {
   currency: "EUR",
   is_fuel: false,
   owner: "techlab",
+  owner_match_evidence: "Techlab s. r. o.",
   confidence: "high",
   order_id: "9E72DD91-0009",
   subtitle: null,
@@ -309,6 +310,121 @@ describe("validateDocumentClassificationResult", () => {
     });
     expect(out.total_amount).toBeNull();
     expect(out.accounting_period).toBeNull();
+  });
+
+  // ── owner_match_evidence (task 83) ─────────────────────────────────
+  // Haiku must quote the literal BUSINESS_* substring it matched before
+  // claiming owner=techlab. The validator rejects techlab without proof
+  // and rejects evidence on personal/unknown classifications.
+
+  test("accepts owner=techlab with non-empty evidence", () => {
+    const out = validateDocumentClassificationResult({
+      ...VALID_DOC_CLASS,
+      owner: "techlab",
+      owner_match_evidence: "Techlab s. r. o.",
+    });
+    expect(out.owner).toBe("techlab");
+    expect(out.owner_match_evidence).toBe("Techlab s. r. o.");
+  });
+
+  test("rejects owner=techlab with null evidence (proof required)", () => {
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult({
+          ...VALID_DOC_CLASS,
+          owner: "techlab",
+          owner_match_evidence: null,
+        }),
+      { field: "owner_match_evidence", expected: "non-empty string when owner=techlab" },
+    );
+  });
+
+  test("rejects owner=techlab with missing evidence (proof required)", () => {
+    const { owner_match_evidence: _e, ...rest } = VALID_DOC_CLASS;
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult({
+          ...rest,
+          owner: "techlab",
+        }),
+      { field: "owner_match_evidence" },
+    );
+  });
+
+  test("rejects owner=techlab with empty/whitespace evidence", () => {
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult({
+          ...VALID_DOC_CLASS,
+          owner: "techlab",
+          owner_match_evidence: "",
+        }),
+      { field: "owner_match_evidence" },
+    );
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult({
+          ...VALID_DOC_CLASS,
+          owner: "techlab",
+          owner_match_evidence: "   ",
+        }),
+      { field: "owner_match_evidence" },
+    );
+  });
+
+  test("accepts owner=personal with null evidence", () => {
+    const out = validateDocumentClassificationResult({
+      ...VALID_DOC_CLASS,
+      owner: "personal",
+      owner_match_evidence: null,
+    });
+    expect(out.owner).toBe("personal");
+    expect(out.owner_match_evidence).toBeNull();
+  });
+
+  test("accepts owner=personal with missing evidence (treated as null)", () => {
+    const { owner_match_evidence: _e, ...rest } = VALID_DOC_CLASS;
+    const out = validateDocumentClassificationResult({
+      ...rest,
+      owner: "personal",
+    });
+    expect(out.owner).toBe("personal");
+    expect(out.owner_match_evidence).toBeNull();
+  });
+
+  test("rejects owner=personal with non-null evidence (nothing to prove)", () => {
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult({
+          ...VALID_DOC_CLASS,
+          owner: "personal",
+          owner_match_evidence: "stray string",
+        }),
+      { field: "owner_match_evidence", expected: "null when owner=personal" },
+    );
+  });
+
+  test("accepts owner=unknown with null evidence and notes", () => {
+    const out = validateDocumentClassificationResult({
+      ...VALID_DOC_CLASS,
+      owner: "unknown",
+      owner_match_evidence: null,
+      notes: "buyer block torn off, can't determine owner",
+    });
+    expect(out.owner).toBe("unknown");
+    expect(out.owner_match_evidence).toBeNull();
+  });
+
+  test("rejects non-string evidence type", () => {
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult({
+          ...VALID_DOC_CLASS,
+          owner: "techlab",
+          owner_match_evidence: 42,
+        }),
+      { field: "owner_match_evidence", expected: "string | null" },
+    );
   });
 
   test("rejects missing owner (required for tag routing)", () => {
@@ -380,6 +496,7 @@ describe("DocumentClassificationResult — litres + receipt_datetime", () => {
     currency: "EUR",
     is_fuel: true,
     owner: "techlab",
+    owner_match_evidence: "SK12345678",
     confidence: "high",
     order_id: null,
     subtitle: null,
@@ -501,6 +618,7 @@ describe("compatibility with existing test fixtures", () => {
       currency: "EUR",
       is_fuel: false,
       owner: "techlab",
+      owner_match_evidence: "Techlab s. r. o.",
       confidence: "high",
       order_id: "FA2026030001",
       subtitle: null,

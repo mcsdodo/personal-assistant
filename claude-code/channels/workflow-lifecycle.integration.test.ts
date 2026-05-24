@@ -78,6 +78,7 @@ function defaultDocClassification(overrides: Record<string, unknown> = {}): Reco
     currency: "EUR",
     is_fuel: false,
     owner: "techlab",
+    owner_match_evidence: "Techlab s. r. o.",
     confidence: "high",
     order_id: "FA2026040001",
     subtitle: null,

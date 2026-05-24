@@ -355,6 +355,21 @@ export interface DocumentClassificationResultSchema {
   currency: string | null;
   is_fuel: boolean;
   owner: "techlab" | "personal" | "unknown";
+  /**
+   * Proof string for the `owner` classification.
+   *
+   * Required (non-empty string) when `owner === "techlab"`: the literal
+   * substring from the document that matched one of the configured
+   * `BUSINESS_*` identifiers (company name, tax ID, CRN, or license plate).
+   * Must be `null` when `owner === "personal"` or `owner === "unknown"`.
+   *
+   * The classifier prompt instructs Haiku to quote the matched identifier
+   * before claiming `techlab` — this is enforced here so a `techlab`
+   * classification without proof gets rejected at submitClassification time.
+   * Missing on backward-compat replay of old stored payloads (validator only
+   * runs on new submissions). See task 83.
+   */
+  owner_match_evidence?: string | null;
   confidence: "high" | "medium" | "low";
   order_id: string | null;
   subtitle: string | null;
@@ -445,6 +460,68 @@ function numberOrUnknown(
 }
 
 /**
+ * Validate `owner_match_evidence` against the resolved `owner`.
+ *
+ * Task 83. The classifier prompt requires Haiku to quote the literal
+ * substring it matched from the document before claiming `owner: "techlab"`.
+ * The validator rejects techlab classifications that lack proof, and
+ * rejects evidence on personal/unknown classifications (which have nothing
+ * to prove).
+ *
+ * Missing key is tolerated and treated as null — this matters for replay
+ * of stored payloads written before task 83 shipped (the validator runs
+ * via `getCompletedSteps` defense-in-depth path). For NEW classifier
+ * outputs, the prompt enforces presence; if Haiku omits the field on a
+ * techlab claim, the `null` fallback triggers the proof-required throw
+ * below.
+ */
+function validateOwnerMatchEvidence(
+  obj: Record<string, unknown>,
+  owner: "techlab" | "personal" | "unknown",
+): string | null {
+  const raw = "owner_match_evidence" in obj ? obj.owner_match_evidence : null;
+
+  if (raw !== null && raw !== undefined && typeof raw !== "string") {
+    throw new WorkflowSchemaError(
+      "DocumentClassificationResult",
+      "owner_match_evidence",
+      "string | null",
+      raw,
+    );
+  }
+
+  const value = raw === undefined || raw === null ? null : (raw as string);
+
+  if (owner === "techlab") {
+    if (value === null || value.trim().length === 0) {
+      throw new WorkflowSchemaError(
+        "DocumentClassificationResult",
+        "owner_match_evidence",
+        "non-empty string when owner=techlab",
+        value,
+        undefined,
+        {
+          message:
+            "DocumentClassificationResult: owner_match_evidence required when owner=techlab — the classifier must quote the literal BUSINESS_* substring it matched",
+        },
+      );
+    }
+    return value;
+  }
+
+  // owner is "personal" or "unknown" — evidence must be absent.
+  if (value !== null) {
+    throw new WorkflowSchemaError(
+      "DocumentClassificationResult",
+      "owner_match_evidence",
+      `null when owner=${owner}`,
+      value,
+    );
+  }
+  return null;
+}
+
+/**
  * Validate receipt_datetime. Always emits "YYYY-MM-DDTHH:MM:SS" downstream:
  * a bare "YYYY-MM-DD" from the classifier is coerced to "YYYY-MM-DDT00:00:00"
  * so kniha-jazd and other consumers see one uniform shape. Null/missing
@@ -473,13 +550,16 @@ function receiptDatetimeOrNull(
 
 export function validateDocumentClassificationResult(input: unknown): DocumentClassificationResultSchema {
   const obj = requireObject("DocumentClassificationResult", input);
+  const owner = reqEnum("DocumentClassificationResult", obj, "owner", DOC_OWNERS);
+  const owner_match_evidence = validateOwnerMatchEvidence(obj, owner);
   const result: DocumentClassificationResultSchema = {
     doc_type: stringOrUnknown("DocumentClassificationResult", obj, "doc_type") as string,
     vendor: reqString("DocumentClassificationResult", obj, "vendor"),
     total_amount: numberOrUnknown("DocumentClassificationResult", obj, "total_amount"),
     currency: nullableString("DocumentClassificationResult", obj, "currency"),
     is_fuel: reqBool("DocumentClassificationResult", obj, "is_fuel"),
-    owner: reqEnum("DocumentClassificationResult", obj, "owner", DOC_OWNERS),
+    owner,
+    owner_match_evidence,
     confidence: reqEnum("DocumentClassificationResult", obj, "confidence", CONFIDENCE_LEVELS),
     order_id: nullableString("DocumentClassificationResult", obj, "order_id"),
     subtitle: nullableString("DocumentClassificationResult", obj, "subtitle"),
