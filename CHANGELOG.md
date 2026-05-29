@@ -4,6 +4,19 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-05-24
+
+### Changed
+- **email-classifier**: `owner=techlab` now requires a quoted `BUSINESS_*` env var match in `owner_match_evidence` — prevents personal docs from being misclassified as business expenses when the sender only mentions the company name
+
+## 2026-05-21
+
+### Added
+- **checker-mcp**: `/pl` splits "Net income" into net company + payroll bridge + net total rows when payroll data is present
+
+### Fixed
+- **checker-mcp**: `/pl` HTTP 500 — `pl-rates.json` bind mount created a spurious directory after the file was gitignored; replaced with `PL_RATES` environment variable
+
 ## 2026-05-18
 
 ### Fixed
