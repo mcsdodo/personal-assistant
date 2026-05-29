@@ -16,7 +16,7 @@ cp .env.example .env
 docker compose --profile local --env-file .env up --build
 ```
 
-For a full walkthrough, see `docs/getting-started.md`.
+For a full walkthrough, see [docs/getting-started.md](docs/getting-started.md).
 
 ## Running Tests
 
@@ -35,7 +35,7 @@ cd ..
 python -m pytest tests/ -v --timeout=300
 ```
 
-For test prerequisites and troubleshooting, see `docs/development.md`.
+For test prerequisites and troubleshooting, see [docs/development.md](docs/development.md).
 
 ## Documentation Conventions
 
@@ -50,7 +50,7 @@ For test prerequisites and troubleshooting, see `docs/development.md`.
 - Link any related issue.
 - Keep examples and commands accurate.
 - Run the relevant tests for the files you changed.
-- Update `docs/USE_CASES.md` and related docs when feature behavior changes.
+- Update [docs/USE_CASES.md](docs/USE_CASES.md) and related docs when feature behavior changes.
 
 ## Scope Notes
 

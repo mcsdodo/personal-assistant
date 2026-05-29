@@ -106,7 +106,7 @@ flowchart TB
     claude --> checker
 ```
 
-For the full pipeline and service layout, see `docs/architecture.md`.
+For the full pipeline and service layout, see [docs/architecture.md](docs/architecture.md).
 
 ## Documentation map
 
@@ -114,21 +114,21 @@ Start with the doc that matches what you need:
 
 | If you want to... | Read |
 |---|---|
-| get the stack running locally | `docs/getting-started.md` |
-| understand environment variables and auth | `docs/configuration.md` |
-| understand the pipeline and containers | `docs/architecture.md` |
-| see supported workflows | `docs/USE_CASES.md` |
-| run tests and contribute | `docs/development.md` |
-| set up dashboards and telemetry | `docs/observability.md` |
-| troubleshoot auth, health, or pipeline issues | `docs/troubleshooting.md` |
-| inspect the full maintainer reference | `CLAUDE.md` |
+| get the stack running locally | [docs/getting-started.md](docs/getting-started.md) |
+| understand environment variables and auth | [docs/configuration.md](docs/configuration.md) |
+| understand the pipeline and containers | [docs/architecture.md](docs/architecture.md) |
+| see supported workflows | [docs/USE_CASES.md](docs/USE_CASES.md) |
+| run tests and contribute | [docs/development.md](docs/development.md) |
+| set up dashboards and telemetry | [docs/observability.md](docs/observability.md) |
+| troubleshoot auth, health, or pipeline issues | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| inspect the full maintainer reference | [CLAUDE.md](CLAUDE.md) |
 
 Detailed deep dives are also available:
 
-- `docs/uc1-invoice-processing.md`
-- `docs/uc1a-observability.md`
-- `docs/uc2-invoice-matching.md`
-- `docs/infrastructure.md`
+- [docs/uc1-invoice-processing.md](docs/uc1-invoice-processing.md)
+- [docs/uc1a-observability.md](docs/uc1a-observability.md)
+- [docs/uc2-invoice-matching.md](docs/uc2-invoice-matching.md)
+- [docs/infrastructure.md](docs/infrastructure.md)
 
 ## Prerequisites
 
@@ -174,13 +174,13 @@ cd ..
 python -m pytest tests/ -v --timeout=300
 ```
 
-See `docs/development.md` for prerequisites, test setup, and troubleshooting.
+See [docs/development.md](docs/development.md) for prerequisites, test setup, and troubleshooting.
 
 ## Security and contribution docs
 
-- `CONTRIBUTING.md`
-- `SECURITY.md`
-- `CODE_OF_CONDUCT.md`
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [SECURITY.md](SECURITY.md)
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
 ## Project status
 

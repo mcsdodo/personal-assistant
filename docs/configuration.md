@@ -79,6 +79,6 @@ For longer-lived deployments you will likely provide:
 
 ## Related docs
 
-- `docs/getting-started.md`
-- `docs/architecture.md`
-- `docs/observability.md`
+- [getting-started.md](getting-started.md)
+- [architecture.md](architecture.md)
+- [observability.md](observability.md)

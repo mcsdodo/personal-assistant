@@ -156,7 +156,7 @@ Email-poller (`pollers/email-poller/src/main.ts`) and gdrive-poller (`pollers/gd
 
 ## Deep dives
 
-- `docs/uc1-invoice-processing.md`
-- `docs/uc2-invoice-matching.md`
-- `docs/infrastructure.md`
-- `CLAUDE.md`
+- [uc1-invoice-processing.md](uc1-invoice-processing.md)
+- [uc2-invoice-matching.md](uc2-invoice-matching.md)
+- [infrastructure.md](infrastructure.md)
+- [CLAUDE.md](../CLAUDE.md)

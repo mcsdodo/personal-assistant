@@ -54,6 +54,6 @@ Public docs intentionally avoid prescribing one specific homelab layout.
 
 ## Related docs
 
-- `docs/uc1a-observability.md`
-- `docs/troubleshooting.md`
-- `CLAUDE.md`
+- [uc1a-observability.md](uc1a-observability.md)
+- [troubleshooting.md](troubleshooting.md)
+- [CLAUDE.md](../CLAUDE.md)

@@ -32,7 +32,7 @@ Minimum useful local setup:
 - `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` or `AZURE_CLIENT_ID`
 - `GMAIL_EMAIL` if Gmail is enabled
 
-See `docs/configuration.md` for a grouped reference.
+See [configuration.md](configuration.md) for a grouped reference.
 
 ## 2. Start the local profile
 
@@ -93,7 +93,7 @@ Try one of these:
 
 - send a test invoice to the configured inbox
 - place a PDF in a watched Google Drive folder
-- run one of the end-to-end tests from `docs/development.md`
+- run one of the end-to-end tests from [development.md](development.md)
 
 ## 7. Check health
 
@@ -107,7 +107,7 @@ curl http://localhost:9465/metrics
 
 ## Next reads
 
-- `docs/configuration.md`
-- `docs/architecture.md`
-- `docs/development.md`
-- `docs/troubleshooting.md`
+- [configuration.md](configuration.md)
+- [architecture.md](architecture.md)
+- [development.md](development.md)
+- [troubleshooting.md](troubleshooting.md)

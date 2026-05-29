@@ -2,8 +2,8 @@
 
 Event-driven personal assistant using Claude Code Channels + MCP tool servers.
 
-**Use-case index**: `docs/USE_CASES.md` — **keep this up to date** (see below)
-**Detailed pipeline docs**: `docs/uc1-invoice-processing.md`, `docs/infrastructure.md`
+**Use-case index**: [docs/USE_CASES.md](docs/USE_CASES.md) — **keep this up to date** (see below)
+**Detailed pipeline docs**: [docs/uc1-invoice-processing.md](docs/uc1-invoice-processing.md), [docs/infrastructure.md](docs/infrastructure.md)
 **Original design docs** (historical): `_tasks/_done/10-personal-assistant/`
 
 ## Public Placeholder Conventions
@@ -20,11 +20,11 @@ Keep examples concrete enough that contributors and coding agents can still map 
 
 ## Use-Case Index
 
-`docs/USE_CASES.md` is the single source of truth for what this project delivers.
+[docs/USE_CASES.md](docs/USE_CASES.md) is the single source of truth for what this project delivers.
 
 **MANDATORY: After ANY implementation work in this stack, update all affected documentation before considering the task done.** This is not optional. Documentation drift is a recurring problem — treat doc updates as part of the implementation, not a follow-up.
 
-1. Update the status column in `docs/USE_CASES.md`
+1. Update the status column in [docs/USE_CASES.md](docs/USE_CASES.md)
 2. Update detailed docs in `docs/` (pipeline flow, code links, line numbers, architecture diagrams, span names, config references, etc.)
 3. Update this `CLAUDE.md` if key files, architecture, metrics, spans, or observability setup changed
 4. Add new use cases if scope expands
@@ -192,7 +192,7 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 | `claude-code/Dockerfile` | node:20 + bun + claude-code CLI, non-root user |
 | `claude-code/.mcp.json` | MCP server config (channels + HTTP tools) |
 | `claude-code/.claude/settings.json` | Permission allowlist (dontAsk mode) |
-| `claude-code/CLAUDE.md` | Instructions for the Claude session |
+| [claude-code/CLAUDE.md](claude-code/CLAUDE.md) | Instructions for the Claude session |
 | `claude-code/entrypoint.sh` | tmux wrapper, prompt detection, health monitor |
 | `claude-code/channels/file-ops.ts` | File-ops MCP tool server (download, delete, list, decrypt, base64, env) |
 | `pollers/email-poller/src/main.ts` | Email poller (Gmail+Outlook → workflow.db). INITIAL_LOOKBACK seeding, fail-loud overflow. |
