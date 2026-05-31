@@ -15,6 +15,7 @@ from engine.collection import (
 from engine.matching import (
     MONTH_WINDOW,
     build_pair_index,
+    detect_returned_payments,
     extract_prefix,
     find_matching_invoice,
     get_month_window,
@@ -2130,3 +2131,86 @@ class TestFullHistoryProcessing:
             assert wide_by_month[m] == narrow_by_month[m], (
                 f"Matches for {m} differ between display windows"
             )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Returned-payment pair detection
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def _mov(date: str, amount: float, account: str | None) -> dict:
+    """Minimal movement dict for TestReturnedPayments tests."""
+    return {
+        "date": date,
+        "amount": amount,
+        "account": account,
+        "description": "",
+        "orig_amount": None,
+        "raw_block": "",
+    }
+
+
+class TestReturnedPayments:
+    """Unit tests for detect_returned_payments (pure helper)."""
+
+    ACCT = "1111/000000-1372371018"
+
+    def test_basic_pair_both_indices_returned(self):
+        """Outgoing before incoming, same account + amount → both indices returned."""
+        movs = [
+            _mov("22.05.2026", -914.91, self.ACCT),
+            _mov("26.05.2026", +914.91, self.ACCT),
+        ]
+        assert detect_returned_payments(movs) == {0, 1}
+
+    def test_different_accounts_no_pair(self):
+        """Same amount, different counterparty accounts → no pair."""
+        movs = [
+            _mov("22.05.2026", -914.91, self.ACCT),
+            _mov("26.05.2026", +914.91, "2222/000000-9999999999"),
+        ]
+        assert detect_returned_payments(movs) == set()
+
+    def test_two_outgoings_no_incoming_no_pair(self):
+        """Two outgoings, no incoming — nothing to pair with."""
+        movs = [
+            _mov("22.05.2026", -914.91, self.ACCT),
+            _mov("23.05.2026", -914.91, self.ACCT),
+        ]
+        assert detect_returned_payments(movs) == set()
+
+    def test_incoming_before_outgoing_no_pair(self):
+        """Incoming dated before outgoing → date guard blocks the pair."""
+        movs = [
+            _mov("22.05.2026", +914.91, self.ACCT),  # incoming, earlier
+            _mov("26.05.2026", -914.91, self.ACCT),  # outgoing, later
+        ]
+        assert detect_returned_payments(movs) == set()
+
+    def test_orphan_incoming_not_paired(self):
+        """Valid pair exists (indices 1 & 2); orphan incoming at index 0 (no earlier outgoing)."""
+        movs = [
+            _mov("20.05.2026", +914.91, self.ACCT),  # idx 0: incoming with no earlier outgoing
+            _mov("22.05.2026", -914.91, self.ACCT),  # idx 1: outgoing
+            _mov("26.05.2026", +914.91, self.ACCT),  # idx 2: incoming — pairs with idx 1
+        ]
+        result = detect_returned_payments(movs)
+        assert result == {1, 2}
+
+    def test_none_account_never_paired(self):
+        """account=None on both legs → no pair even if amounts match perfectly."""
+        movs = [
+            _mov("22.05.2026", -914.91, None),
+            _mov("26.05.2026", +914.91, None),
+        ]
+        assert detect_returned_payments(movs) == set()
+
+    def test_multiple_equal_pairs_all_indices_returned(self):
+        """Two outgoings + two incomings, all same account+amount, outs before ins → all four paired."""
+        movs = [
+            _mov("21.05.2026", -914.91, self.ACCT),  # idx 0: out1
+            _mov("22.05.2026", -914.91, self.ACCT),  # idx 1: out2
+            _mov("25.05.2026", +914.91, self.ACCT),  # idx 2: in1
+            _mov("26.05.2026", +914.91, self.ACCT),  # idx 3: in2
+        ]
+        assert detect_returned_payments(movs) == {0, 1, 2, 3}

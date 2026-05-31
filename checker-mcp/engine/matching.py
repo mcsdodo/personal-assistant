@@ -28,6 +28,69 @@ def skip_reason(movement: dict) -> SkipResult | None:
     return None
 
 
+# ── Date key helper ─────────────────────────────────────────────────────────
+
+
+def _movement_date_key(date_str: str) -> tuple[int, int, int]:
+    """Convert "26.05.2026" -> (2026, 5, 26) for sorting; "" -> (0, 0, 0)."""
+    if not date_str:
+        return (0, 0, 0)
+    try:
+        day, month, year = date_str.split(".")
+        return (int(year), int(month), int(day))
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
+
+
+# ── Returned-payment detection ───────────────────────────────────────────────
+
+
+def detect_returned_payments(movements: list[dict]) -> set[int]:
+    """Return indices of movements that are legs of a returned-payment pair.
+
+    A pair = one outgoing (amount < 0) and one incoming (amount > 0) with the
+    SAME counterparty account and SAME abs amount, where the outgoing leg is
+    dated on or before the incoming leg. Greedy one-to-one matching.
+    Movements without an `account` (None) are never paired here.
+    """
+    # Group (abs_amount_rounded, account) → list of (index, movement)
+    groups: dict[tuple, list[tuple[int, dict]]] = defaultdict(list)
+    for idx, mov in enumerate(movements):
+        if mov.get("account") is None:
+            continue
+        key = (round(abs(mov["amount"]), 2), mov["account"])
+        groups[key].append((idx, mov))
+
+    paired: set[int] = set()
+
+    for group in groups.values():
+        outgoing = [
+            (idx, mov) for idx, mov in group if mov["amount"] < 0
+        ]
+        incoming = [
+            (idx, mov) for idx, mov in group if mov["amount"] > 0
+        ]
+
+        # Sort each list by date ascending (earliest first)
+        outgoing.sort(key=lambda x: _movement_date_key(x[1]["date"]))
+        incoming.sort(key=lambda x: _movement_date_key(x[1]["date"]))
+
+        used_out: set[int] = set()
+        for in_idx, in_mov in incoming:
+            in_date_key = _movement_date_key(in_mov["date"])
+            # Pick the earliest unused outgoing whose date <= incoming date
+            for out_idx, out_mov in outgoing:
+                if out_idx in used_out:
+                    continue
+                if _movement_date_key(out_mov["date"]) <= in_date_key:
+                    paired.add(in_idx)
+                    paired.add(out_idx)
+                    used_out.add(out_idx)
+                    break
+
+    return paired
+
+
 # ── Month arithmetic ─────────────────────────────────────────────────────
 
 #: +/- months for cross-matching window. The window is also used by
