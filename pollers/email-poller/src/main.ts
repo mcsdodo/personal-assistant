@@ -66,6 +66,9 @@ const INITIAL_LOOKBACK = process.env.INITIAL_LOOKBACK ?? "3d";
 
 const OUTLOOK_MCP_URL = process.env.OUTLOOK_MCP_URL ?? "http://outlook-mcp:8002/mcp";
 const OUTLOOK_ENABLED = (process.env.OUTLOOK_ENABLED ?? "true").toLowerCase() !== "false";
+// True page_token/nextLink pagination is intentionally deferred (task 85); the full-page guard
+// below is the signal to revisit it when this single-page assumption starts breaking.
+const OUTLOOK_PAGE_SIZE = 200;
 const EMAIL_FILTER_INCLUDE = process.env.EMAIL_FILTER_INCLUDE ?? "";
 const EMAIL_FILTER_EXCLUDE = process.env.EMAIL_FILTER_EXCLUDE ?? "";
 
@@ -352,6 +355,20 @@ export function resetOutlookClient(): void {
   outlookClientWrapper.reset();
 }
 
+// ── Full-page guard helper ────────────────────────────────────────────
+// Emits a loud log + counter when a search returns a full page, signalling
+// that the single-page assumption may be breaking and pagination should be
+// revisited (task 85). Observability only — does NOT truncate results.
+function warnIfPageFull(source: string, returnedCount: number, pageSize: number): void {
+  if (returnedCount >= pageSize) {
+    log(
+      `WARNING: ${source} search page came back full (${returnedCount} >= ${pageSize}); ` +
+      `older matches may be truncated — revisit page_token pagination (task 85). No silent truncation.`,
+    );
+    searchPageFullCounter.add(1, { source: source.toLowerCase() });
+  }
+}
+
 // ── Gmail query wrapper ───────────────────────────────────────────────
 function buildGmailQuery(lastChecked: string | null): string {
   return _buildGmailQuery(GMAIL_SEARCH_BASE, lastChecked);
@@ -386,14 +403,7 @@ export async function pollGmail(db: Database, query: string): Promise<EmailInfo[
     // Guard: if the API returned a full page, log loudly — the single-page
     // assumption may be breaking and true pagination should be revisited.
     const rawIds = extractGmailIds(searchData);
-    if (rawIds.length >= GMAIL_PAGE_SIZE) {
-      log(
-        `WARNING: Gmail search page came back full (${rawIds.length} >= ${GMAIL_PAGE_SIZE}). ` +
-        `Single-page assumption may be breaking — emails beyond page 1 are not retrieved. ` +
-        `True pagination must be revisited.`,
-      );
-      searchPageFullCounter.add(1, { source: "gmail" });
-    }
+    warnIfPageFull("Gmail", rawIds.length, GMAIL_PAGE_SIZE);
     const allIds = [...new Set(rawIds)];
     if (allIds.length === 0) {
       return [];
@@ -479,7 +489,7 @@ export async function pollOutlook(db: Database, receivedAfter: string | null): P
   try {
     const client = await getOutlookClient();
 
-    const args: Record<string, any> = { top: 50 };
+    const args: Record<string, any> = { top: OUTLOOK_PAGE_SIZE };
     if (receivedAfter) {
       args.received_after = receivedAfter;
     }
@@ -498,6 +508,10 @@ export async function pollOutlook(db: Database, receivedAfter: string | null): P
     if (!Array.isArray(data)) {
       data = [data];
     }
+
+    // Guard: if the API returned a full page, log loudly — true nextLink
+    // pagination should be revisited (task 85).
+    warnIfPageFull("Outlook", data.length, OUTLOOK_PAGE_SIZE);
 
     return data.map((item: any) => ({
       id: String(item.id),

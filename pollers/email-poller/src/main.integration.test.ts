@@ -314,8 +314,59 @@ describe("pollOutlook integration", () => {
     });
 
     await pollOutlook(db, "2026-03-15T12:00:00Z");
-    expect(capturedArgs.arguments.top).toBe(50);
+    expect(capturedArgs.arguments.top).toBe(200);
     expect(capturedArgs.arguments.received_after).toBe("2026-03-15T12:00:00Z");
+  });
+
+  test("logs full-page guard when list_emails returns exactly OUTLOOK_PAGE_SIZE (200) results", async () => {
+    // Build 200 distinct outlook emails
+    const emailData = Array.from({ length: 200 }, (_, i) => ({
+      id: `outlook-fullpage-${i.toString().padStart(3, "0")}`,
+      sender: `sender${i}@corp.com`,
+      subject: `Email ${i}`,
+      has_attachments: false,
+      received_at: "2026-03-01T10:00:00Z",
+    }));
+
+    setOutlookCallTool(async ({ name }: any) => {
+      if (name === "list_emails") return mcpTextResult(emailData);
+      return { content: [] };
+    });
+
+    const logLines: string[] = [];
+    const origConsoleError = console.error;
+    console.error = (...args: any[]) => { logLines.push(args.join(" ")); };
+    try {
+      await pollOutlook(db, "2026-03-01T00:00:00Z");
+    } finally {
+      console.error = origConsoleError;
+    }
+
+    const guardLog = logLines.find((l) => l.includes("Outlook search page came back full"));
+    expect(guardLog).toBeDefined();
+  });
+
+  test("does NOT log full-page guard when list_emails returns fewer than 200 results", async () => {
+    const emailData = [
+      { id: "msg-outlook-small-001", sender: "a@corp.com", subject: "One", has_attachments: false, received_at: "2026-03-01T10:00:00Z" },
+    ];
+
+    setOutlookCallTool(async ({ name }: any) => {
+      if (name === "list_emails") return mcpTextResult(emailData);
+      return { content: [] };
+    });
+
+    const logLines: string[] = [];
+    const origConsoleError = console.error;
+    console.error = (...args: any[]) => { logLines.push(args.join(" ")); };
+    try {
+      await pollOutlook(db, "2026-03-01T00:00:00Z");
+    } finally {
+      console.error = origConsoleError;
+    }
+
+    const guardLog = logLines.find((l) => l.includes("Outlook search page came back full"));
+    expect(guardLog).toBeUndefined();
   });
 });
 
