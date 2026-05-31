@@ -539,7 +539,7 @@ export async function pollCycle(emailDb: Database, wfDb: Database): Promise<void
     // before importing the module (or in beforeAll) still work correctly even when the
     // module-level constants were frozen with the wrong value at static-import time.
     const effectiveGmailEnabled = (process.env.GMAIL_EMAIL ?? GMAIL_EMAIL).length > 0;
-    const effectiveOutlookEnabled = (process.env.OUTLOOK_ENABLED ?? String(OUTLOOK_ENABLED)).toLowerCase() !== "false";
+    const effectiveOutlookEnabled = (process.env.OUTLOOK_ENABLED ?? "true").toLowerCase() !== "false";
 
     if (effectiveGmailEnabled) {
       const lastChecked = getLastChecked(emailDb, "gmail");

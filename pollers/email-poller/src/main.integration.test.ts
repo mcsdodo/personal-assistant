@@ -658,7 +658,9 @@ describe("pollCycle: D1 — transient-miss / index-lag recovery", () => {
     });
     // Outlook mock stays at default empty (set in beforeEach) — harmless.
 
-    // Poll 1: M is in-range (cursor 20 min ago) but not yet indexed → not returned.
+    // Poll 1 finds nothing (M not yet indexed) but STILL advances the cursor to ~now−10min,
+    // because processWithOverflowGuard.setLastChecked runs whenever newEmails.length <= maxPerCycle
+    // (0 qualifies). That advance is what gives poll 2 its overlap window.
     await pollCycle(db, wfDb);
 
     // NON-NEGOTIABLE intermediate assertion: proves a real transient miss happened.
@@ -712,10 +714,10 @@ describe("pollCycle: overlap dedup — re-surfaced email is not double-ingested"
     setGmailCallTool(async ({ name, arguments: args }: any) => {
       if (name === "search_gmail_messages") {
         callCount++;
-        const indexed = true; // always indexed — no lag simulation
         const afterMatch = (args.query as string).match(/after:(\d+)/);
         const afterEpoch = afterMatch ? parseInt(afterMatch[1], 10) : 0;
-        if (indexed && M_recv_epoch >= afterEpoch) {
+        // D2: no index-lag — M is always returned when within the after: window (contrast D1's callCount>=2 lag)
+        if (M_recv_epoch >= afterEpoch) {
           if (callCount >= 2) returnedOnPoll2 = true;
           return mcpTextResult([{ id: M.id, subject: M.subject, from: M.from, receivedAt: M.receivedAt }]);
         }
