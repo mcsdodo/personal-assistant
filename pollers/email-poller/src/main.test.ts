@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { openDb as openEmailDb, getLastChecked, setLastChecked } from "../../lib/email-db";
+import { openDb as openEmailDb, getLastChecked, setLastChecked, emailExists } from "../../lib/email-db";
 import { openWorkflowDb } from "../../lib/workflow-db";
 import { seedFromInitialLookback, processWithOverflowGuard, processNewEmails, type EmailInfo } from "./main";
 
@@ -47,15 +47,19 @@ describe("email-poller processWithOverflowGuard", () => {
     wfDb = openWorkflowDb(tmpPath("workflow"));
   });
 
+  // Returns n emails with distinct, increasing receivedAt (id 0 = oldest),
+  // but in **newest-first** order (index 0 = id n-1) to mirror Gmail search results.
+  const BASE_TS = new Date("2026-04-15T10:00:00.000Z").getTime();
   function emails(n: number): EmailInfo[] {
-    return Array.from({ length: n }, (_, i) => ({
+    const ordered = Array.from({ length: n }, (_, i) => ({
       id: `gmail-${i}`,
       source: "gmail",
       sender: "vendor@example.com",
       subject: `Invoice ${i}`,
       hasAttachments: true,
-      receivedAt: "2026-04-15T10:00:00.000Z",
+      receivedAt: new Date(BASE_TS + i * 60_000).toISOString(), // each 1 min apart, id 0 oldest
     }));
+    return ordered.reverse(); // newest-first, like Gmail search results
   }
 
   it("processes emails normally below the cap and advances last_checked", async () => {
@@ -83,6 +87,56 @@ describe("email-poller processWithOverflowGuard", () => {
     expect(getLastChecked(emailDb, "gmail")).toBeNull();
     const afterRows = wfDb.prepare("SELECT COUNT(*) as n FROM jobs").get() as { n: number };
     expect(afterRows.n).toBe(beforeRows.n);
+  });
+
+  it("over-cap: processes oldest maxPerCycle, holds cursor, drains remainder next poll", async () => {
+    const batch = emails(7); // ids gmail-0..gmail-6; gmail-0 is oldest, gmail-6 newest
+    // gmail-0..gmail-4 are the 5 oldest; gmail-5, gmail-6 are the 2 newest (not yet ingested)
+
+    // --- First poll: 7 emails, over cap of 5 ---
+    const result = await processWithOverflowGuard(emailDb, wfDb, "gmail", batch, 200, 5);
+    expect(result.overflow).toBe(false);
+    expect(result.capped).toBe(true);
+    expect(result.processed).toBe(5);
+
+    // Cursor must NOT have been advanced (held so next poll re-covers full window)
+    expect(getLastChecked(emailDb, "gmail")).toBeNull();
+
+    // Exactly 5 jobs created, for the 5 OLDEST emails (gmail-0..gmail-4)
+    const jobs = wfDb
+      .prepare("SELECT source_ref FROM jobs ORDER BY created_at ASC")
+      .all() as Array<{ source_ref: string }>;
+    expect(jobs.length).toBe(5);
+    const processedRefs = jobs.map((j) => j.source_ref);
+    expect(processedRefs).toContain("gmail:gmail-0");
+    expect(processedRefs).toContain("gmail:gmail-1");
+    expect(processedRefs).toContain("gmail:gmail-2");
+    expect(processedRefs).toContain("gmail:gmail-3");
+    expect(processedRefs).toContain("gmail:gmail-4");
+    // Newest 2 must NOT have been processed yet
+    expect(processedRefs).not.toContain("gmail:gmail-5");
+    expect(processedRefs).not.toContain("gmail:gmail-6");
+
+    // --- Simulate next poll: filter already-ingested emails (mirrors pollCycle emailExists check) ---
+    const remaining = batch.filter((e) => !emailExists(emailDb, e.id));
+    expect(remaining.length).toBe(2); // gmail-5, gmail-6
+
+    const before2 = Date.now();
+    const result2 = await processWithOverflowGuard(emailDb, wfDb, "gmail", remaining, 200, 5);
+    expect(result2.overflow).toBe(false);
+    expect(result2.capped).toBeUndefined(); // normal path, not capped
+    expect(result2.processed).toBe(2);
+
+    // Cursor IS now advanced (normal branch ran), and is behind by POLL_OVERLAP (~10 min)
+    const cursor = getLastChecked(emailDb, "gmail");
+    expect(cursor).not.toBeNull();
+    const cursorMs = Date.parse(cursor!);
+    expect(cursorMs).toBeLessThanOrEqual(before2 - 9 * 60 * 1000);
+    expect(cursorMs).toBeGreaterThan(before2 - 11 * 60 * 1000);
+
+    // Total jobs = 7 (all emails processed across both polls)
+    const totalJobs = wfDb.prepare("SELECT COUNT(*) as n FROM jobs").get() as { n: number };
+    expect(totalJobs.n).toBe(7);
   });
 });
 

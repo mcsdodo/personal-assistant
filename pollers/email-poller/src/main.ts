@@ -87,6 +87,9 @@ let lastSuccessfulPollAt: number = Date.now();
 const catchupOverflowCounter = meter.createCounter("email_watcher.catchup_overflow", {
   description: "Times a poll cycle saw more new emails than MAX_CATCHUP_EMAILS for a source",
 });
+const newCapExceededCounter = meter.createCounter("email_watcher.new_cap_exceeded", {
+  description: "Times a poll cycle saw more new emails than MAX_NEW_PER_CYCLE, triggering oldest-first drain",
+});
 
 // ── INITIAL_LOOKBACK seeding (replaces first_start prompt) ───────────
 export function seedFromInitialLookback(
@@ -108,6 +111,7 @@ export function seedFromInitialLookback(
 export interface OverflowResult {
   overflow: boolean;
   processed: number;
+  capped?: boolean;
 }
 
 export async function processWithOverflowGuard(
@@ -126,6 +130,27 @@ export async function processWithOverflowGuard(
       `or run skip-catchup.ts.`,
     );
     return { overflow: true, processed: 0 };
+  }
+  if (newEmails.length > maxPerCycle) {
+    // Over-cap but within flood limit: sort oldest-first and process the oldest maxPerCycle.
+    // Cursor is NOT advanced so the next poll re-covers the full window; emailExists dedup
+    // removes already-ingested emails and the backlog drains maxPerCycle per poll until
+    // the batch fits in the normal branch.
+    const sorted = [...newEmails].sort((a, b) => {
+      const ta = Date.parse(a.receivedAt ?? "");
+      const tb = Date.parse(b.receivedAt ?? "");
+      if (Number.isNaN(ta) && Number.isNaN(tb)) return 0;
+      if (Number.isNaN(ta)) return 1;  // unparseable → sort to end (treat as newest)
+      if (Number.isNaN(tb)) return -1;
+      return ta - tb; // ascending: oldest first
+    });
+    newCapExceededCounter.add(1, { source });
+    log(
+      `${source}: ${newEmails.length} new emails exceed per-cycle cap of ${maxPerCycle}. ` +
+      `Processing oldest ${maxPerCycle}; cursor held for next poll to drain remainder.`,
+    );
+    await processNewEmails(emailDb, wfDb, sorted, maxPerCycle, GMAIL_EMAIL || undefined);
+    return { overflow: false, processed: maxPerCycle, capped: true };
   }
   await processNewEmails(emailDb, wfDb, newEmails, maxPerCycle, GMAIL_EMAIL || undefined);
   setLastChecked(emailDb, source, cursorTimestamp(Date.now(), POLL_OVERLAP_MS));
