@@ -59,10 +59,20 @@ describe("email-poller processWithOverflowGuard", () => {
   }
 
   it("processes emails normally below the cap and advances last_checked", async () => {
+    const before = Date.now();
     const result = await processWithOverflowGuard(emailDb, wfDb, "gmail", emails(5), 200, 5);
     expect(result.overflow).toBe(false);
     expect(result.processed).toBe(5);
     expect(getLastChecked(emailDb, "gmail")).not.toBeNull();
+
+    // Phase 1 invariant: cursor must land at now - POLL_OVERLAP (default 10min),
+    // not at now. A regression that reverted to new Date().toISOString() would fail
+    // this check because the cursor would be within milliseconds of `before`.
+    const cursorMs = Date.parse(getLastChecked(emailDb, "gmail")!);
+    // Must be at least ~9 min behind (slop for fast machines)
+    expect(cursorMs).toBeLessThanOrEqual(before - 9 * 60 * 1000);
+    // Must not be absurdly far behind (sanity: within 11 min)
+    expect(cursorMs).toBeGreaterThan(before - 11 * 60 * 1000);
   });
 
   it("does NOT process or advance last_checked when emails exceed cap", async () => {

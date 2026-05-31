@@ -76,7 +76,7 @@ describe("parseDuration", () => {
   });
 
   test("allows whitespace between number and unit", () => {
-    // The regex is /^(\d+)\s*(h|d|w|m)$/i — \s* allows spaces
+    // The regex is /^(\d+)\s*(min|h|d|w|m)$/i — \s* allows spaces
     expect(parseDuration("3 h")).toBe(3 * 60 * 60 * 1000);
     expect(parseDuration("2  d")).toBe(2 * 24 * 60 * 60 * 1000);
   });
