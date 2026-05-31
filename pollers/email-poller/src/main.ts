@@ -531,17 +531,23 @@ export async function pollOutlook(db: Database, receivedAfter: string | null): P
 }
 
 // ── Poll cycle ────────────────────────────────────────────────────────
-async function pollCycle(emailDb: Database, wfDb: Database): Promise<void> {
+export async function pollCycle(emailDb: Database, wfDb: Database): Promise<void> {
   return withSpan(tracer, "email-poller.poll", {}, async (span) => {
     const sources: Array<{ name: string; poll: () => Promise<EmailInfo[] | null> }> = [];
 
-    if (gmailEnabled) {
+    // Re-read env at call time so integration tests that set GMAIL_EMAIL / OUTLOOK_ENABLED
+    // before importing the module (or in beforeAll) still work correctly even when the
+    // module-level constants were frozen with the wrong value at static-import time.
+    const effectiveGmailEnabled = (process.env.GMAIL_EMAIL ?? GMAIL_EMAIL).length > 0;
+    const effectiveOutlookEnabled = (process.env.OUTLOOK_ENABLED ?? String(OUTLOOK_ENABLED)).toLowerCase() !== "false";
+
+    if (effectiveGmailEnabled) {
       const lastChecked = getLastChecked(emailDb, "gmail");
       // INITIAL_LOOKBACK seed runs in main(); lastChecked is always non-null here.
       const query = buildGmailQuery(lastChecked);
       sources.push({ name: "gmail", poll: () => pollGmail(emailDb, query) });
     }
-    if (OUTLOOK_ENABLED) {
+    if (effectiveOutlookEnabled) {
       const lastChecked = getLastChecked(emailDb, "outlook");
       sources.push({ name: "outlook", poll: () => pollOutlook(emailDb, lastChecked) });
     }
