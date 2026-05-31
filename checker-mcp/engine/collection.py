@@ -18,6 +18,7 @@ import re
 from .client import PaperlessClient
 from .matching import (
     build_pair_index,
+    detect_returned_payments,
     find_matching_invoice,
     get_month_window,
     month_offset,
@@ -141,77 +142,98 @@ def collect_month(
         return result
 
     matched_ids = set(global_matched_ids) if global_matched_ids is not None else set()
+
+    parsed = []  # list[tuple[stmt, mov]]
     for stmt in statements:
         result["header"] = f"=== {yyyy_mm} (vypis doc #{stmt['id']}) ==="
         result["header_doc_id"] = stmt["id"]
         for mov in parse_movements(stmt.get("content", "")):
-            stats["total"] += 1
-            date_str = mov["date"] or ""
-            desc = mov["description"][:40].ljust(40)
-            amt_val = mov["amount"]
-            amt_str = f"{abs(amt_val):>10.2f}{'-' if amt_val < 0 else '+'}"
+            parsed.append((stmt, mov))
 
-            skip = skip_reason(mov)
-            if skip:
-                stats["skipped"] += 1
-                result["rows"].append(
-                    {
-                        "date": date_str,
-                        "desc": desc,
-                        "amount": amt_str,
-                        "status": "skipped",
-                        "label": "SKIPPED",
-                        "detail": skip.label,
-                    }
-                )
-                continue
+    returned_idx = detect_returned_payments([m for _, m in parsed])
 
-            status, matched, _ = find_matching_invoice(
-                amt_val, invoice_docs, mov.get("orig_amount"), exclude_ids=matched_ids
+    for i, (_, mov) in enumerate(parsed):
+        stats["total"] += 1
+        date_str = mov["date"] or ""
+        desc = mov["description"][:40].ljust(40)
+        amt_val = mov["amount"]
+        amt_str = f"{abs(amt_val):>10.2f}{'-' if amt_val < 0 else '+'}"
+
+        if i in returned_idx:
+            stats["skipped"] += 1
+            result["rows"].append(
+                {
+                    "date": date_str,
+                    "desc": desc,
+                    "amount": amt_str,
+                    "status": "cancelled",
+                    "label": "RETURNED",
+                    "detail": "returned payment (same account)",
+                }
             )
-            inv_title = matched["title"] if matched else ""
-            doc_id = matched["id"] if matched else None
-            if matched:
-                matched_ids.add(matched["id"])
+            continue
 
-            if status == "OK":
-                stats["ok"] += 1
-                result["rows"].append(
-                    {
-                        "date": date_str,
-                        "desc": desc,
-                        "amount": amt_str,
-                        "status": "ok",
-                        "label": "OK",
-                        "detail": inv_title,
-                        "doc_id": doc_id,
-                    }
-                )
-            elif status == "MANUAL CHECK":
-                stats["manual"] += 1
-                result["rows"].append(
-                    {
-                        "date": date_str,
-                        "desc": desc,
-                        "amount": amt_str,
-                        "status": "manual",
-                        "label": "MANUAL CHECK",
-                        "detail": inv_title,
-                        "doc_id": doc_id,
-                    }
-                )
-            else:
-                stats["missing"] += 1
-                result["rows"].append(
-                    {
-                        "date": date_str,
-                        "desc": desc,
-                        "amount": amt_str,
-                        "status": "missing",
-                        "label": "MISSING INVOICE",
-                        "detail": "",
-                    }
-                )
+        skip = skip_reason(mov)
+        if skip:
+            stats["skipped"] += 1
+            result["rows"].append(
+                {
+                    "date": date_str,
+                    "desc": desc,
+                    "amount": amt_str,
+                    "status": "skipped",
+                    "label": "SKIPPED",
+                    "detail": skip.label,
+                }
+            )
+            continue
+
+        status, matched, _ = find_matching_invoice(
+            amt_val, invoice_docs, mov.get("orig_amount"), exclude_ids=matched_ids
+        )
+        inv_title = matched["title"] if matched else ""
+        doc_id = matched["id"] if matched else None
+        if matched:
+            matched_ids.add(matched["id"])
+
+        if status == "OK":
+            stats["ok"] += 1
+            result["rows"].append(
+                {
+                    "date": date_str,
+                    "desc": desc,
+                    "amount": amt_str,
+                    "status": "ok",
+                    "label": "OK",
+                    "detail": inv_title,
+                    "doc_id": doc_id,
+                }
+            )
+        elif status == "MANUAL CHECK":
+            stats["manual"] += 1
+            result["rows"].append(
+                {
+                    "date": date_str,
+                    "desc": desc,
+                    "amount": amt_str,
+                    "status": "manual",
+                    "label": "MANUAL CHECK",
+                    "detail": inv_title,
+                    "doc_id": doc_id,
+                }
+            )
+        else:
+            stats["missing"] += 1
+            result["rows"].append(
+                {
+                    "date": date_str,
+                    "desc": desc,
+                    "amount": amt_str,
+                    "status": "missing",
+                    "label": "MISSING INVOICE",
+                    "detail": "",
+                }
+            )
 
     # Alt-amount matching: invoices with total_amount_alt can match a second row
     alt_invs = {

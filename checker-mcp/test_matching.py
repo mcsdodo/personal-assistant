@@ -2214,3 +2214,158 @@ class TestReturnedPayments:
             _mov("26.05.2026", +914.91, self.ACCT),  # idx 3: in2
         ]
         assert detect_returned_payments(movs) == {0, 1, 2, 3}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# collect_month: returned-payment cancellation integration tests (Phase 3)
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestCollectMonthReturnedPayments:
+    """Integration tests: detect_returned_payments wired into collect_month.
+
+    The returned-payment detector must run BEFORE invoice matching so that
+    bounced transfer legs never consume invoices.
+    """
+
+    ACCT = "1111/000000-1372371018"
+
+    def _make_client_with_returned_pair(self):
+        """2026-05 statement: outgoing -914.91 (22.05) + incoming +914.91 (26.05),
+        both carrying the same account token.  Plus invoice #470 for 914.91.
+        """
+        content = _stmt(
+            ("22.05.2026", f"Platba {self.ACCT}", -914.91),
+            ("26.05.2026", f"Vrátenie {self.ACCT}", +914.91),
+        )
+        stmt = _make_statement(500, "2026-05", content)
+        inv = _make_invoice(470, "twd SK - 26003063", "twd.pdf", "2026-05", 914.91)
+        return _mock_client(
+            {
+                TAG_IDS["2026-04"]: [],
+                TAG_IDS["2026-05"]: [stmt, inv],
+                TAG_IDS["2026-06"] if "2026-06" in TAG_IDS else 999: [],
+            }
+        )
+
+    def test_proof_both_legs_cancelled_as_returned(self):
+        """Both legs of the bounced transfer must be RETURNED, not OK or missing."""
+        client = self._make_client_with_returned_pair()
+        result = _collect(client, "2026-05")
+
+        returned_rows = [r for r in result["rows"] if r.get("label") == "RETURNED"]
+        assert len(returned_rows) == 2, (
+            f"Expected 2 RETURNED rows, got {len(returned_rows)}: "
+            f"{[(r['status'], r['label'], r['amount']) for r in result['rows']]}"
+        )
+        for row in returned_rows:
+            assert row["status"] == "cancelled", (
+                f"RETURNED row should have status='cancelled', got {row['status']!r}"
+            )
+
+    def test_proof_invoice_not_consumed_appears_as_info(self):
+        """Invoice #470 must NOT be consumed by the bounced transfer — it should be info."""
+        client = self._make_client_with_returned_pair()
+        result = _collect(client, "2026-05")
+
+        inv_rows = [r for r in result["rows"] if r.get("doc_id") == 470]
+        assert len(inv_rows) == 1, (
+            f"Expected exactly 1 row for invoice #470, got {len(inv_rows)}"
+        )
+        assert inv_rows[0]["status"] == "info", (
+            f"Invoice #470 should be 'info' (not consumed), got {inv_rows[0]['status']!r}"
+        )
+
+    def test_proof_zero_missing_rows(self):
+        """Incoming +914.91 must NOT be spuriously flagged MISSING INVOICE."""
+        client = self._make_client_with_returned_pair()
+        result = _collect(client, "2026-05")
+
+        missing_rows = [r for r in result["rows"] if r["status"] == "missing"]
+        assert len(missing_rows) == 0, (
+            f"Expected 0 missing rows, got {len(missing_rows)}: "
+            f"{[(r['label'], r['amount']) for r in missing_rows]}"
+        )
+        assert result["stats"]["missing"] == 0
+
+    def test_regression_lone_payment_with_account_token_still_matches_invoice(self):
+        """A lone outgoing with an account token (no matching incoming) must match normally."""
+        acct = "3333/000000-1234567890"
+        content = _stmt(
+            ("10.05.2026", f"Platba {acct}", -250.00),
+        )
+        stmt = _make_statement(501, "2026-05", content)
+        inv = _make_invoice(471, "inv_lone", "inv_lone.pdf", "2026-05", 250.00)
+        client = _mock_client(
+            {
+                TAG_IDS["2026-04"]: [],
+                TAG_IDS["2026-05"]: [stmt, inv],
+            }
+        )
+        result = _collect(client, "2026-05")
+        assert result["stats"]["ok"] == 1, (
+            f"Lone outgoing with account token should match invoice as OK, "
+            f"got stats={result['stats']}"
+        )
+        assert result["rows"][0]["status"] == "ok"
+
+    def test_regression_equal_amounts_different_accounts_not_returned(self):
+        """Outgoing -300 (acct A) and incoming +300 (acct B) must NOT be RETURNED."""
+        acct_a = "1111/000000-1111111111"
+        acct_b = "2222/000000-2222222222"
+        content = _stmt(
+            ("10.05.2026", f"Platba {acct_a}", -300.00),
+            ("12.05.2026", f"Prijem {acct_b}", +300.00),
+        )
+        stmt = _make_statement(502, "2026-05", content)
+        client = _mock_client(
+            {
+                TAG_IDS["2026-04"]: [],
+                TAG_IDS["2026-05"]: [stmt],
+                TAG_IDS["2026-06"] if "2026-06" in TAG_IDS else 999: [],
+            }
+        )
+        result = _collect(client, "2026-05")
+
+        for row in result["rows"]:
+            assert row.get("label") != "RETURNED", (
+                f"Different-account pair must not be labelled RETURNED: {row}"
+            )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Phase 4: P&L test — returned pair contributes 0 to income/expenses
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestCollectPLReturnedPayments:
+    """P&L must not count either leg of a returned-payment pair."""
+
+    ACCT = "1111/000000-1372371018"
+
+    def test_returned_pair_contributes_zero_to_pl(self):
+        """Returned pair: neither leg counted in expenses or income."""
+        content = _stmt(
+            ("22.05.2026", f"Platba {self.ACCT}", -914.91),
+            ("26.05.2026", f"Vrátenie {self.ACCT}", +914.91),
+        )
+        stmt = _make_statement(500, "2026-05", content)
+        inv = _make_invoice(470, "twd SK - 26003063", "twd.pdf", "2026-05", 914.91)
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2026-04"]: [],
+                TAG_IDS["2026-05"]: [stmt, inv],
+            }
+        )
+        pl = _collect_pl(client, 2026)
+
+        # Both legs are status="cancelled" (RETURNED) → P&L skips them
+        assert "invoiced" not in pl["expenses"] or pl["expenses"].get("invoiced", 0) == 0, (
+            f"RETURNED outgoing must not add to invoiced expenses: "
+            f"expenses={pl['expenses']}"
+        )
+        # Incoming +914.91 is cancelled (RETURNED), NOT a matched invoice row
+        # twd SK invoice does not start with "techlab" → no income
+        assert pl["income"] == 0.0, (
+            f"RETURNED incoming must not add income: income={pl['income']}"
+        )
