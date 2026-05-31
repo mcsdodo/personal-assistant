@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildGmailQuery,
   parseDuration,
+  cursorTimestamp,
   esc,
   metricLine,
   emitWithDefaults,
@@ -78,6 +79,52 @@ describe("parseDuration", () => {
     // The regex is /^(\d+)\s*(h|d|w|m)$/i — \s* allows spaces
     expect(parseDuration("3 h")).toBe(3 * 60 * 60 * 1000);
     expect(parseDuration("2  d")).toBe(2 * 24 * 60 * 60 * 1000);
+  });
+
+  test("parses minutes with 'min' suffix", () => {
+    expect(parseDuration("10min")).toBe(600000);   // 10 * 60 * 1000
+    expect(parseDuration("1min")).toBe(60000);      // 1 * 60 * 1000
+  });
+
+  test("parses zero overlap (disable path)", () => {
+    expect(parseDuration("0h")).toBe(0);
+  });
+
+  test("backward-compat: 'm' still means months (30 days), not minutes", () => {
+    expect(parseDuration("2m")).toBe(2 * 30 * 24 * 60 * 60 * 1000);
+    expect(parseDuration("1m")).toBe(30 * 24 * 60 * 60 * 1000);
+  });
+
+  test("backward-compat: hours, days, weeks unchanged", () => {
+    expect(parseDuration("1h")).toBe(3600000);
+    expect(parseDuration("3d")).toBe(3 * 24 * 60 * 60 * 1000);
+    expect(parseDuration("1w")).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cursorTimestamp
+// ---------------------------------------------------------------------------
+
+describe("cursorTimestamp", () => {
+  test("subtracts overlap and returns ISO-8601 string ending with Z", () => {
+    const nowMs = 1700000000000;
+    const overlapMs = 600000; // 10 minutes
+    const result = cursorTimestamp(nowMs, overlapMs);
+    expect(result).toBe(new Date(nowMs - overlapMs).toISOString());
+    expect(result.endsWith("Z")).toBe(true);
+  });
+
+  test("zero overlap returns ISO of now (disable path restores old behavior)", () => {
+    const nowMs = 1700000000000;
+    const result = cursorTimestamp(nowMs, 0);
+    expect(result).toBe(new Date(nowMs).toISOString());
+  });
+
+  test("result is parseable as a Date", () => {
+    const nowMs = Date.now();
+    const result = cursorTimestamp(nowMs, 600000);
+    expect(isNaN(new Date(result).getTime())).toBe(false);
   });
 });
 

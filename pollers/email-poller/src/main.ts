@@ -25,7 +25,7 @@ import {
 } from "../../lib/workflow-schemas";
 import { filterEmailsByRecipient } from "../../lib/email-filter";
 import {
-  parseDuration, parseToolResult, extractGmailIds, parseGmailEmails,
+  parseDuration, cursorTimestamp, parseToolResult, extractGmailIds, parseGmailEmails,
   buildGmailQuery as _buildGmailQuery,
 } from "../../lib/email-watcher-utils";
 import {
@@ -65,6 +65,14 @@ const OUTLOOK_MCP_URL = process.env.OUTLOOK_MCP_URL ?? "http://outlook-mcp:8002/
 const OUTLOOK_ENABLED = (process.env.OUTLOOK_ENABLED ?? "true").toLowerCase() !== "false";
 const EMAIL_FILTER_INCLUDE = process.env.EMAIL_FILTER_INCLUDE ?? "";
 const EMAIL_FILTER_EXCLUDE = process.env.EMAIL_FILTER_EXCLUDE ?? "";
+
+// Overlap window: cursor advances to (now - POLL_OVERLAP_MS) so each poll
+// re-queries a bounded lookback window. This tolerates Gmail index lag where
+// an email's receive-time falls behind the cursor before it's ever returned.
+// Set POLL_OVERLAP=0h to disable. The existing emailExists dedup prevents
+// re-processing already-seen emails.
+const POLL_OVERLAP = process.env.POLL_OVERLAP ?? "10min";
+const POLL_OVERLAP_MS = parseDuration(POLL_OVERLAP);
 
 const gmailEnabled = GMAIL_EMAIL.length > 0;
 
@@ -120,7 +128,7 @@ export async function processWithOverflowGuard(
     return { overflow: true, processed: 0 };
   }
   await processNewEmails(emailDb, wfDb, newEmails, maxPerCycle, GMAIL_EMAIL || undefined);
-  setLastChecked(emailDb, source, new Date().toISOString());
+  setLastChecked(emailDb, source, cursorTimestamp(Date.now(), POLL_OVERLAP_MS));
   return { overflow: false, processed: newEmails.length };
 }
 
@@ -545,7 +553,7 @@ async function main(): Promise<void> {
     `Config: gmail=${gmailEnabled ? GMAIL_EMAIL : "disabled"}, ` +
     `outlook=${OUTLOOK_ENABLED ? "enabled" : "disabled"}, ` +
     `poll=${POLL_INTERVAL_MS}ms, max_catchup=${MAX_CATCHUP_EMAILS}, ` +
-    `lookback=${INITIAL_LOOKBACK}, db=${DB_PATH}`,
+    `overlap=${POLL_OVERLAP}, lookback=${INITIAL_LOOKBACK}, db=${DB_PATH}`,
   );
 
   await startPollLoop({

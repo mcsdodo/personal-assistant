@@ -37,16 +37,30 @@ export function buildGmailQuery(base: string, lastChecked: string | null): strin
 // ---------------------------------------------------------------------------
 
 export function parseDuration(duration: string): number {
-  const match = duration.match(/^(\d+)\s*(h|d|w|m)$/i);
+  // "min" must come before "m" in the alternation so "10min" matches minutes,
+  // not months. "m" alone still means months (30 days) for backward-compat.
+  const match = duration.match(/^(\d+)\s*(min|h|d|w|m)$/i);
   if (!match) return 24 * 60 * 60 * 1000;
   const value = parseInt(match[1], 10);
   switch (match[2].toLowerCase()) {
+    case "min": return value * 60 * 1000;
     case "h": return value * 60 * 60 * 1000;
     case "d": return value * 24 * 60 * 60 * 1000;
     case "w": return value * 7 * 24 * 60 * 60 * 1000;
     case "m": return value * 30 * 24 * 60 * 60 * 1000;
     default: return 24 * 60 * 60 * 1000;
   }
+}
+
+/**
+ * Returns an ISO-8601 timestamp string for the cursor position `overlapMs`
+ * before `nowMs`. Pass `overlapMs = 0` to disable the overlap (behaves like
+ * the old `new Date().toISOString()` cursor advance).
+ *
+ * Pure function — no side effects.
+ */
+export function cursorTimestamp(nowMs: number, overlapMs: number): string {
+  return new Date(nowMs - overlapMs).toISOString();
 }
 
 // ---------------------------------------------------------------------------
