@@ -58,7 +58,13 @@ const HEALTH_STALE_MULTIPLIER = 5;
 const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const GMAIL_EMAIL = process.env.GMAIL_EMAIL ?? "";
 const GMAIL_SEARCH_BASE = process.env.GMAIL_SEARCH_BASE ?? process.env.GMAIL_SEARCH_QUERY ?? "";
-const MAX_CATCHUP_EMAILS = parseInt(process.env.MAX_CATCHUP_EMAILS ?? "200", 10);
+// Flood backstop: a poll cycle returning more than this many genuinely-new emails for one
+// source fails loud (catchup_overflow counter + ERROR, cursor NOT advanced) instead of
+// chugging — the operator then decides (raise this, or run skip-catchup.ts). INVARIANT:
+// keep this STRICTLY BELOW the page sizes below, or the guard is unreachable — a poll never
+// returns more than page_size emails, so newEmails.length can't exceed a cap set >= page_size.
+// Bursts between MAX_NEW_PER_CYCLE and this cap drain gracefully via the over-cap branch.
+const MAX_CATCHUP_EMAILS = parseInt(process.env.MAX_CATCHUP_EMAILS ?? "150", 10);
 // True page_token pagination is intentionally deferred (task 85); the full-page guard below
 // is the signal to revisit it when this single-page assumption starts breaking.
 const GMAIL_PAGE_SIZE = 200;
