@@ -264,6 +264,8 @@ MSAL device code auth with singleton caching (`_msal_lock`). `get_access_token()
 
 Standalone Bun service that polls Gmail + Outlook every `POLL_INTERVAL_MS` (default 30s) via Streamable HTTP MCP clients. Creates `invoice_intake` jobs directly in `workflow.db`. SQLite audit trail (`emails.db`). Health endpoint `/health` on `:9465` with staleness detection. On first run for a source, seeds `last_checked` from `INITIAL_LOOKBACK` (default `3d`) instead of asking Claude. If a poll cycle sees more emails than `MAX_CATCHUP_EMAILS` (default 200), logs `ERROR: catchup overflow`, emits `email_watcher.catchup_overflow{source=...}` OTel counter, and does NOT advance `last_checked`.
 
+**Transient-miss tolerance (task 85).** After a successful poll the cursor advances to **`now − POLL_OVERLAP`** (default `10min`), not wall-clock now, so each poll re-queries the last `POLL_OVERLAP` of receive-time. This tolerates any transient reason a just-arrived email isn't returned by the poll that should have caught it — Gmail search-index lag, delivery timing, a one-off API hiccup — by re-seeing it on a later poll within the window. `emailExists` dedup makes the re-fetch idempotent. `POLL_OVERLAP` is parsed by `parseDuration` (which gained a `min` minutes unit for this; note `m` still means months); set `POLL_OVERLAP=0h` to restore the old advance-to-now behavior. Applies to Gmail and Outlook (both go through the source-agnostic `processWithOverflowGuard`). Two coupled drop-forever defects were fixed in the same pass: (1) the per-cycle cap `MAX_NEW_PER_CYCLE` (default 5) is now **cursor-safe** — an over-cap cycle processes the **oldest** N emails and does **not** advance the cursor (emits `email_watcher.new_cap_exceeded{source=...}`), so the next poll drains the remainder instead of silently dropping the oldest; (2) Gmail `search_gmail_messages` now reads `page_size=200` and Outlook `list_emails` `top=200` — a full page emits `email_watcher.search_page_full{source=...}` as a loud truncation signal (true `page_token` pagination is intentionally deferred; the guard is the cue to revisit it).
+
 ### pollers/gdrive-poller/src/main.ts
 
 Standalone Bun service that polls Google Drive folders (`GDRIVE_LEVEL1` × `GDRIVE_LEVEL2`) every 30s via the gmail-mcp Drive tools. Creates `scan_intake` jobs directly in `workflow.db`. SQLite audit trail (`gdrive.db`). Health endpoint `/health` on `:9466`. Uses `pollers/lib/watcher-runtime.ts` for the health server, MCP client lifecycle, and poll loop.
@@ -458,6 +460,8 @@ docker exec personal-assistant-email-poller \
 ```
 
 This advances `last_checked = now` so the next poll cycle starts fresh.
+
+**Overlap window & cursor-safe cap (task 85).** The cursor advances to `now − POLL_OVERLAP` (default `10min`), not wall-clock now, so each poll re-looks at the last `POLL_OVERLAP` of receive-time and a transiently-missed email (Gmail index/delivery lag) is recovered on a later poll. Post-deploy, confirm the `Config:` log line shows `overlap=10min` and watch one cycle for the `now − overlap` cursor write. Set `POLL_OVERLAP=0h` to disable. The per-cycle cap (`MAX_NEW_PER_CYCLE`, default 5) is cursor-safe — over-cap cycles process the oldest N and hold the cursor (`email_watcher.new_cap_exceeded{source=...}`) so the rest drains next poll. Gmail/Outlook page size is 200; a full page emits `email_watcher.search_page_full{source=...}` (deferred `page_token` pagination — revisit if this ever fires).
 
 ## Development
 
