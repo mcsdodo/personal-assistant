@@ -25,9 +25,10 @@ Match a month's bank statement against invoices stored in Paperless.
 
 **How it works:**
 1. Fetch bank statement document for the month (document type: `account_statement`)
-2. Parse movements from the statement (date, amount, description)
-3. For each movement, search for matching invoices by amount + date window + correspondent
-4. Return rows with status: `matched`, `missing`, `excluded`, `manual`
+2. Parse movements from the statement (date, amount, description, counterparty account token)
+3. Detect returned-payment pairs (bounced transfer + its refund, same account + amount) — both legs marked `RETURNED` before matching, so neither consumes an invoice
+4. For each remaining movement, search for matching invoices by amount + date window + correspondent
+5. Return rows with status: `matched`, `missing`, `excluded`, `manual`, or `RETURNED`
 
 **Code:**
 - [`checker-mcp/server.py:55-72`](../checker-mcp/server.py#L55) — `match_invoices()` tool: calls `collect_month()` from engine

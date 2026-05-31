@@ -4,6 +4,12 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-05-31
+
+### Fixed
+- **checker-mcp**: bounced bank transfer (returned to sender) no longer matches an invoice — both legs shown as RETURNED before matching runs
+- **checker-mcp**: incoming refund of a bounced transfer no longer flagged as MISSING INVOICE
+
 ## 2026-05-24
 
 ### Changed
