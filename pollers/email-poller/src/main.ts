@@ -97,7 +97,7 @@ const newCapExceededCounter = meter.createCounter("email_watcher.new_cap_exceede
   description: "Times a poll cycle saw more new emails than MAX_NEW_PER_CYCLE, triggering oldest-first drain",
 });
 const searchPageFullCounter = meter.createCounter("email_watcher.search_page_full", {
-  description: "Times a search returned a full page (>= GMAIL_PAGE_SIZE), indicating possible results truncation",
+  description: "Times a search/list returned a full page (>= page size), indicating possible result truncation",
 });
 
 // ── INITIAL_LOOKBACK seeding (replaces first_start prompt) ───────────
@@ -362,7 +362,7 @@ export function resetOutlookClient(): void {
 function warnIfPageFull(source: string, returnedCount: number, pageSize: number): void {
   if (returnedCount >= pageSize) {
     log(
-      `WARNING: ${source} search page came back full (${returnedCount} >= ${pageSize}); ` +
+      `WARNING: ${source} email page came back full (${returnedCount} >= ${pageSize}); ` +
       `older matches may be truncated — revisit page_token pagination (task 85). No silent truncation.`,
     );
     searchPageFullCounter.add(1, { source: source.toLowerCase() });

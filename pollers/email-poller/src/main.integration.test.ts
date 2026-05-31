@@ -233,7 +233,7 @@ describe("pollGmail integration", () => {
       console.error = origConsoleError;
     }
 
-    const guardLog = logLines.find((l) => l.includes("Gmail search page came back full"));
+    const guardLog = logLines.find((l) => l.includes("Gmail email page came back full"));
     expect(guardLog).toBeDefined();
   });
 
@@ -258,7 +258,7 @@ describe("pollGmail integration", () => {
       console.error = origConsoleError;
     }
 
-    const guardLog = logLines.find((l) => l.includes("Gmail search page came back full"));
+    const guardLog = logLines.find((l) => l.includes("Gmail email page came back full"));
     expect(guardLog).toBeUndefined();
   });
 });
@@ -342,7 +342,7 @@ describe("pollOutlook integration", () => {
       console.error = origConsoleError;
     }
 
-    const guardLog = logLines.find((l) => l.includes("Outlook search page came back full"));
+    const guardLog = logLines.find((l) => l.includes("Outlook email page came back full"));
     expect(guardLog).toBeDefined();
   });
 
@@ -365,7 +365,7 @@ describe("pollOutlook integration", () => {
       console.error = origConsoleError;
     }
 
-    const guardLog = logLines.find((l) => l.includes("Outlook search page came back full"));
+    const guardLog = logLines.find((l) => l.includes("Outlook email page came back full"));
     expect(guardLog).toBeUndefined();
   });
 });
