@@ -233,7 +233,7 @@ describe("pollGmail integration", () => {
       console.error = origConsoleError;
     }
 
-    const guardLog = logLines.find((l) => l.includes("page") && l.includes("full"));
+    const guardLog = logLines.find((l) => l.includes("Gmail search page came back full"));
     expect(guardLog).toBeDefined();
   });
 
@@ -258,7 +258,7 @@ describe("pollGmail integration", () => {
       console.error = origConsoleError;
     }
 
-    const guardLog = logLines.find((l) => l.includes("page") && l.includes("full"));
+    const guardLog = logLines.find((l) => l.includes("Gmail search page came back full"));
     expect(guardLog).toBeUndefined();
   });
 });

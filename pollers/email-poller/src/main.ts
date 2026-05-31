@@ -59,6 +59,8 @@ const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const GMAIL_EMAIL = process.env.GMAIL_EMAIL ?? "";
 const GMAIL_SEARCH_BASE = process.env.GMAIL_SEARCH_BASE ?? process.env.GMAIL_SEARCH_QUERY ?? "";
 const MAX_CATCHUP_EMAILS = parseInt(process.env.MAX_CATCHUP_EMAILS ?? "200", 10);
+// True page_token pagination is intentionally deferred (task 85); the full-page guard below
+// is the signal to revisit it when this single-page assumption starts breaking.
 const GMAIL_PAGE_SIZE = 200;
 const INITIAL_LOOKBACK = process.env.INITIAL_LOOKBACK ?? "3d";
 
