@@ -61,7 +61,7 @@ The workflow worker drives the full invoice pipeline deterministically:
 - Sends Telegram notification on completion/failure
 - Pauses automatically for unknown vendors, low confidence, or browser-required cases
 
-Use `create_invoice_intake_job` or `create_scan_intake_job` only for manual reprocessing (with `force: true`). Pollers create jobs automatically.
+Pollers create jobs automatically. Use `create_invoice_intake_job` / `create_scan_intake_job` only by hand for two cases: **reprocessing** an already-processed email (`force: true` — PATCHes the existing doc in place) and **recovering a missed email** the poller never saw (`force: false` — normal pipeline, dedup-guarded). See "Manual reprocessing" and "Recovering a missed email" under the pipeline section below for which to use.
 
 The workflow channel also exposes four read-only debug tools backed by the
 poller-owned audit DBs (mounted via shared volume):
@@ -76,6 +76,11 @@ Jobs are created automatically by watchers. You only interact with jobs when:
 1. **Responding to classification requests** — when you receive `classify_email` or `classify_document` channel events from the worker, run the appropriate haiku subagent and call `submit_classification` (see "When you receive a workflow channel event" below)
 2. **Handling approval gates** — when a job enters `awaiting_approval`, notify user via Telegram, wait for response, then call `approve_job` or `cancel_job`
 3. **Manual reprocessing** — when a user asks to reprocess (e.g. "reprocess that Anthropic invoice", "fix the tag on doc #411"), call `create_invoice_intake_job(email_source, message_id, force=true)` or `create_scan_intake_job(file_id, watch_folder, month_tag, force=true)`. Under `force=true`, the worker will PATCH the existing Paperless document in place if it's already uploaded — you do NOT need to delete the old doc first. The doc id, PDF file, OCR, and thumbnail are preserved; only metadata (title, tags, correspondent, period, custom fields) gets refreshed. The worker sends a `🔄 refreshed #N` Telegram notification automatically.
+4. **Recovering a missed email** — when a user points at an email that was never processed at all (it reached the inbox but the poller never created a job — e.g. "this invoice from May never made it to Paperless", "two of these parking tickets are missing"), call `create_invoice_intake_job(email_source, message_id)` **WITHOUT `force`**. This is different from reprocessing:
+   - **Use `force=false` (omit it), NOT `force=true`.** A missed email has no existing Paperless doc to PATCH; `force=true` would bypass the duplicate check and risk a double-upload if it turns out the doc does exist. The default (`force=false`) runs the normal pipeline and the worker's dedup step still protects you — if the doc somehow already exists, the job completes with `outcome: duplicate` and is silently skipped.
+   - **Finding the `message_id`:** if the user didn't give you one, locate the email with the gmail/outlook search tools (by sender, subject, or date) and read the provider message ID from the result. For gmail that's the hex id; for outlook the long base64-like id.
+   - **Do NOT hand-write rows into `emails.db` or `workflow.db`.** `create_invoice_intake_job` is the only supported entry point — it owns job-id generation, the idempotency key, and schema validation. The poller's `emails.db` audit row is not a prerequisite; the worker classifies the email by `message_id` regardless.
+   - The worker then runs the full pipeline (classify → download → classify document → dedup → upload) and sends the normal `✓ uploaded #N` Telegram notification on success.
 
 ### Job monitoring
 
