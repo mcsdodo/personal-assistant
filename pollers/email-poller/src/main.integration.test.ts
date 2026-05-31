@@ -210,6 +210,57 @@ describe("pollGmail integration", () => {
     const result = await pollGmail(db, "after:1234567890");
     expect(result).toEqual([]);
   });
+
+  test("logs full-page guard when search returns exactly GMAIL_PAGE_SIZE (200) results", async () => {
+    // Build 200 distinct rich-format results (subject present → hasMetadata=true → no per-ID fetch)
+    const searchResponse = Array.from({ length: 200 }, (_, i) => ({
+      id: `fullpage-${i.toString().padStart(3, "0")}`,
+      subject: `Email ${i}`,
+      from: `sender${i}@example.com`,
+    }));
+
+    setGmailCallTool(async ({ name }: any) => {
+      if (name === "search_gmail_messages") return mcpTextResult(searchResponse);
+      return { content: [] };
+    });
+
+    const logLines: string[] = [];
+    const origConsoleError = console.error;
+    console.error = (...args: any[]) => { logLines.push(args.join(" ")); };
+    try {
+      await pollGmail(db, "after:1234567890");
+    } finally {
+      console.error = origConsoleError;
+    }
+
+    const guardLog = logLines.find((l) => l.includes("page") && l.includes("full"));
+    expect(guardLog).toBeDefined();
+  });
+
+  test("does NOT log full-page guard when search returns fewer than 200 results", async () => {
+    const searchResponse = Array.from({ length: 50 }, (_, i) => ({
+      id: `partial-${i.toString().padStart(3, "0")}`,
+      subject: `Email ${i}`,
+      from: `sender${i}@example.com`,
+    }));
+
+    setGmailCallTool(async ({ name }: any) => {
+      if (name === "search_gmail_messages") return mcpTextResult(searchResponse);
+      return { content: [] };
+    });
+
+    const logLines: string[] = [];
+    const origConsoleError = console.error;
+    console.error = (...args: any[]) => { logLines.push(args.join(" ")); };
+    try {
+      await pollGmail(db, "after:1234567890");
+    } finally {
+      console.error = origConsoleError;
+    }
+
+    const guardLog = logLines.find((l) => l.includes("page") && l.includes("full"));
+    expect(guardLog).toBeUndefined();
+  });
 });
 
 // =========================================================================

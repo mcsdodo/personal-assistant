@@ -59,6 +59,7 @@ const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
 const GMAIL_EMAIL = process.env.GMAIL_EMAIL ?? "";
 const GMAIL_SEARCH_BASE = process.env.GMAIL_SEARCH_BASE ?? process.env.GMAIL_SEARCH_QUERY ?? "";
 const MAX_CATCHUP_EMAILS = parseInt(process.env.MAX_CATCHUP_EMAILS ?? "200", 10);
+const GMAIL_PAGE_SIZE = 200;
 const INITIAL_LOOKBACK = process.env.INITIAL_LOOKBACK ?? "3d";
 
 const OUTLOOK_MCP_URL = process.env.OUTLOOK_MCP_URL ?? "http://outlook-mcp:8002/mcp";
@@ -89,6 +90,9 @@ const catchupOverflowCounter = meter.createCounter("email_watcher.catchup_overfl
 });
 const newCapExceededCounter = meter.createCounter("email_watcher.new_cap_exceeded", {
   description: "Times a poll cycle saw more new emails than MAX_NEW_PER_CYCLE, triggering oldest-first drain",
+});
+const searchPageFullCounter = meter.createCounter("email_watcher.search_page_full", {
+  description: "Times a search returned a full page (>= GMAIL_PAGE_SIZE), indicating possible results truncation",
 });
 
 // ── INITIAL_LOOKBACK seeding (replaces first_start prompt) ───────────
@@ -367,7 +371,7 @@ export async function pollGmail(db: Database, query: string): Promise<EmailInfo[
       arguments: {
         query,
         user_google_email: effectiveGmailEmail,
-        page_size: 50,
+        page_size: GMAIL_PAGE_SIZE,
       },
     });
 
@@ -377,7 +381,18 @@ export async function pollGmail(db: Database, query: string): Promise<EmailInfo[
       return [];
     }
 
-    const allIds = [...new Set(extractGmailIds(searchData))];
+    // Guard: if the API returned a full page, log loudly — the single-page
+    // assumption may be breaking and true pagination should be revisited.
+    const rawIds = extractGmailIds(searchData);
+    if (rawIds.length >= GMAIL_PAGE_SIZE) {
+      log(
+        `WARNING: Gmail search page came back full (${rawIds.length} >= ${GMAIL_PAGE_SIZE}). ` +
+        `Single-page assumption may be breaking — emails beyond page 1 are not retrieved. ` +
+        `True pagination must be revisited.`,
+      );
+      searchPageFullCounter.add(1, { source: "gmail" });
+    }
+    const allIds = [...new Set(rawIds)];
     if (allIds.length === 0) {
       return [];
     }
