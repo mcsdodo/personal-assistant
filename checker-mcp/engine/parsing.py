@@ -33,6 +33,9 @@ RE_ORIG_AMOUNT = re.compile(
     r"Orig\. suma:\s*(\d{1,3}(?:,\d{3})*\.\d{2})-?\s*(?:CZK|USD|HUF|PLN)"
 )
 
+# Counterparty account on transfer first lines, e.g. "1111/000000-1372371018"
+RE_COUNTERPARTY_ACCOUNT = re.compile(r"(\d{4}/\d{6}-\d+)")
+
 
 def parse_statement_amount(amount_str: str) -> float:
     """Parse statement amount like '7,619.85' -> 7619.85."""
@@ -113,12 +116,16 @@ def parse_movements(content: str) -> list[dict]:
             parse_statement_amount(orig_match.group(1)) if orig_match else None
         )
 
+        # Extract counterparty account from transfer first lines
+        acct_match = RE_COUNTERPARTY_ACCOUNT.search(first_line)
+
         movements.append(
             {
                 "date": date_str,
                 "description": desc,
                 "amount": amount_val,
                 "orig_amount": orig_amount,
+                "account": acct_match.group(1) if acct_match else None,
                 "raw_block": block,
             }
         )

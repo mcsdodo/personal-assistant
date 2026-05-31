@@ -438,6 +438,35 @@ class TestParseMovements:
         movs = parse_movements(content)
         assert len(movs) == 2
 
+    def test_transfer_carries_account(self):
+        content = "22.05.2026 Platba 1111/000000-1372371018  914.91-\n----"
+        movs = parse_movements(content)
+        assert len(movs) == 1
+        assert movs[0]["account"] == "1111/000000-1372371018"
+
+    def test_pos_atm_fee_have_no_account(self):
+        for content in [
+            "08.01.2026 POS nákup  73.65-\n----",
+            "08.01.2026 Výber z bankomatu  2,000.00-\n----",
+            "08.01.2026 Transakčná daň  0.03-\n----",
+        ]:
+            movs = parse_movements(content)
+            assert len(movs) == 1
+            assert movs[0]["account"] is None
+
+    def test_returned_payment_both_legs_share_account(self):
+        content = (
+            "22.05.2026 Platba 1111/000000-1372371018  914.91-\n"
+            "----\n"
+            "25.05.2026 Vrátenie 1111/000000-1372371018  914.91\n"
+            "----"
+        )
+        movs = parse_movements(content)
+        assert len(movs) == 2
+        assert movs[0]["account"] == "1111/000000-1372371018"
+        assert movs[1]["account"] == "1111/000000-1372371018"
+        assert movs[0]["account"] == movs[1]["account"]
+
 
 class TestSkipReason:
     def test_bank_fee(self):
