@@ -138,6 +138,32 @@ describe("email-poller processWithOverflowGuard", () => {
     const totalJobs = wfDb.prepare("SELECT COUNT(*) as n FROM jobs").get() as { n: number };
     expect(totalJobs.n).toBe(7);
   });
+
+  it("over-cap with missing receivedAt (all undefined): processes 5, cursor held", async () => {
+    // 7 emails with no receivedAt — Date.parse(undefined) → NaN.
+    // NaN keys: all comparisons return 0 (stable V8 sort preserves original order).
+    // The first 5 (in original order) should be processed; cursor stays null.
+    const nanEmails: EmailInfo[] = Array.from({ length: 7 }, (_, i) => ({
+      id: `nan-${i}`,
+      source: "gmail",
+      sender: "vendor@example.com",
+      subject: `Invoice ${i}`,
+      hasAttachments: false,
+      receivedAt: undefined,
+    }));
+
+    const result = await processWithOverflowGuard(emailDb, wfDb, "gmail", nanEmails, 200, 5);
+    expect(result.overflow).toBe(false);
+    expect(result.capped).toBe(true);
+    expect(result.processed).toBe(5);
+
+    // Cursor must NOT have been advanced
+    expect(getLastChecked(emailDb, "gmail")).toBeNull();
+
+    // Exactly 5 jobs created
+    const jobs = wfDb.prepare("SELECT COUNT(*) as n FROM jobs").get() as { n: number };
+    expect(jobs.n).toBe(5);
+  });
 });
 
 describe("email-poller own-account reply filter", () => {

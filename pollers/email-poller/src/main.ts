@@ -144,13 +144,14 @@ export async function processWithOverflowGuard(
       if (Number.isNaN(tb)) return -1;
       return ta - tb; // ascending: oldest first
     });
+    const toProcess = sorted.slice(0, maxPerCycle);
     newCapExceededCounter.add(1, { source });
     log(
       `${source}: ${newEmails.length} new emails exceed per-cycle cap of ${maxPerCycle}. ` +
       `Processing oldest ${maxPerCycle}; cursor held for next poll to drain remainder.`,
     );
-    await processNewEmails(emailDb, wfDb, sorted, maxPerCycle, GMAIL_EMAIL || undefined);
-    return { overflow: false, processed: maxPerCycle, capped: true };
+    await processNewEmails(emailDb, wfDb, toProcess, maxPerCycle, GMAIL_EMAIL || undefined);
+    return { overflow: false, processed: toProcess.length, capped: true };
   }
   await processNewEmails(emailDb, wfDb, newEmails, maxPerCycle, GMAIL_EMAIL || undefined);
   setLastChecked(emailDb, source, cursorTimestamp(Date.now(), POLL_OVERLAP_MS));
