@@ -247,6 +247,10 @@ services:
       - SKIP_PAYROLL_ACCOUNTS=${SKIP_PAYROLL_ACCOUNTS:-}
       # Hourly rates JSON for P&L worked-days column (set in Komodo env; file fallback for local dev)
       - PL_RATES=${PL_RATES:-}
+      # Comma-separated, case-insensitive title prefixes counted as accrual
+      # income in /pl before a statement confirms payment (e.g. "sygic").
+      # Empty = no accrual fallback. Set in Komodo env for prod.
+      - PL_INCOME_PREFIXES=${PL_INCOME_PREFIXES:-}
       # Stateless HTTP: no session IDs, server restarts are transparent to Claude
       - FASTMCP_STATELESS_HTTP=true
 
