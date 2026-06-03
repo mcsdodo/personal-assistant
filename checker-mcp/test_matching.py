@@ -1673,9 +1673,14 @@ def _mock_client_for_pl(documents_by_tag):
 
 
 def _collect_pl(
-    client, year, alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID
+    client, year, alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID, income_prefixes=("techlab",)
 ):
-    """Shorthand for collect_pl with test defaults."""
+    """Shorthand for collect_pl with test defaults.
+
+    income_prefixes defaults to ("techlab",) so the existing income-prefix
+    mechanism tests keep their meaning; pass income_prefixes=() to test the
+    production default (no accrual fallback).
+    """
     return collect_pl(
         client,
         year,
@@ -1684,6 +1689,7 @@ def _collect_pl(
         INVOICE_TYPE_ID,
         TOTAL_AMOUNT_FIELD_ID,
         total_amount_alt_field_id=alt_field_id,
+        income_prefixes=income_prefixes,
     )
 
 
@@ -2400,3 +2406,71 @@ class TestParseIncomePrefixes:
 
     def test_blank_segments_dropped(self):
         assert parse_income_prefixes("sygic,,techlab,") == ("sygic", "techlab")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# collect_pl income_prefixes parameter tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestCollectPLIncomePrefixesParam:
+    """collect_pl income_prefixes is configurable; default () = no accrual fallback."""
+
+    def test_default_empty_prefixes_no_accrual_income(self):
+        """With income_prefixes=(), an unmatched invoice is NOT counted as income."""
+        inv = _make_invoice(20, "Techlab_002", "Techlab_002.pdf", "2026-01", 5000.00)
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [inv],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
+        pl = _collect_pl(client, 2026, income_prefixes=())
+        assert pl["income"] == 0.0
+        assert len(pl["income_items"]) == 0
+
+    def test_custom_prefix_sygic_counted_as_income(self):
+        """An unmatched Sygic invoice counts as income when 'sygic' is configured."""
+        inv = _make_invoice(
+            50, "Sygic a. s. - VS202600005", "sygic.pdf", "2026-05", 10073.70
+        )
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2026-04"]: [],
+                TAG_IDS["2026-05"]: [inv],
+            }
+        )
+        pl = _collect_pl(client, 2026, income_prefixes=("sygic",))
+        assert pl["income"] == round(10073.70 / 1.23, 2)
+        assert len(pl["income_items"]) == 1
+        assert pl["income_items"][0]["doc_id"] == 50
+        assert pl["income_items"][0]["gross"] == 10073.70
+
+    def test_prefix_match_is_title_case_insensitive(self):
+        """A lowercased prefix matches an upper-case document title."""
+        inv = _make_invoice(
+            60, "SYGIC A. S. - VS202600006", "sygic.pdf", "2026-05", 1230.00
+        )
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2026-04"]: [],
+                TAG_IDS["2026-05"]: [inv],
+            }
+        )
+        pl = _collect_pl(client, 2026, income_prefixes=("sygic",))
+        assert pl["income"] == round(1230.00 / 1.23, 2)
+        assert len(pl["income_items"]) == 1
+
+    def test_non_matching_prefix_not_income(self):
+        """An invoice whose title doesn't start with any configured prefix is excluded."""
+        inv = _make_invoice(70, "Alza.cz - FV123", "alza.pdf", "2026-05", 200.00)
+        client = _mock_client_for_pl(
+            {
+                TAG_IDS["2026-04"]: [],
+                TAG_IDS["2026-05"]: [inv],
+            }
+        )
+        pl = _collect_pl(client, 2026, income_prefixes=("sygic",))
+        assert pl["income"] == 0.0
+        assert len(pl["income_items"]) == 0

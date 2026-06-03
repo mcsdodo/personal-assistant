@@ -417,11 +417,17 @@ def collect_pl(
     invoice_type_id: int,
     total_amount_field_id: int | None,
     total_amount_alt_field_id: int | None = None,
+    income_prefixes: tuple[str, ...] = (),
 ) -> dict:
     """Collect P&L data for a given year.
 
     Returns dict with income, expenses (by category), excluded totals.
     Uses accrual basis: invoices attributed by their month tag, not payment date.
+
+    income_prefixes: lowercased title prefixes whose unmatched Invoice-type docs
+    are counted as accrual income even before a statement confirms payment.
+    Empty (the default) disables the accrual fallback. Must be pre-lowercased —
+    the comparison is against an already-lowercased document title.
     """
     # Include next year's first months to catch Dec invoices paid in Jan/Feb
     months = [f"{year:04d}-{m:02d}" for m in range(1, 13)]
@@ -584,10 +590,11 @@ def collect_pl(
             elif status == "cancelled":
                 pass
 
-    # Add income from unmatched invoices with known income prefixes (e.g. Techlab_).
-    # Two-stage: statement-matched income is already counted above; here we add
-    # invoices that are known income by title prefix even without statement confirmation.
-    INCOME_PREFIXES = ("techlab",)
+    # Add income from unmatched invoices whose title matches a configured income
+    # prefix (see PL_INCOME_PREFIXES / collect_pl's income_prefixes arg). Two-stage:
+    # statement-matched income is already counted above; here we add invoices that
+    # are known income by title prefix even without statement confirmation. An empty
+    # income_prefixes disables this fallback entirely.
     for r in results:
         for row in r["rows"]:
             if row["status"] not in ("info", "pending"):
@@ -604,7 +611,7 @@ def collect_pl(
                         continue
 
             title = row.get("detail", "").strip().lower()
-            if not any(title.startswith(p) for p in INCOME_PREFIXES):
+            if not any(title.startswith(p) for p in income_prefixes):
                 continue
 
             raw = row["amount"].strip()
