@@ -12,6 +12,7 @@ from engine.client import PaperlessClient
 from engine.collection import collect_month, collect_pl, filter_resolved_unmatched
 from engine.matching import month_offset
 from match_invoices import (
+    INCOME_PREFIXES,
     ACCOUNTING_TAG_NAME,
     ACCOUNT_STATEMENT_TAG_NAME,
     INVOICE_TYPE_NAME,
@@ -138,6 +139,7 @@ def get_pl_summary(year: int) -> dict:
         h.invoice_type_id,
         h.total_amount_field_id,
         total_amount_alt_field_id=h.total_amount_alt_field_id,
+        income_prefixes=INCOME_PREFIXES,
     )
 
 

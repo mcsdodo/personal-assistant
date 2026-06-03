@@ -19,6 +19,7 @@ from engine.client import PaperlessClient
 from engine.collection import collect_month, collect_pl, filter_resolved_unmatched
 from engine.matching import MONTH_WINDOW, month_offset
 from match_invoices import (
+    INCOME_PREFIXES,
     ACCOUNTING_TAG_NAME,
     ACCOUNT_STATEMENT_TAG_NAME,
     FILENAME_NOTE_FIELD_NAME,
@@ -445,6 +446,7 @@ def profit_loss():
         invoice_type,
         ta_field,
         total_amount_alt_field_id=ta_alt_field,
+        income_prefixes=INCOME_PREFIXES,
     )
     return render_pl(pl, available_years, hourly_rates=_load_rates())
 
