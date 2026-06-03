@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-06-03
+
+### Changed
+- **checker-mcp**: income-prefix accrual list is now configurable via the `PL_INCOME_PREFIXES` env var (comma-separated, case-insensitive) instead of a hard-coded `("techlab",)` tuple. Default (unset) disables the accrual fallback. Production set to `sygic` so unmatched Sygic invoices show as income in `/pl` before the bank statement arrives; the dead `techlab` prefix (type-6 docs never enter the invoice pool) was removed.
+
 ## 2026-05-31
 
 ### Fixed
