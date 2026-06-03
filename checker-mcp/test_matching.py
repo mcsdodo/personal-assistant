@@ -34,6 +34,7 @@ from engine.parsing import (
     parse_movements,
     parse_statement_amount,
 )
+from match_invoices import parse_income_prefixes
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2369,3 +2370,33 @@ class TestCollectPLReturnedPayments:
         assert pl["income"] == 0.0, (
             f"RETURNED incoming must not add income: income={pl['income']}"
         )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# parse_income_prefixes tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestParseIncomePrefixes:
+    """PL_INCOME_PREFIXES parsing: comma-separated, case-insensitive, graceful empty."""
+
+    def test_none_returns_empty_tuple(self):
+        assert parse_income_prefixes(None) == ()
+
+    def test_empty_string_returns_empty_tuple(self):
+        assert parse_income_prefixes("") == ()
+
+    def test_whitespace_only_returns_empty_tuple(self):
+        assert parse_income_prefixes("   ") == ()
+
+    def test_single_prefix(self):
+        assert parse_income_prefixes("sygic") == ("sygic",)
+
+    def test_lowercased(self):
+        assert parse_income_prefixes("Sygic") == ("sygic",)
+
+    def test_comma_separated_and_trimmed(self):
+        assert parse_income_prefixes(" Sygic , Techlab ") == ("sygic", "techlab")
+
+    def test_blank_segments_dropped(self):
+        assert parse_income_prefixes("sygic,,techlab,") == ("sygic", "techlab")

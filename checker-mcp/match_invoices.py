@@ -44,6 +44,27 @@ TOTAL_AMOUNT_ALT_FIELD_NAME = "total_amount_alt"  # alt amount for split payment
 FILENAME_NOTE_FIELD_NAME = "filename_note"  # optional label appended to filename in ZIP exports
 
 
+def parse_income_prefixes(raw: str | None) -> tuple[str, ...]:
+    """Parse PL_INCOME_PREFIXES → lowercased tuple of title prefixes.
+
+    Comma-separated, case-insensitive. Empty/absent → empty tuple (no accrual
+    fallback). Prefixes are lowercased here because collect_pl compares them
+    against an already-lowercased document title; collect_pl assumes its
+    `income_prefixes` argument is pre-lowercased.
+    """
+    if not raw:
+        return ()
+    return tuple(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+# Title prefixes whose unmatched Invoice-type docs count as accrual income in
+# /pl, even before a bank statement confirms payment. Env-driven so income
+# correspondents (e.g. "sygic") can be added without a code change + redeploy.
+# Read at import time, mirroring PAPERLESS_URL above (the var is injected into
+# the container environment in prod and via docker-compose --env-file locally).
+INCOME_PREFIXES = parse_income_prefixes(os.environ.get("PL_INCOME_PREFIXES"))
+
+
 # ── CLI output ────────────────────────────────────────────────────────────
 
 
