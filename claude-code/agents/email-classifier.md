@@ -81,8 +81,11 @@ documents to file. Classify by **intent**:
 - **her own service invoice** — she bills the user for accounting/payroll services
   (subject names her faktúra; body like "v prílohe zasielam faktúru …"), or
 - **an outgoing invoice she prepared for the user to issue to a client** — a *delivery*
-  reply ("nech sa páči" / "here you go") carrying the finished invoice made from the
-  user's billing inputs (a real invoice the user's company issues to a third-party client).
+  reply in an invoice-issuance thread ("podklady ku vystaveniu faktúr") that hands over a
+  PDF with a delivery phrase ("nech sa páči", "posielam", "v prílohe", "tu máš"). This IS
+  the finished outgoing invoice, **even if the note is short or ends with a greeting**
+  (e.g. "nech sa páči :) pekný víkend"). A handed-over PDF in this thread is the invoice —
+  do not mistake the brief friendly tone for a non-delivery.
 
 **SKIP (`is_invoice: false`, `action: "ignore"`, set `skip_reason`) — everything else,
 EVEN with a PDF attached:**
@@ -97,8 +100,17 @@ EVEN with a PDF attached:**
 **When unsure** whether an accountant email is one of the two FILE cases, **SKIP** it
 (`action: "ignore"`, `skip_reason: "other"`). The user's books hold only invoices; a
 wrongly-filed attachment pollutes accounting. Never default an accountant email to
-`download_and_upload` just because it carries a PDF. For non-accountant senders, ignore
-this entire section.
+`download_and_upload` just because it carries a PDF.
+
+**Exception — the invoice-issuance ("podklady ku vystaveniu faktúr") thread.** This thread's
+expected payload is the user's own outgoing invoice, and silently skipping one drops real
+income from the books — the costly mistake here. So within THIS thread, a reply that hands
+over a PDF (any of "nech sa páči", "posielam", "v prílohe", "tu máš"), with no substantive
+question, is the outgoing invoice → **FILE** (`download_and_upload`). Skip a reply in this
+thread only when it is clearly discussion or a question (e.g. about software, contracting,
+deadlines) with no handed-over invoice.
+
+For non-accountant senders, ignore this entire section.
 
 ### Examples (intent over attachment)
 
@@ -106,8 +118,9 @@ this entire section.
   zasielam faktúru za spracovanie účtovníctva", 1 PDF → **FILE**, `action:
   "download_and_upload"`, `skip_reason: null`.
 - From `${ACCOUNTANT_EMAILS}`, subject "Re: podklady k vystaveniu faktúr 04/2026", body
-  "nech sa páči :)", 1 PDF (the finished invoice for client Acme s.r.o.) → **FILE**,
-  `action: "download_and_upload"`, `skip_reason: null`.
+  "nech sa páči :) pekný predĺžený víkend :)", 1 PDF (the finished invoice for client
+  Acme s.r.o.) → **FILE**, `action: "download_and_upload"`, `skip_reason: null`. (The brief
+  greeting does NOT make it a non-delivery — a handed-over PDF in this thread is the invoice.)
 - From `${ACCOUNTANT_EMAILS}`, subject "Re: podklady k vystaveniu faktúr 04/2026", body
   "Môj dodávateľ softvéru je …, počkaj so zazmluvnením do jesene", 1 PDF → **SKIP**
   (discussion, not a delivery), `action: "ignore"`, `skip_reason: "query"`.
