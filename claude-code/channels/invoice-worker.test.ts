@@ -8,13 +8,14 @@ import {
   test,
 } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 import { executeInvoiceIntake, executeScanIntake, type InvoiceClassification, type ScanIntakeInput, type ScanClassification } from "./invoice/intake-worker";
 import type { InvoiceIntakeInputSchema as InvoiceIntakeInput } from "./workflow-schemas";
 import * as downloadHelper from "./download-helper";
+import * as sampleDetection from "./invoice/sample-detection";
 import { createPaperlessAdapter } from "./paperless-adapter";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
@@ -3353,6 +3354,126 @@ describe("worker sends Telegram notification on pause (task 3.2)", () => {
     } finally {
       decryptSpy.mockRestore();
       isEncSpy.mockRestore();
+    }
+  });
+});
+
+// ── Sample-invoice guard wiring tests ─────────────────────────────────────
+
+/**
+ * Synthetic watermark text — contains the strong Alza preview phrase.
+ * No real personal data; "nemožno použiť ako daňový doklad" is the Slovak
+ * legal phrase for "cannot be used as a tax document", used as the watermark.
+ */
+const SAMPLE_WATERMARK_TEXT = [
+  "VZOR",
+  "Tento dokument nemožno použiť ako daňový doklad.",
+  "nie je vydaný",
+  "ukážka",
+].join("\n");
+
+describe("sample-invoice guard (wiring)", () => {
+  function createJobWithEmailClassOnly(input: InvoiceIntakeInput, emailClass?: InvoiceClassification): JobRow {
+    const job = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify(input),
+      sourceRef: `${input.email_source}:${input.message_id}`,
+      idempotencyKey: `${input.email_source}:${input.message_id}`,
+    });
+    db.prepare("UPDATE jobs SET state = 'running', started_at = ? WHERE id = ?").run(
+      new Date().toISOString(),
+      job.id,
+    );
+    addJobEvent(db, job.id, "step_completed", {
+      step: "classify_email",
+      result: emailClass ?? defaultEmailClassification(),
+    });
+    return getJob(db, job.id)!;
+  }
+
+  test("positive: sample invoice → completed with sample_skipped, no upload, event emitted, file deleted", async () => {
+    const extractSpy = spyOn(sampleDetection, "extractPdfText").mockImplementation(async () => SAMPLE_WATERMARK_TEXT);
+    try {
+      const input = makeInput();
+      const job = createJobWithEmailClassOnly(input);
+
+      // Drive the download branch (get_attachments + download_attachment).
+      // Only 2 fetch calls — any additional call (Paperless upload etc.) would throw,
+      // proving no upload happened.
+      mockFetch(
+        // downloadAttachment: get_attachments
+        () => jsonResponse(rpcResponse([{ id: "a1", name: "alza-sample.pdf", content_type: "application/pdf", size: 100 }])),
+        // downloadAttachment: download_attachment
+        () => jsonResponse(rpcResponse({ name: "alza-sample.pdf", content_type: "application/pdf", size: 100, content_base64: "JVBER" })),
+      );
+
+      await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+
+      const updated = getJob(db, job.id)!;
+
+      // Assertion 1: no Paperless upload (fetch call count exactly 2 — download only)
+      expect(updated.output_json).toBeTruthy();
+      const output = JSON.parse(updated.output_json!);
+      expect(output.paperless_document_id).toBeUndefined();
+
+      // Assertion 2: terminal state = completed, outcome = sample_skipped
+      expect(updated.state).toBe("completed");
+      expect(output.outcome).toBe("sample_skipped");
+
+      // Assertion 3: step_completed event with step=sample_check, outcome=sample_detected
+      const events = getJobEvents(db, job.id);
+      const sampleCheckEvent = events.find(e =>
+        e.event_type === "step_completed" &&
+        (() => {
+          try {
+            const p = JSON.parse(e.payload_json!);
+            return p.step === "sample_check" && p.outcome === "sample_detected";
+          } catch { return false; }
+        })()
+      );
+      expect(sampleCheckEvent).toBeTruthy();
+      const sampleCheckPayload = JSON.parse(sampleCheckEvent!.payload_json!);
+      expect(Array.isArray(sampleCheckPayload.matched) && sampleCheckPayload.matched.length > 0).toBe(true);
+
+      // Assertion 4: downloaded file cleaned up at terminal state
+      const fileDownloadedEvent = events.find(e => e.event_type === "file_downloaded");
+      expect(fileDownloadedEvent).toBeTruthy();
+      const downloadedPath = JSON.parse(fileDownloadedEvent!.payload_json!).file_path as string;
+      expect(existsSync(downloadedPath)).toBe(false);
+    } finally {
+      extractSpy.mockRestore();
+    }
+  });
+
+  test("negative: non-sample invoice → proceeds to classify_document (guard does not block real invoices)", async () => {
+    const extractSpy = spyOn(sampleDetection, "extractPdfText").mockImplementation(async () => "Faktúra č. FA2026030001 od Alza.sk, s.r.o.");
+    try {
+      const input = makeInput();
+      const job = createJobWithEmailClassOnly(input);
+
+      mockFetch(
+        // downloadAttachment: get_attachments
+        () => jsonResponse(rpcResponse([{ id: "a1", name: "alza-real.pdf", content_type: "application/pdf", size: 100 }])),
+        // downloadAttachment: download_attachment
+        () => jsonResponse(rpcResponse({ name: "alza-real.pdf", content_type: "application/pdf", size: 100, content_base64: "JVBER" })),
+      );
+
+      await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+
+      const updated = getJob(db, job.id)!;
+      // Guard did not fire → job parked for document classification
+      expect(updated.state).toBe("awaiting_classification");
+      const events = getJobEvents(db, job.id);
+      const classifyDocStep = events.find(e =>
+        e.event_type === "step_started" &&
+        (() => {
+          try { return JSON.parse(e.payload_json!).step === "classify_document"; }
+          catch { return false; }
+        })()
+      );
+      expect(classifyDocStep).toBeTruthy();
+    } finally {
+      extractSpy.mockRestore();
     }
   });
 });

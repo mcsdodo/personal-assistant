@@ -10,7 +10,7 @@ WORKDIR /app
 # exit 127 and the catch block silently treats every PDF as plaintext —
 # the worker would skip the decrypt attempt AND the guidance pause, and
 # Claude would receive an unreadable encrypted PDF for classification.
-RUN apk add --no-cache qpdf libjpeg-turbo
+RUN apk add --no-cache qpdf libjpeg-turbo poppler-utils
 
 COPY channels/package.json channels/bunfig.toml channels/tsconfig.json ./channels/
 RUN cd channels && bun install --no-summary

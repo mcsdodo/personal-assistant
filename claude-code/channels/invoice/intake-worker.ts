@@ -89,6 +89,7 @@ import {
   WorkflowSchemaError,
   type InvoiceIntakeInputSchema,
 } from "../workflow-schemas";
+import { extractPdfText, isSampleInvoice } from "./sample-detection";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -224,6 +225,9 @@ const correspondentsCounter = meter.createCounter("invoice_worker_correspondents
 });
 const missingMonthTagCounter = meter.createCounter("invoice_worker_missing_month_tag_total", {
   description: "Documents uploaded without a valid YYYY-MM accounting period (operator must tag manually)",
+});
+const sampleSkippedCounter = meter.createCounter("invoice_worker_sample_skipped_total", {
+  description: "Sample/preview (non-tax-document) invoices detected and skipped before Paperless upload, by vendor",
 });
 
 // ── Guidance resume helpers ────────────────────────────────────────────
@@ -717,6 +721,27 @@ export async function executeInvoiceIntake(
         span.setStatus({ code: SpanStatusCode.OK });
         return;
       }
+
+      // Step 1.4: Sample-invoice guard. Alza serves a watermarked "preview"
+      // (non-tax-document) from its download link before goods are picked up.
+      // Short-circuit BEFORE the Haiku classify_document call so we never ingest it.
+      const sampleText = await extractPdfText(filePath);
+      const sampleResult = isSampleInvoice(sampleText);
+      if (sampleResult.isSample) {
+        addJobEvent(db, job.id, "step_completed", {
+          step: "sample_check",
+          outcome: "sample_detected",
+          matched: sampleResult.matched,
+        });
+        sampleSkippedCounter.add(1, { vendor: vendorForSpan });
+        completeJob(db, job.id, { outcome: "sample_skipped", classification });
+        logger.log(`Job ${job.id} completed: sample invoice skipped (matched: ${sampleResult.matched.join(",")})`);
+        outcome = "sample_skipped";
+        span.setAttribute("invoice.outcome", "sample_skipped");
+        span.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
+      addJobEvent(db, job.id, "step_completed", { step: "sample_check", outcome: "not_sample" });
 
       // Step 1.5: Document classification via channel (non-blocking)
       const cachedDocClassification = completedSteps.get("classify_document");
