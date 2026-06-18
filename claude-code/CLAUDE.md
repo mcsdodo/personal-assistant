@@ -90,6 +90,7 @@ After classification submissions, poll with `get_job(job_id)`:
 - `state: completed` with `outcome: duplicate` → silently skip, no notification (only happens when `force=false`)
 - `state: completed` with `outcome: ignored` → email classifier determined it's not an invoice, no action needed
 - `state: completed` with `outcome: sample_skipped` → Alza-style sample/preview (non-tax-document) detected, not uploaded; silent skip, no action needed
+- `state: completed` with `outcome: accountant_non_invoice_skipped` → accountant question/discussion/non-invoice (payslip, VAT order, close) — silently skipped, no action needed
 - `state: awaiting_approval` → notify user via Telegram with the approval reason, wait for response, then call `approve_job` or `cancel_job`
 - `state: retryable` → transient failure, worker retries automatically. No action needed.
 - `state: failed` → permanent failure, worker sends Telegram notification automatically. Create a fresh job with `force: true`.

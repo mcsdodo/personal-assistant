@@ -3480,3 +3480,35 @@ describe("sample-invoice guard (wiring)", () => {
     }
   });
 });
+
+describe("invoice-worker accountant intent gate", () => {
+  test("accountant non-invoice email is silently skipped (distinct outcome, no download)", async () => {
+    const input = makeInput();
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({
+        is_invoice: false, action: "ignore", skip_reason: "query",
+        vendor: null, download_strategy: null, strategy_confidence: null, order_id: null,
+      }),
+    );
+    // No mockFetch: the worker MUST short-circuit before any download/upload call.
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    expect(JSON.parse(updated.output_json!).outcome).toBe("accountant_non_invoice_skipped");
+    expect(notifyCalls).toHaveLength(0); // silent — no Telegram
+  });
+
+  test("ordinary ignore (no skip_reason) still completes as plain 'ignored'", async () => {
+    const input = makeInput();
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({
+        is_invoice: false, action: "ignore",
+        vendor: null, download_strategy: null, strategy_confidence: null, order_id: null,
+      }),
+    );
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+    expect(JSON.parse(getJob(db, job.id)!.output_json!).outcome).toBe("ignored");
+  });
+});

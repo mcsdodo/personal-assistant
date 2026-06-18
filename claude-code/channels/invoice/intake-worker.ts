@@ -138,6 +138,10 @@ export interface InvoiceClassification {
    * gracefully degrades when null.
    */
   sender: string | null;
+  /** Accountant intent-skip marker, set by the email-classifier for accountant
+   *  senders only (action="ignore"). query | payslip | payment_order | close | other.
+   *  Null/absent for every other email. */
+  skip_reason?: string | null;
 }
 
 export interface ScanIntakeInput {
@@ -229,6 +233,10 @@ const missingMonthTagCounter = meter.createCounter("invoice_worker_missing_month
 const sampleSkippedCounter = meter.createCounter("invoice_worker_sample_skipped_total", {
   description: "Sample/preview (non-tax-document) invoices detected and skipped before Paperless upload, by vendor",
 });
+const accountantSkippedCounter = meter.createCounter("invoice_worker_accountant_skipped_total", {
+  description: "Accountant non-invoice emails (questions, payslips, payment orders, close) skipped before upload, by reason",
+});
+const ACCOUNTANT_SKIP_REASONS = ["query", "payslip", "payment_order", "close", "other"] as const;
 
 // ── Guidance resume helpers ────────────────────────────────────────────
 //
@@ -623,8 +631,29 @@ export async function executeInvoiceIntake(
       span.setAttribute("invoice.vendor", vendorForSpan);
       span.setAttribute("invoice.download_strategy", String(classification.download_strategy));
 
-      // Handle ignore action
+      // Handle ignore action. An accountant intent-skip carries `skip_reason`
+      // (set by the email-classifier for accountant senders only) → distinct,
+      // auditable, silent outcome. A plain ignore (marketing, etc.) stays `ignored`.
       if (classification.action === "ignore") {
+        const rawReason = classification.skip_reason ?? null;
+        if (rawReason) {
+          const reason = (ACCOUNTANT_SKIP_REASONS as readonly string[]).includes(rawReason)
+            ? rawReason
+            : "other";
+          accountantSkippedCounter.add(1, { reason });
+          addJobEvent(db, job.id, "step_completed", {
+            step: "accountant_intent",
+            outcome: "skipped",
+            reason,
+          });
+          completeJob(db, job.id, { outcome: "accountant_non_invoice_skipped", classification });
+          logger.log(`Job ${job.id} completed: accountant non-invoice skipped (reason: ${reason})`);
+          outcome = "accountant_non_invoice_skipped";
+          span.setAttribute("invoice.outcome", "accountant_non_invoice_skipped");
+          span.setAttribute("invoice.skip_reason", reason);
+          span.setStatus({ code: SpanStatusCode.OK });
+          return;
+        }
         completeJob(db, job.id, { outcome: "ignored", classification });
         logger.log(`Job ${job.id} completed: ignored by email classifier`);
         outcome = "ignored";

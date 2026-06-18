@@ -738,6 +738,7 @@ No Grafana restart needed — the file provisioner detects changes and reloads.
 | `invoice_worker_missing_month_tag_total` | Documents uploaded without a valid YYYY-MM accounting period. Labelled by `workflow_type` (invoice_intake / scan_intake). Non-zero indicates the LLM-driven `accounting_period` resolution chain fully fell through and the document needs manual tagging in Paperless. |
 | `personal_assistant_guidance_requests_total` | Jobs paused in `awaiting_user_guidance`, labelled by `reason` (`classifier_unknown`, `encrypted_pdf`, ...). Rendered as a stacked bar in Grafana panel id 41. Pairs with the `email_watcher_jobs{state="awaiting_user_guidance"}` gauge for current backlog. |
 | `invoice_worker_sample_skipped_total` | Sample/preview invoices detected and skipped before Paperless upload, labelled by `vendor`. Non-zero means the download link served a watermarked non-tax-document; check whether a follow-up email with the real invoice arrived, and re-run the intake job when the link serves the real document. |
+| `invoice_worker_accountant_skipped_total` | Accountant emails skipped by the intent gate (not filed), labelled by `reason` (`query`/`payslip`/`payment_order`/`close`/`other`). Non-zero is expected and benign; a spike on `query` with a real invoice missing means a delivery was mis-skipped — reprocess with `create_invoice_intake_job(..., force=false)`. |
 
 ### Events (Loki, via OTel logs)
 
