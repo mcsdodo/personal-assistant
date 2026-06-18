@@ -11,7 +11,7 @@ This project was developed as part of a private monorepo. This changelog was gen
 - **`sample_skipped` job outcome** — silent terminal outcome (no Telegram notification, same as `ignored`). Jobs completing with this outcome are visible in `list_jobs` and via the job event ledger.
 - **`invoice_worker_sample_skipped_total` Prometheus counter** (label: `vendor`) — incremented once per skipped sample. Non-zero value signals that a download link served a watermarked non-tax-document; operator re-runs intake once the real invoice is available.
 - **`sample_check` job event breadcrumb** — `step_completed { step: "sample_check", outcome: "sample_detected" | "not_sample" }` emitted on every invoice intake run, making the guard visible in the job event ledger regardless of outcome.
-- **`poppler-utils`** added to [worker/Dockerfile](worker/Dockerfile) (`apk add --no-cache poppler-utils`) to provide the `pdftotext` binary used by the extractor.
+- **`poppler-utils`** added to [worker/Dockerfile](worker/Dockerfile) — appended to the existing `RUN apk add --no-cache qpdf libjpeg-turbo` line to become `RUN apk add --no-cache qpdf libjpeg-turbo poppler-utils`, providing the `pdftotext` binary used by the extractor.
 - New module [`claude-code/channels/invoice/sample-detection.ts`](claude-code/channels/invoice/sample-detection.ts) — exports `isSampleInvoice(text)` and `extractPdfText(filePath)`; fully unit-tested.
 
 ## 2026-06-03

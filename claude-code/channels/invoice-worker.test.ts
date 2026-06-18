@@ -3440,6 +3440,9 @@ describe("sample-invoice guard (wiring)", () => {
       expect(fileDownloadedEvent).toBeTruthy();
       const downloadedPath = JSON.parse(fileDownloadedEvent!.payload_json!).file_path as string;
       expect(existsSync(downloadedPath)).toBe(false);
+
+      // Assertion 5: no Telegram notification sent (sample-skip is silent like ignored)
+      expect(notifyCalls.length).toBe(0);
     } finally {
       extractSpy.mockRestore();
     }
