@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { findBestCorrespondentMatch } from "./fuzzy-match";
+import { findBestCorrespondentMatch, levenshtein } from "./fuzzy-match";
 
 // Sample correspondents for testing (public company names, synthetic IDs)
 const CORRESPONDENTS = [
@@ -177,5 +177,52 @@ describe("findBestCorrespondentMatch", () => {
     // With default threshold it might not match; with 0.99 definitely not
     const result = findBestCorrespondentMatch("SHELL Slovakia s.r.o.", CORRESPONDENTS, 0.99);
     expect(result).toBeNull();
+  });
+});
+
+describe("levenshtein", () => {
+  test("identical strings return 0", () => {
+    const result = levenshtein("abc", "abc");
+    expect(result).toBe(0);
+  });
+
+  test("one substitution returns 1", () => {
+    const result = levenshtein("abc", "abd");
+    expect(result).toBe(1);
+  });
+
+  test("one insertion returns 1", () => {
+    const result = levenshtein("abc", "abdc");
+    expect(result).toBe(1);
+  });
+
+  test("one deletion returns 1", () => {
+    const result = levenshtein("abc", "ac");
+    expect(result).toBe(1);
+  });
+
+  test("empty to string returns string length", () => {
+    const result = levenshtein("", "abc");
+    expect(result).toBe(3);
+  });
+
+  test("string to empty returns string length", () => {
+    const result = levenshtein("abc", "");
+    expect(result).toBe(3);
+  });
+
+  test("both empty strings return 0", () => {
+    const result = levenshtein("", "");
+    expect(result).toBe(0);
+  });
+
+  test("canonical case: kitten to sitting", () => {
+    const result = levenshtein("kitten", "sitting");
+    expect(result).toBe(3);
+  });
+
+  test("flaw to lawn", () => {
+    const result = levenshtein("flaw", "lawn");
+    expect(result).toBe(2);
   });
 });
