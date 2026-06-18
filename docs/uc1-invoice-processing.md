@@ -626,6 +626,52 @@ The worker now treats a dedup hit on `order_id + correspondent + amount` as a qu
 - [`intake-worker.ts`](../claude-code/channels/invoice/intake-worker.ts) — invoice path passes the refresh context; `force_refresh` triggers the same `forceTargetDocId` capture as `input.force=true`, so the existing PATCH path takes over with no new branches
 - [`agents/email-classifier.md`](../claude-code/agents/email-classifier.md) — Alza order-lifecycle subject patterns (`Už to chystáme`, `Pripravené v AlzaBoxe`, `Odoslané`, `Doručené`, etc.) are now classified as invoices when a `Stiahnuť faktúru` link is present, instead of `ignore`
 
+## Alza Sample Invoice Detection
+
+Some vendors serve a watermarked preview PDF from their invoice download link before the goods are actually picked up. Alza's preview carries the watermark text "Ukážka — nemožno použiť ako daňový doklad, nie je vydaný" ("Sample — cannot be used as a tax document, has not been issued"). If this PDF were uploaded to Paperless it would displace or be later superseded by the real invoice, creating a metadata refresh problem.
+
+The worker detects this **after download and decrypt but before the `classify_document` Haiku call**, so a sample never incurs a classification token cost and never reaches Paperless.
+
+### Detection
+
+[`invoice/sample-detection.ts`](../claude-code/channels/invoice/sample-detection.ts) exports two functions:
+
+- `isSampleInvoice(text)` — pure fuzzy matcher. Normalises the text (diacritic-fold + whitespace-strip) and applies a sliding-window Levenshtein distance check at threshold 0.85. Returns `{ isSample: boolean; matched: string[] }`. Deterministic — no LLM involved.
+- `extractPdfText(filePath)` — thin impure wrapper around `pdftotext -raw` (from `poppler-utils` in [`worker/Dockerfile`](../worker/Dockerfile)). Returns the extracted text string, or `""` on any error (fails open: empty extraction is treated as not-a-sample and the normal pipeline continues).
+
+### Pipeline position
+
+```
+download + decrypt → sample_check → (skip OR classify_document → upload)
+```
+
+Step 1.4 in `executeInvoiceIntake` ([`invoice/intake-worker.ts`](../claude-code/channels/invoice/intake-worker.ts)):
+1. `extractPdfText(filePath)` — extract text layer from the downloaded PDF.
+2. `isSampleInvoice(text)` — run the fuzzy matcher.
+3. **Sample detected** → emit `step_completed { step: "sample_check", outcome: "sample_detected" }` job event, increment `invoice_worker_sample_skipped_total{vendor}` counter, `completeJob` with `outcome: "sample_skipped"`. File is cleaned up. No Telegram notification (silent skip, like `ignored`).
+4. **Not a sample** → emit `step_completed { step: "sample_check", outcome: "not_sample" }` and continue to the `classify_document` Haiku call.
+
+### Outcome and observability
+
+| Signal | Value |
+|--------|-------|
+| Job outcome | `sample_skipped` |
+| Telegram | silent (no notification) |
+| Metric | `invoice_worker_sample_skipped_total` (label: `vendor`) |
+| Job event | `step_completed { step: "sample_check", outcome: "sample_detected" \| "not_sample" }` |
+
+### Known limitation and recovery
+
+Alza sometimes sends the sample PDF as the only email for an order stage (e.g. `Pripravené v AlzaBoxe`) and later sends a new email once the goods are picked up. If the sample is the **last email** Alza sends for that order — because no post-pickup email ever arrives — the real (non-watermarked) invoice is never downloaded automatically.
+
+The `invoice_worker_sample_skipped_total` metric and the `sample_check` job event make this case visible. **Recovery:** once the download link serves the real tax document (after pickup), re-run the intake job for that email:
+
+```
+create_invoice_intake_job(email_source, message_id)
+```
+
+Omit `force` (use `force=false`, the default). There is no existing Paperless document to PATCH, so the normal pipeline runs and the dedup step still protects against accidental double-upload. The worker downloads, classifies, and uploads the real invoice and sends the normal `✔️ uploaded` Telegram notification.
+
 ## Email Audit Trail
 
 Every email is tracked in SQLite from discovery to final outcome.

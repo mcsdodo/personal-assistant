@@ -216,6 +216,7 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 | `claude-code/channels/invoice/intake-worker.ts` | Invoice + scan intake orchestrator (executeInvoiceIntake, executeScanIntake) |
 | `claude-code/channels/invoice/download-service.ts` | Download strategies: Outlook/Gmail attachments, link extraction, direct HTTP, GDrive |
 | `claude-code/channels/invoice/dedup-service.ts` | Duplicate detection (order_id + correspondent + amount comparison). Returns `force_refresh` outcome when an exact-amount duplicate is found AND the new email is strictly newer than the existing doc's source email (multi-stage vendor refresh, task 59). Date-aware comparison via `Date.parse` to tolerate the heterogeneous RFC 2822 / ISO 8601 timestamp formats the watchers store. |
+| [`claude-code/channels/invoice/sample-detection.ts`](claude-code/channels/invoice/sample-detection.ts) | Pure `isSampleInvoice(text)` fuzzy matcher (diacritic-fold + Levenshtein at 0.85) + `extractPdfText(filePath)` thin wrapper around `pdftotext -raw`. Used by `intake-worker.ts` to detect and skip Alza watermarked sample/preview invoices before the Haiku classification call. |
 | `claude-code/channels/invoice/classification-state.ts` | parkForClassification helper — transitions the job to `awaiting_classification` and writes the `classification_request_meta` breadcrumb that workflow-mcp's push loop drains into a channel notification |
 | `claude-code/channels/invoice/postprocess-service.ts` | resolveCorrespondent, resolveTagIds, resolveDocumentTypeId, resolveStoragePathId, uploadToPaperless, setDocumentCustomFields, patchExistingDocument, moveGdriveFile, buildScanTitle |
 | `claude-code/channels/fuzzy-match.ts` | Jaro-Winkler fuzzy correspondent matching |
@@ -736,6 +737,7 @@ No Grafana restart needed — the file provisioner detects changes and reloads.
 | `invoice_worker_correspondents_total` | Completed invoices by normalized Paperless correspondent. Counter seeded from DB at startup, incremented on each upload. Used by "Top Correspondents" dashboard panel. |
 | `invoice_worker_missing_month_tag_total` | Documents uploaded without a valid YYYY-MM accounting period. Labelled by `workflow_type` (invoice_intake / scan_intake). Non-zero indicates the LLM-driven `accounting_period` resolution chain fully fell through and the document needs manual tagging in Paperless. |
 | `personal_assistant_guidance_requests_total` | Jobs paused in `awaiting_user_guidance`, labelled by `reason` (`classifier_unknown`, `encrypted_pdf`, ...). Rendered as a stacked bar in Grafana panel id 41. Pairs with the `email_watcher_jobs{state="awaiting_user_guidance"}` gauge for current backlog. |
+| `invoice_worker_sample_skipped_total` | Sample/preview invoices detected and skipped before Paperless upload, labelled by `vendor`. Non-zero means the download link served a watermarked non-tax-document; check whether a follow-up email with the real invoice arrived, and re-run the intake job when the link serves the real document. |
 
 ### Events (Loki, via OTel logs)
 

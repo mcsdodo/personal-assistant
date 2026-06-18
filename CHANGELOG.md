@@ -4,6 +4,16 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-06-18
+
+### Added
+- **Sample-invoice detection** — the invoice intake worker now detects and skips Alza-style watermarked preview PDFs ("Ukážka — nemožno použiť ako daňový doklad, nie je vydaný") before any Paperless upload or Haiku classification call. Detection is deterministic and fuzzy: text is extracted with `pdftotext -raw` (poppler-utils), diacritic-folded and whitespace-stripped, then checked via a sliding-window Levenshtein matcher at threshold 0.85. Fails open — empty extraction is treated as not-a-sample and the normal pipeline continues. No VLM/vision call involved.
+- **`sample_skipped` job outcome** — silent terminal outcome (no Telegram notification, same as `ignored`). Jobs completing with this outcome are visible in `list_jobs` and via the job event ledger.
+- **`invoice_worker_sample_skipped_total` Prometheus counter** (label: `vendor`) — incremented once per skipped sample. Non-zero value signals that a download link served a watermarked non-tax-document; operator re-runs intake once the real invoice is available.
+- **`sample_check` job event breadcrumb** — `step_completed { step: "sample_check", outcome: "sample_detected" | "not_sample" }` emitted on every invoice intake run, making the guard visible in the job event ledger regardless of outcome.
+- **`poppler-utils`** added to [worker/Dockerfile](worker/Dockerfile) (`apk add --no-cache poppler-utils`) to provide the `pdftotext` binary used by the extractor.
+- New module [`claude-code/channels/invoice/sample-detection.ts`](claude-code/channels/invoice/sample-detection.ts) — exports `isSampleInvoice(text)` and `extractPdfText(filePath)`; fully unit-tested.
+
 ## 2026-06-03
 
 ### Changed
