@@ -104,6 +104,10 @@ The workflow worker sends classification requests via channel when it needs LLM 
 **`event_type: "classify_email"`** — the worker needs email classification before proceeding:
 1. Read `email_source`, `message_id`, `job_id`, and (for gmail) `user_google_email` from the event meta
 2. Invoke the `email-classifier` subagent with a prompt naming `email_source`, `message_id`, and (gmail only) `user_google_email`. The subagent fetches the email body itself.
+   Before invoking, read `ACCOUNTANT_EMAILS` via `get_env` on the file-ops MCP and pass it
+   into the prompt, replacing the `${ACCOUNTANT_EMAILS}` placeholder (mirrors how
+   `classify_document` injects `BUSINESS_*`). If `ACCOUNTANT_EMAILS` is empty, substitute
+   an empty list — the accountant section then never matches and classification is unchanged.
 3. Call `submit_classification(job_id, step="classify_email", result=<email-classifier output>)` — pass the subagent's output directly. The worker injects `sender`/`subject`/`received_at` from the watcher's `input_json` automatically before validation; you do not need to include them.
 4. If the classifier returns `action: "ignore"`, the worker will complete the job as ignored automatically
 

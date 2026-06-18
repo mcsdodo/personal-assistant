@@ -44,6 +44,7 @@ Detailed documentation: [`uc1-invoice-processing.md`](./uc1-invoice-processing.m
 | 1.10 | [Pause and ask user when classifier is unsure or PDF is encrypted](./uc1-invoice-processing.md#uc-16b-when-the-classifier-doesnt-know-guidance-pause) | DONE |
 | 1.11 | [Multi-stage vendor emails — newer email auto-PATCHes the existing Paperless doc (Alza order lifecycle)](./uc1-invoice-processing.md#multi-stage-vendor-email-refresh-automatic-task-59) | DONE |
 | 1.12 | [Alza sample/preview invoice detection — skip non-tax-document before Paperless upload](./uc1-invoice-processing.md#alza-sample-invoice-detection) | DONE |
+| 1.13 | [Accountant intent gate — file only her service invoice and outgoing-invoice deliveries; silently skip questions, payslips, VAT orders, annual close](./uc1-invoice-processing.md#accountant-email-intent-gate) | DONE |
 
 ## UC-1A: Email Workflow Observability
 

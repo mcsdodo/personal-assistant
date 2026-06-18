@@ -70,6 +70,8 @@ services:
       - BUSINESS_TAX_IDS=${BUSINESS_TAX_IDS}
       - BUSINESS_CRN=${BUSINESS_CRN}
       - BUSINESS_LICENSE_PLATES=${BUSINESS_LICENSE_PLATES}
+      # Accountant intent gate — comma-separated accountant/bookkeeper addresses
+      - ACCOUNTANT_EMAILS=${ACCOUNTANT_EMAILS:-}
       # Paperless direct API (for large file uploads bypassing MCP)
       - PAPERLESS_URL=${PAPERLESS_URL}
       - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}

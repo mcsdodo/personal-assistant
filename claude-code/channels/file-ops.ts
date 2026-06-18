@@ -31,6 +31,7 @@ const ENV_ALLOWLIST = new Set([
   "BUSINESS_TAX_IDS",
   "BUSINESS_CRN",
   "BUSINESS_LICENSE_PLATES",
+  "ACCOUNTANT_EMAILS",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -243,7 +244,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "get_env",
       description:
-        "Read an allowlisted environment variable. Allowed: GMAIL_EMAIL, TELEGRAM_CHAT_ID, BUSINESS_COMPANY_NAME, BUSINESS_TAX_IDS, BUSINESS_CRN, BUSINESS_LICENSE_PLATES.",
+        "Read an allowlisted environment variable. Allowed: GMAIL_EMAIL, TELEGRAM_CHAT_ID, BUSINESS_COMPANY_NAME, BUSINESS_TAX_IDS, BUSINESS_CRN, BUSINESS_LICENSE_PLATES, ACCOUNTANT_EMAILS.",
       inputSchema: {
         type: "object" as const,
         properties: {

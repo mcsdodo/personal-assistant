@@ -70,6 +70,56 @@ These are patterns we've confirmed. For unknown vendors, use your judgment.
 | Tatra Banka | info@tatrabanka.sk | výpis |
 | HOPINTAXI (parking app) | noreply@hopin.sk | "Your parking ticket" → **paid parking receipt, is_invoice: true, attachment strategy** |
 
+## Accountant emails (intent gate)
+
+`${ACCOUNTANT_EMAILS}` is a comma-separated list of the user's accountant/bookkeeper
+addresses. When the email's `From` matches one of them, **a PDF attachment is NOT a
+reliable invoice signal** — the accountant sends many kinds of mail and only two are
+documents to file. Classify by **intent**:
+
+**FILE (`is_invoice: true`, `action: "download_and_upload"`) — ONLY when she is delivering:**
+- **her own service invoice** — she bills the user for accounting/payroll services
+  (subject names her faktúra; body like "v prílohe zasielam faktúru …"), or
+- **an outgoing invoice she prepared for the user to issue to a client** — a *delivery*
+  reply ("nech sa páči" / "here you go") carrying the finished invoice made from the
+  user's billing inputs (a real invoice the user's company issues to a third-party client).
+
+**SKIP (`is_invoice: false`, `action: "ignore"`, set `skip_reason`) — everything else,
+EVEN with a PDF attached:**
+- a question / correction / discussion about documents — asks for an explanation, to fix a
+  document, queries a discrepancy, or rejects/queries an attached invoice (even when she
+  attaches a third-party vendor's invoice purely to ask about it) → `skip_reason: "query"`
+- a payslip / wage / director's-remuneration statement → `skip_reason: "payslip"`
+- a payment order / instruction to pay (VAT, levy) → `skip_reason: "payment_order"`
+- a tax-filing / annual financial-statement delivery → `skip_reason: "close"`
+- acknowledgments, scheduling, out-of-office, banter, or any no-document note → `skip_reason: "other"`
+
+**When unsure** whether an accountant email is one of the two FILE cases, **SKIP** it
+(`action: "ignore"`, `skip_reason: "other"`). The user's books hold only invoices; a
+wrongly-filed attachment pollutes accounting. Never default an accountant email to
+`download_and_upload` just because it carries a PDF. For non-accountant senders, ignore
+this entire section.
+
+### Examples (intent over attachment)
+
+- From `${ACCOUNTANT_EMAILS}`, subject "faktúra za služby 04/2026", body "v prílohe
+  zasielam faktúru za spracovanie účtovníctva", 1 PDF → **FILE**, `action:
+  "download_and_upload"`, `skip_reason: null`.
+- From `${ACCOUNTANT_EMAILS}`, subject "Re: podklady k vystaveniu faktúr 04/2026", body
+  "nech sa páči :)", 1 PDF (the finished invoice for client Acme s.r.o.) → **FILE**,
+  `action: "download_and_upload"`, `skip_reason: null`.
+- From `${ACCOUNTANT_EMAILS}`, subject "Re: podklady k vystaveniu faktúr 04/2026", body
+  "Môj dodávateľ softvéru je …, počkaj so zazmluvnením do jesene", 1 PDF → **SKIP**
+  (discussion, not a delivery), `action: "ignore"`, `skip_reason: "query"`.
+- From `${ACCOUNTANT_EMAILS}`, subject "Re: dokumenty 03/2026", body "prosím vysvetlenie k
+  priloženým dokladom: 1. SomeShop – čo to je?", 1 third-party PDF → **SKIP**,
+  `action: "ignore"`, `skip_reason: "query"`.
+- From `${ACCOUNTANT_EMAILS}`, subject "vyúčtovanie odmeny konateľa 04/2026", body "v
+  prílohe posielam výplatnú pásku", 1 PDF → **SKIP**, `action: "ignore"`,
+  `skip_reason: "payslip"`.
+- From `${ACCOUNTANT_EMAILS}`, subject "DPH na úhradu", body "v prílohe príkaz na úhradu,
+  uhraď do 25." → **SKIP**, `action: "ignore"`, `skip_reason: "payment_order"`.
+
 ## Response Format
 
 Always respond with ONLY this JSON (no markdown, no explanation):
@@ -87,7 +137,8 @@ Always respond with ONLY this JSON (no markdown, no explanation):
   "order_id": "583481365",
   "total_amount": 156.68,
   "currency": "EUR",
-  "notes": null
+  "notes": null,
+  "skip_reason": null
 }
 ```
 
@@ -112,6 +163,10 @@ Fields:
 - `total_amount`: float amount if visible in subject/body (e.g., "156,68 €" → 156.68), null if unknown. Return `null` if currency is NOT EUR — we only track EUR amounts
 - `currency`: "EUR", "USD", "CZK", etc. if amount found, null otherwise
 - `notes`: short string (<200 chars) or `null`. REQUIRED (non-null, non-empty) whenever `vendor` or `download_strategy` is `"unknown"`. Otherwise set to `null`.
+- `skip_reason`: `null` normally. ONLY when the sender is in `${ACCOUNTANT_EMAILS}` AND
+  `action: "ignore"`, set one of `"query" | "payslip" | "payment_order" | "close" | "other"`
+  (see "Accountant emails" above). Always `null` for non-accountant senders and for any
+  non-ignore action.
 
 ## When to use `"unknown"`
 

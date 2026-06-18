@@ -164,7 +164,7 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 
 Haiku subagent fetches the email body itself via the gmail/outlook MCP and classifies it. The parent Claude session never reads the body — it just dispatches the subagent with `{email_source, message_id, user_google_email?}` from the workflow channel meta. Keeping the body inside the throwaway subagent context prevents the parent session from accumulating email bodies across classifications.
 
-**Output fields:** `is_invoice`, `confidence` (high/medium/low), `vendor`, `is_fuel`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/claude_download/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`. Note: `doc_type` and `owner` are not returned by the email-classifier — these come exclusively from the document-classifier after PDF download.
+**Output fields:** `is_invoice`, `confidence` (high/medium/low), `vendor`, `is_fuel`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/claude_download/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`, `skip_reason` (null normally; one of `query|payslip|payment_order|close|other` when the sender is an accountant and `action` is `ignore` — see accountant intent gate below). Note: `doc_type` and `owner` are not returned by the email-classifier — these come exclusively from the document-classifier after PDF download.
 
 **Download strategy rules:**
 - `has_attachments` + single invoice expected → `attachment` (worker downloads automatically, picks first PDF — works for both Gmail and Outlook)
@@ -524,6 +524,7 @@ When Claude calls `submit_classification(job_id, "classify_email", result)`, the
 | `subject` | string | worker-injected from `input_json` |
 | `received_at` | string | worker-injected from `input_json` |
 | `sender` | string | worker-injected from `input_json` |
+| `skip_reason` | `null` or `"query"` / `"payslip"` / `"payment_order"` / `"close"` / `"other"` | email-classifier — non-null only for accountant senders with `action: "ignore"` |
 
 The last three fields come from the watcher (which captured them at poll time and persisted them in the job's `input_json`), not from the classifier or from any fetch. The worker uses `received_at` as a late-fallback date and `subject` only as a hardened-regex safety net (see `month_tag resolution` below).
 
@@ -671,6 +672,53 @@ create_invoice_intake_job(email_source, message_id)
 ```
 
 Omit `force` (use `force=false`, the default). There is no existing Paperless document to PATCH, so the normal pipeline runs and the dedup step still protects against accidental double-upload. The worker downloads, classifies, and uploads the real invoice and sends the normal `✔️ uploaded` Telegram notification.
+
+## Accountant Email Intent Gate
+
+The accountant/bookkeeper sends many types of email, and attaching a PDF is not a reliable invoice signal. The email-classifier applies an **intent gate** for senders listed in the `ACCOUNTANT_EMAILS` env var (comma-separated).
+
+### What gets filed vs skipped
+
+**FILE (`action: "download_and_upload"`) — only two cases:**
+- Her own service invoice — she bills the user for accounting or payroll services.
+- An outgoing-invoice delivery — a "nech sa páči" / "here you go" reply carrying a finished invoice she prepared for the user to issue to a third-party client.
+
+**SKIP (`action: "ignore"`) — everything else, even with a PDF attached:**
+
+| `skip_reason` | What it covers |
+|---|---|
+| `query` | Question, correction, or discussion about a document; attaches a third-party invoice to ask about it |
+| `payslip` | Payslip, wage, or director's-remuneration statement |
+| `payment_order` | VAT payment order or levy instruction |
+| `close` | Annual financial-statement or tax-filing delivery |
+| `other` | Acknowledgment, scheduling, banter, or anything else |
+
+**When unsure**, the classifier defaults to SKIP (`skip_reason: "other"`). A wrongly-filed attachment pollutes accounting; a missed delivery is recoverable (see below).
+
+For non-accountant senders the gate is bypassed entirely — existing classification logic applies unchanged.
+
+### Outcome and observability
+
+| Signal | Value |
+|---|---|
+| Job outcome | `accountant_non_invoice_skipped` |
+| Telegram | silent (no notification) |
+| Metric | `invoice_worker_accountant_skipped_total` (label: `reason`) |
+
+### Recovery — mis-skipped delivery
+
+If a real invoice delivery is wrongly skipped (e.g. a `query`-labelled email that was actually a delivery), reprocess with the normal recovery path:
+
+```
+create_invoice_intake_job(email_source, message_id)
+```
+
+Omit `force` (`force=false`, the default). There is no existing Paperless document to PATCH; the normal pipeline runs and the dedup step protects against double-upload.
+
+**Code:**
+- [agents/email-classifier.md](../claude-code/agents/email-classifier.md) — "Accountant emails (intent gate)" section with full intent rules and few-shot examples
+- [channels/file-ops.ts](../claude-code/channels/file-ops.ts) — `ACCOUNTANT_EMAILS` in `ENV_ALLOWLIST` and `get_env` description
+- [CLAUDE.md](../claude-code/CLAUDE.md) — `classify_email` step 2: `get_env("ACCOUNTANT_EMAILS")` injection before dispatching the subagent
 
 ## Email Audit Trail
 
