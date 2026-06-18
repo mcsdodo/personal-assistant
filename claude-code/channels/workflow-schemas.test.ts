@@ -629,3 +629,27 @@ describe("compatibility with existing test fixtures", () => {
     expect(out.doc_date).toBeNull();
   });
 });
+
+describe("EmailClassificationResult.skip_reason", () => {
+  test("EmailClassificationResult preserves skip_reason on an accountant ignore", () => {
+    const out = validateEmailClassificationResult({
+      is_invoice: false, confidence: "high", vendor: null, doc_type: "document",
+      is_fuel: false, action: "ignore", download_strategy: null,
+      strategy_confidence: null, requires_review: false, order_id: null,
+      total_amount: null, currency: null, subject: "Re: docs", received_at: null,
+      sender: "acct@example.test", skip_reason: "query",
+    });
+    expect(out.skip_reason).toBe("query");
+  });
+
+  test("EmailClassificationResult defaults skip_reason to null when absent", () => {
+    const out = validateEmailClassificationResult({
+      is_invoice: true, confidence: "high", vendor: "Acme", doc_type: "invoice",
+      is_fuel: false, action: "download_and_upload", download_strategy: "attachment",
+      strategy_confidence: "high", requires_review: false, order_id: "A1",
+      total_amount: 10, currency: "EUR", subject: "Invoice", received_at: null,
+      sender: "billing@acme.test",
+    });
+    expect(out.skip_reason).toBeNull();
+  });
+});

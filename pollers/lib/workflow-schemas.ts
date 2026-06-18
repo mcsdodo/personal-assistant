@@ -276,6 +276,10 @@ export interface EmailClassificationResultSchema {
   subject: string | null;
   received_at: string | null;
   sender: string | null;
+  /** Set by the email-classifier ONLY for accountant senders it decides to skip
+   *  (action="ignore"). One of: query | payslip | payment_order | close | other.
+   *  Null for all other emails. Drives the accountant_non_invoice_skipped outcome. */
+  skip_reason: string | null;
 }
 
 export function validateEmailClassificationResult(input: unknown): EmailClassificationResultSchema {
@@ -346,6 +350,7 @@ export function validateEmailClassificationResult(input: unknown): EmailClassifi
     subject: nullableString("EmailClassificationResult", obj, "subject"),
     received_at: nullableString("EmailClassificationResult", obj, "received_at"),
     sender: nullableString("EmailClassificationResult", obj, "sender"),
+    skip_reason: nullableString("EmailClassificationResult", obj, "skip_reason", { allowMissing: true }),
   };
 }
 
