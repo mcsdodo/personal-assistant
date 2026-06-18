@@ -13,6 +13,10 @@ This project was developed as part of a private monorepo. This changelog was gen
 - **`sample_check` job event breadcrumb** — `step_completed { step: "sample_check", outcome: "sample_detected" | "not_sample" }` emitted on every invoice intake run, making the guard visible in the job event ledger regardless of outcome.
 - **`poppler-utils`** added to [worker/Dockerfile](worker/Dockerfile) — appended to the existing `RUN apk add --no-cache qpdf libjpeg-turbo` line to become `RUN apk add --no-cache qpdf libjpeg-turbo poppler-utils`, providing the `pdftotext` binary used by the extractor.
 - New module [`claude-code/channels/invoice/sample-detection.ts`](claude-code/channels/invoice/sample-detection.ts) — exports `isSampleInvoice(text)` and `extractPdfText(filePath)`; fully unit-tested.
+- **Accountant-email intent gate** — for mail from a configured accountant/bookkeeper address (`ACCOUNTANT_EMAILS`), the email-classifier now classifies by *intent* rather than treating any PDF attachment as an invoice. It files only the accountant's own service invoice and the outgoing invoices she returns for the user to issue; everything else from her — questions/discussion (even when a third-party invoice is attached "to ask about it"), payslips, payment orders, and the annual close — is silently skipped before download. Fixes invoices being filed from the accountant's question emails; defaults to skip when intent is unclear so the books hold only invoices.
+- **`accountant_non_invoice_skipped` job outcome** — silent terminal outcome (no Telegram, same as `ignored`/`sample_skipped`), visible in `list_jobs` and via the `accountant_intent` job-event breadcrumb.
+- **`invoice_worker_accountant_skipped_total` Prometheus counter** (label: `reason` ∈ `query` / `payslip` / `payment_order` / `close` / `other`) — one increment per skipped accountant email.
+- **`ACCOUNTANT_EMAILS` env var** (comma-separated) — the accountant addresses the gate applies to; the classifier section is inert when unset, so existing deployments are unaffected until it is configured.
 
 ## 2026-06-03
 
