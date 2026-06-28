@@ -13,7 +13,7 @@ This project was developed as part of a private monorepo. This changelog was gen
   - Owner folder → internal role mapping via `ownerFolderToRole`: folder matching `OWNER_BUSINESS_LABEL` (default `techlab`) → `business`; folder named `personal` → `personal`.
   - `scan_intake` jobs now carry explicit `owner` (role), `bucket`, and `folder_id` fields — worker no longer infers owner by splitting the `watch_folder` path string (B1 bug fix).
   - GDrive file moves use the stored `folder_id` directly instead of re-resolving by name at move time, closing a race when two folders share the same name (B2 bug fix).
-  - `resolveStoragePathId` now throws on an unrecognised owner+bucket combination instead of returning `null` and silently uploading with no storage path (B3 bug fix).
+  - Unknown owner/bucket now fails loud at the schema boundary — `validateScanIntakeInput` enum-gates `owner` (`business|personal`) and `bucket` (`accounting|documents`), so a misconfigured folder is rejected at job creation instead of silently uploading with no storage path (B3 bug fix). (`resolveStoragePathId` is unchanged — it is shared with the email path where `owner` may be `unknown`.)
   - E2E harness updated: `DriveTestClient` accepts `root`/`owner`/`bucket` (was `level1`/`level2`); `conftest.py` reads new env vars with LEVEL1/LEVEL2 fallbacks; new `personal_drive_client` fixture and `test_gdrive_scan_personal_owner` test verify personal-owner tag rules and `Personal Invoices` storage path.
   - `_REQUIRED_STORAGE_PATHS` in [`tests/helpers.py`](../tests/helpers.py) expanded to cover all four paths: Personal Documents, Personal Invoices, Techlab Documents, Techlab Invoices.
 
