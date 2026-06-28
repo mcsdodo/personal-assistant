@@ -80,7 +80,11 @@ email-poller container (oven/bun:1-alpine)
 └── INITIAL_LOOKBACK seeds last_checked on first run; over-cap windows fail loud
 
 gdrive-poller container (oven/bun:1-alpine)
-├── polls Google Drive folders (GDRIVE_LEVEL1 × GDRIVE_LEVEL2) every 30s via gmail-mcp
+├── polls Google Drive folders every 30s via gmail-mcp
+│   ├── 3-level (GDRIVE_ROOT set): {root}/{owner}/{bucket} e.g. _documents_intake/techlab/accounting
+│   └── 2-level (GDRIVE_ROOT unset): {owner}/{bucket} e.g. techlab/accounting (backward-compat)
+├── owner folder → role: OWNER_BUSINESS_LABEL (default "techlab") → "business"; "personal" → "personal"
+├── writes explicit owner, bucket, folder_id on every scan_intake job in workflow.db
 ├── writes gdrive.db (audit trail) + workflow.db (creates scan_intake jobs)
 └── exposes /health on :9466
 

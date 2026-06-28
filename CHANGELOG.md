@@ -6,6 +6,17 @@ This project was developed as part of a private monorepo. This changelog was gen
 
 ## 2026-06-28
 
+### Added
+- **GDrive nested intake root — `GDRIVE_ROOT` / `GDRIVE_OWNERS` / `GDRIVE_BUCKETS` env vars (task 96)**
+  - gdrive-poller now supports an optional three-level folder hierarchy `{GDRIVE_ROOT}/{owner}/{bucket}` (e.g. `_documents_intake/techlab/accounting`). When `GDRIVE_ROOT` is unset the old two-level `{owner}/{bucket}` layout is preserved byte-for-byte.
+  - New env vars: `GDRIVE_ROOT` (optional), `GDRIVE_OWNERS` (replaces `GDRIVE_LEVEL1`), `GDRIVE_BUCKETS` (replaces `GDRIVE_LEVEL2`). Legacy vars still accepted as fallbacks — no migration forced.
+  - Owner folder → internal role mapping via `ownerFolderToRole`: folder matching `OWNER_BUSINESS_LABEL` (default `techlab`) → `business`; folder named `personal` → `personal`.
+  - `scan_intake` jobs now carry explicit `owner` (role), `bucket`, and `folder_id` fields — worker no longer infers owner by splitting the `watch_folder` path string (B1 bug fix).
+  - GDrive file moves use the stored `folder_id` directly instead of re-resolving by name at move time, closing a race when two folders share the same name (B2 bug fix).
+  - `resolveStoragePathId` now throws on an unrecognised owner+bucket combination instead of returning `null` and silently uploading with no storage path (B3 bug fix).
+  - E2E harness updated: `DriveTestClient` accepts `root`/`owner`/`bucket` (was `level1`/`level2`); `conftest.py` reads new env vars with LEVEL1/LEVEL2 fallbacks; new `personal_drive_client` fixture and `test_gdrive_scan_personal_owner` test verify personal-owner tag rules and `Personal Invoices` storage path.
+  - `_REQUIRED_STORAGE_PATHS` in [`tests/helpers.py`](../tests/helpers.py) expanded to cover all four paths: Personal Documents, Personal Invoices, Techlab Documents, Techlab Invoices.
+
 ### Changed
 - **Decouple business-owner identity from a hard-coded label**
   - The internal owner role is now `business` / `personal` / `unknown` in all schemas, logic comparisons, classifier prompt, and storage-path map. The string `"techlab"` no longer appears as a role value anywhere in the codebase.

@@ -196,7 +196,7 @@ The invoice-worker uploads documents directly to the Paperless HTTP API, **not**
 Tags are derived deterministically by `buildTagNames()` in `invoice-pipeline.ts:185`. Both pipelines (email and GDrive scan) call the same function — there is **no separate per-source tag logic**. The only difference is where `owner` comes from:
 
 - **Email pipeline** — raw `owner` comes from the document-classifier (`business`, `personal`, or `unknown`). The classifier inspects the PDF for business identifiers, which is *inference* and can misfire (e.g., a payslip from your own company always has the employer header + IČO and would otherwise be tagged `business`). The raw value is then passed through `resolveOwner(rawOwner, docType)` in the same file, which applies one doc_type-aware rule: `doc_type === "payslip" → owner = "personal"`. `resolveOwner` is called once before both `buildTagNames` and `resolveStoragePathId`, so tags and storage path always agree. If the classifier is missing an `owner` field, the email job still fails fast with `missing_owner`.
-- **GDrive scan pipeline** — `owner` comes from the watch folder's first segment (`watch_folder.split("/")[0]`). For `watch_folder=techlab/invoicing` the owner segment is `techlab`. The classifier's `owner` field is ignored on this path because the operator's folder choice is authoritative.
+- **GDrive scan pipeline** — `owner` is an explicit role (`business` | `personal`) written by the poller onto the `scan_intake` job. The poller derives it via `ownerFolderToRole`: the folder whose name matches `OWNER_BUSINESS_LABEL` (default `techlab`) → `business`; the folder named `personal` → `personal`. The document-classifier's `owner` field is ignored on this path because the operator's folder choice is authoritative.
 
 **Payslips (email path only):** `doc_type=payslip` from the email path forces owner to `personal` via `resolveOwner`, so the final tags are `[personal, YYYY-MM]` — no `accounting`, no business label, even if the classifier's raw owner field said `business`. This keeps payslips out of the `checker-mcp` matching pipeline (which filters on `accounting`). A payslip scanned via GDrive is NOT overridden — folder choice wins.
 
@@ -207,13 +207,13 @@ Both then go through the same `buildTagNames(...)` rules. The `business` owner r
 | `business` | `<OWNER_BUSINESS_LABEL>` (e.g. `techlab`), `accounting` | + `credit-note` | + `account-statement` | + `fuel` | + `YYYY-MM` (if validated) |
 | `personal` | `personal` | + `credit-note` | + `account-statement` | + `fuel` | + `YYYY-MM` (if validated) |
 
-Example: `watch_folder=techlab/invoicing` + invoice + April → `[techlab, accounting, 2026-04]`. Note the second tag is `accounting`, **not** `invoicing` — `invoicing` is a folder path segment, not a Paperless tag.
+Example: business owner + invoice + April → `[techlab, accounting, 2026-04]`. The `accounting` tag comes from `doc_type` (invoice/receipt/credit_note → accounting), not from the bucket name — a doc in the `accounting` GDrive bucket still receives the `accounting` Paperless tag by the same rule, but so would a doc in a `documents` bucket if its `doc_type` is invoice.
 
 ```mermaid
 flowchart TD
     A[Document arrives] --> B{Source?}
 
-    B -->|GDrive scan| Bg["owner = watch_folder.split('/')[0]<br/>e.g. techlab/invoicing → 'techlab' folder segment"]
+    B -->|GDrive scan| Bg["owner = explicit role on job<br/>ownerFolderToRole: 'techlab'→business, 'personal'→personal"]
     B -->|Email| Be["owner = document-classifier.owner<br/>(business / personal / unknown)"]
 
     Bg --> D{owner?}
@@ -358,7 +358,7 @@ Implementations: [`workflow-mcp.ts`](../claude-code/channels/workflow-mcp.ts) (s
 
 Scanned documents dropped into Google Drive are automatically classified and uploaded to Paperless.
 
-**Pipeline:** gdrive-poller (standalone container) polls multiple level2 folders under a level1 parent → creates `scan_intake` job directly in workflow.db with `file_id`, `month_tag`, and `watch_folder` → worker downloads from GDrive, requests document classification via channel → uploads to Paperless with tags derived from the folder path, moves file to `processed/`.
+**Pipeline:** gdrive-poller (standalone container) polls every owner × bucket folder combination → creates `scan_intake` job directly in workflow.db with `file_id`, `month_tag`, `watch_folder`, `owner` (role: `business`|`personal`), `bucket`, and `folder_id` → worker downloads from GDrive, requests document classification via channel → uploads to Paperless with tags derived from the owner role, moves file to `processed/`.
 
 ### Scan Pipeline Flow
 
@@ -382,8 +382,8 @@ sequenceDiagram
     GW->>DB: fileExists(id)?
     DB-->>GW: false
     GW->>DB: INSERT file (status="new")
-    GW->>DB: createJob(workflow.db)<br/>scan_intake job<br/>{file_id, watch_folder, month_tag}
-    note over GW: month_tag = file created_time<br/>(last-resort fallback only)
+    GW->>DB: createJob(workflow.db)<br/>scan_intake job<br/>{file_id, watch_folder, month_tag,<br/>owner, bucket, folder_id}
+    note over GW: owner = ownerFolderToRole(folder_name)<br/>month_tag = file created_time<br/>(last-resort fallback only)
     end
 
     rect rgb(50, 40, 40)
@@ -411,13 +411,19 @@ sequenceDiagram
 
 Unlike the email path (3 ticks), scans need only 2 ticks — there is no email classification step. On failure, the worker moves the file to `errors/` instead of `processed/`.
 
-**Multi-folder config:**
+**Multi-folder config (nested intake, task 96):**
 ```env
-GDRIVE_LEVEL1=techlab              # parent folder(s), comma-separated
-GDRIVE_LEVEL2=invoicing,documents  # subfolders to watch, comma-separated
+# 3-level: root/owner/bucket — set GDRIVE_ROOT to enable
+GDRIVE_ROOT=_documents_intake      # optional root folder; empty = 2-level (backward compat)
+GDRIVE_OWNERS=techlab,personal     # comma-separated owner folder names (fallback: GDRIVE_LEVEL1)
+GDRIVE_BUCKETS=accounting,documents # comma-separated bucket names (fallback: GDRIVE_LEVEL2)
+#                                    Values must be: accounting | documents
+OWNER_BUSINESS_LABEL=techlab       # folder name that maps to the "business" owner role
 ```
 
-At startup, the watcher resolves every level1 × level2 combination (e.g. `techlab/invoicing`, `techlab/documents`). Both levels support comma-separated values, so `GDRIVE_LEVEL1=techlab,personal` with `GDRIVE_LEVEL2=invoicing,documents` would watch 4 folders. Each leaf folder gets `processed/` and `errors/` subfolders ensured. Files are polled from all folders every cycle. The `watch_folder` (e.g. `techlab/invoicing`) flows through the job input → worker, where it determines both tags and file move destination.
+At startup, the watcher resolves every owner × bucket combination under the optional root (e.g. `_documents_intake/techlab/accounting`, `_documents_intake/personal/documents`). When `GDRIVE_ROOT` is unset the hierarchy is 2-level (`owner/bucket`) for full backward compatibility. Each leaf folder gets `processed/` and `errors/` subfolders ensured. Files are polled from all folders every cycle.
+
+The poller maps each owner folder to an internal role via `ownerFolderToRole`: the folder whose name matches `OWNER_BUSINESS_LABEL` (default `techlab`) → role `business`; the folder named `personal` → role `personal`. The role, the bucket name, and the Drive folder id are written as explicit fields on the `scan_intake` job — the worker no longer infers owner from the folder path string.
 
 **Unified classifier:** Both email PDFs and GDrive scans use the same `document-classifier` agent. The email path adds an email-classifier triage step before download; the GDrive path skips it.
 
@@ -562,13 +568,16 @@ Idempotency key: `{email_source}:{message_id}`
 
 **scan_intake** (gdrive-poller → workflow.db):
 
-| Field | Type |
-|-------|------|
-| `source` | "gdrive" |
-| `file_id` | string |
-| `watch_folder` | string (e.g. "techlab/invoicing") |
-| `month_tag` | string (e.g. "2026-03") |
-| `filename` | string (optional) |
+| Field | Type | Notes |
+|-------|------|-------|
+| `source` | "gdrive" | |
+| `file_id` | string | Drive file id |
+| `watch_folder` | string | relative to root, e.g. `techlab/accounting` |
+| `month_tag` | string | e.g. `2026-03` — last-resort fallback from file `created_time` |
+| `filename` | string | optional |
+| `owner` | string | explicit role: `business` \| `personal` (from `ownerFolderToRole`) |
+| `bucket` | string | `accounting` \| `documents` |
+| `folder_id` | string | Drive folder id of the leaf bucket folder |
 
 Idempotency key: `gdrive:{file_id}`
 

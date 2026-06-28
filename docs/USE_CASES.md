@@ -39,7 +39,7 @@ Detailed documentation: [`uc1-invoice-processing.md`](./uc1-invoice-processing.m
 | 1.5 | [Notify on new invoice](./uc1-invoice-processing.md#uc-15-telegram-notification) | DONE |
 | 1.6 | [Alert on duplicate detection](./uc1-invoice-processing.md#uc-16-approval-gates) | DONE |
 | 1.7 | [Query invoice status](./uc1-invoice-processing.md#uc-17-query-invoice-status) | DONE |
-| 1.8 | Google Drive scan + email PDF auto-upload | DONE |
+| 1.8 | [Google Drive scan auto-upload — nested root/owner/bucket intake, explicit owner role on job](./uc1-invoice-processing.md#uc-18-gdrive-scan-auto-upload) | DONE |
 | 1.9 | Personal income documents (payslips) routed to personal, not techlab | DONE |
 | 1.10 | [Pause and ask user when classifier is unsure or PDF is encrypted](./uc1-invoice-processing.md#uc-16b-when-the-classifier-doesnt-know-guidance-pause) | DONE |
 | 1.11 | [Multi-stage vendor emails — newer email auto-PATCHes the existing Paperless doc (Alza order lifecycle)](./uc1-invoice-processing.md#multi-stage-vendor-email-refresh-automatic-task-59) | DONE |

@@ -372,6 +372,8 @@ def paperless_get_by_id(doc_id: int) -> dict | None:
 # is idempotent (matches by name) and cheap enough to run on every wipe.
 _REQUIRED_STORAGE_PATHS = (
     ("Personal Documents", "Personal/{created_year}"),
+    ("Personal Invoices", "Personal/{correspondent}/{created_year}-{created_month}"),
+    ("Techlab Documents", "Techlab/{created_year}"),
     ("Techlab Invoices", "Techlab/{correspondent}/{created_year}-{created_month}"),
 )
 
@@ -984,12 +986,18 @@ class DriveTestClient:
     Provides folder resolution and file upload/listing helpers so tests can
     drop PDFs into the gdrive-watcher watch folder and verify post-processing
     state without depending on the production gmail-mcp container.
+
+    Supports both 2-level (owner/bucket) and 3-level (root/owner/bucket) folder
+    hierarchies matching the GDRIVE_ROOT / GDRIVE_OWNERS / GDRIVE_BUCKETS env vars.
+    When ``root`` is set the hierarchy is root → owner → bucket; when empty it is
+    owner → bucket (backward-compatible with the pre-96 GDRIVE_LEVEL1/LEVEL2 layout).
     """
 
-    def __init__(self, service, level1: str, level2: str):
+    def __init__(self, service, owner: str, bucket: str, root: str = ""):
         self.service = service
-        self.level1 = level1
-        self.level2 = level2
+        self.root = root
+        self.owner = owner
+        self.bucket = bucket
 
     def _find_folder(self, name: str, parent_id: str | None = None) -> str | None:
         """Return the Drive folder id for ``name``, optionally scoped to ``parent_id``."""
@@ -1004,15 +1012,29 @@ class DriveTestClient:
         return files[0]["id"] if files else None
 
     def resolve_watch_folder_id(self) -> str:
-        """Return the Drive folder id for the LEVEL2 watch folder.
+        """Return the Drive folder id for the bucket (leaf) watch folder.
 
-        Walks the LEVEL1 → LEVEL2 hierarchy defined at construction time.
+        When ``root`` is set walks root → owner → bucket (3-level).
+        When ``root`` is empty walks owner → bucket (2-level, backward-compat).
         """
-        l1 = self._find_folder(self.level1)
-        assert l1, f"level1 folder '{self.level1}' not found in Drive"
-        l2 = self._find_folder(self.level2, parent_id=l1)
-        assert l2, f"level2 folder '{self.level2}' not found under '{self.level1}'"
-        return l2
+        if self.root:
+            root_id = self._find_folder(self.root)
+            assert root_id, f"root folder '{self.root}' not found in Drive"
+            owner_id = self._find_folder(self.owner, parent_id=root_id)
+            assert owner_id, f"owner folder '{self.owner}' not found under '{self.root}'"
+            bucket_id = self._find_folder(self.bucket, parent_id=owner_id)
+            assert bucket_id, (
+                f"bucket folder '{self.bucket}' not found under '{self.owner}'"
+            )
+            return bucket_id
+        else:
+            owner_id = self._find_folder(self.owner)
+            assert owner_id, f"owner folder '{self.owner}' not found in Drive"
+            bucket_id = self._find_folder(self.bucket, parent_id=owner_id)
+            assert bucket_id, (
+                f"bucket folder '{self.bucket}' not found under '{self.owner}'"
+            )
+            return bucket_id
 
     def resolve_subfolder_id(self, parent_id: str, name: str) -> str | None:
         """Return the Drive folder id for ``name`` directly inside ``parent_id``."""

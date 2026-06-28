@@ -42,21 +42,48 @@ def clean_paperless():
     yield
 
 
+def _make_drive_client(owner: str, bucket: str):
+    """Construct a :class:`DriveTestClient` reading GDRIVE_ROOT from the environment."""
+    from .helpers import DriveTestClient, _get_drive_credentials, make_drive_service
+
+    root = _env("GDRIVE_ROOT", "").strip()
+    creds = _get_drive_credentials()
+    return DriveTestClient(make_drive_service(creds), owner=owner, bucket=bucket, root=root)
+
+
+def _first(env_var: str, fallback_var: str, default: str) -> str:
+    """Return the first comma-separated value of *env_var*, falling back to *fallback_var*."""
+    raw = _env(env_var, "") or _env(fallback_var, "")
+    first = raw.split(",")[0].strip()
+    return first or default
+
+
 @pytest.fixture
 def drive_client():
-    """Direct Google Drive API client for gdrive E2E tests.
+    """Direct Google Drive API client for gdrive E2E tests (business/first-owner bucket).
 
     Credentials are loaded from the same token.json used by gmail_service()
     (see helpers._get_drive_credentials).  The token must include the
     https://www.googleapis.com/auth/drive scope — re-authorise if it was
     created with gmail.send only.
 
-    GDRIVE_LEVEL1 and GDRIVE_LEVEL2 are read from the environment (or .env).
-    Only the first value of GDRIVE_LEVEL2 is used (comma-separated list).
+    Reads GDRIVE_ROOT / GDRIVE_OWNERS / GDRIVE_BUCKETS (or the legacy
+    GDRIVE_LEVEL1 / GDRIVE_LEVEL2 fallbacks) from the environment or .env.
+    Only the first value of each comma-separated list is used.
     """
-    from .helpers import DriveTestClient, _get_drive_credentials, make_drive_service
+    owner = _first("GDRIVE_OWNERS", "GDRIVE_LEVEL1", "techlab")
+    bucket = _first("GDRIVE_BUCKETS", "GDRIVE_LEVEL2", "accounting")
+    return _make_drive_client(owner=owner, bucket=bucket)
 
-    level1 = _env("GDRIVE_LEVEL1", "").split(",")[0].strip()
-    level2 = _env("GDRIVE_LEVEL2", "").split(",")[0].strip()
-    creds = _get_drive_credentials()
-    return DriveTestClient(make_drive_service(creds), level1, level2)
+
+@pytest.fixture
+def personal_drive_client():
+    """Drive client scoped to the personal-owner accounting bucket.
+
+    Uses the same root as ``drive_client`` (GDRIVE_ROOT) but resolves
+    the ``personal`` owner folder and the first configured bucket.
+    Requires the personal sub-tree to exist in Drive (e.g.
+    ``_documents_intake_dev/personal/accounting``).
+    """
+    bucket = _first("GDRIVE_BUCKETS", "GDRIVE_LEVEL2", "accounting")
+    return _make_drive_client(owner="personal", bucket=bucket)
