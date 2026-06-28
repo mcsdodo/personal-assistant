@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { buildGuidanceReplyMarkup, formatGuidanceRequest, formatNotification } from "./telegram-notify";
 
 describe("formatNotification", () => {
@@ -11,7 +11,7 @@ describe("formatNotification", () => {
       doc_type: "invoice",
       owner: "business",
       month_tag: "2026-04",
-    })).toBe("✔️  Slovak Telekom | 42.99 EUR | invoice | business | 2026-04");
+    })).toBe("✔️  Slovak Telekom | 42.99 EUR | invoice | techlab | 2026-04");
   });
 
   test("uploaded — null amount shows ?", () => {
@@ -35,7 +35,7 @@ describe("formatNotification", () => {
       doc_type: "invoice",
       owner: "business",
       month_tag: "2026-04",
-    })).toBe("✔️  Tesco | 18.5 EUR | invoice | business | 2026-04");
+    })).toBe("✔️  Tesco | 18.5 EUR | invoice | techlab | 2026-04");
   });
 
   test("uploaded — null owner shows ?", () => {
@@ -94,7 +94,7 @@ describe("formatNotification", () => {
       doc_type: "invoice",
       owner: "business",
       error: "download failed: 404",
-    })).toBe("❌  Orange | ? EUR | invoice | business | download failed: 404");
+    })).toBe("❌  Orange | ? EUR | invoice | techlab | download failed: 404");
   });
 
   test("failed — null error shows unknown error", () => {
@@ -130,7 +130,7 @@ describe("formatNotification", () => {
       owner: "business",
       month_tag: "2026-04",
       paperless_document_id: 411,
-    })).toBe("🔄  Anthropic, PBC | 100 EUR | invoice | business | 2026-04 (refreshed #411)");
+    })).toBe("🔄  Anthropic, PBC | 100 EUR | invoice | techlab | 2026-04 (refreshed #411)");
   });
 
   test("refreshed — without doc id falls back to (refreshed)", () => {
@@ -303,5 +303,116 @@ describe("buildGuidanceReplyMarkup", () => {
         { text: "Skip", callback_data: "g:11112222:skip" },
       ],
     ]);
+  });
+});
+
+// ── OWNER_BUSINESS_LABEL env var ────────────────────────────────────────────
+
+describe("formatNotification — OWNER_BUSINESS_LABEL", () => {
+  afterEach(() => {
+    delete process.env.OWNER_BUSINESS_LABEL;
+  });
+
+  test("default (no env var): business owner shows 'techlab' in summary", () => {
+    const msg = formatNotification({
+      outcome: "uploaded",
+      vendor: "Telekom",
+      total_amount: 10,
+      currency: "EUR",
+      doc_type: "invoice",
+      owner: "business",
+      month_tag: "2026-04",
+    });
+    expect(msg).toContain("techlab");
+    expect(msg).not.toContain("| business |");
+  });
+
+  test("OWNER_BUSINESS_LABEL=acme: business owner shows 'acme' in summary", () => {
+    process.env.OWNER_BUSINESS_LABEL = "acme";
+    const msg = formatNotification({
+      outcome: "uploaded",
+      vendor: "Telekom",
+      total_amount: 10,
+      currency: "EUR",
+      doc_type: "invoice",
+      owner: "business",
+      month_tag: "2026-04",
+    });
+    expect(msg).toContain("acme");
+    expect(msg).not.toContain("techlab");
+    expect(msg).not.toContain("| business |");
+  });
+
+  test("personal owner is unaffected by OWNER_BUSINESS_LABEL", () => {
+    process.env.OWNER_BUSINESS_LABEL = "acme";
+    const msg = formatNotification({
+      outcome: "uploaded",
+      vendor: "Telekom",
+      total_amount: 10,
+      currency: "EUR",
+      doc_type: "invoice",
+      owner: "personal",
+      month_tag: "2026-04",
+    });
+    expect(msg).toContain("personal");
+    expect(msg).not.toContain("acme");
+  });
+});
+
+describe("formatGuidanceRequest — OWNER_BUSINESS_LABEL", () => {
+  afterEach(() => {
+    delete process.env.OWNER_BUSINESS_LABEL;
+  });
+
+  test("default: business action renders /techlab command", () => {
+    const msg = formatGuidanceRequest({
+      job_id: "abc123de-aaaa-bbbb-cccc-111122223333",
+      reason: "classifier_unknown",
+      missing_fields: ["owner"],
+      context: {},
+      suggested_actions: ["set:owner=business", "set:owner=personal", "skip"],
+    });
+    expect(msg).toContain("/techlab");
+    expect(msg).not.toContain("/acme");
+  });
+
+  test("OWNER_BUSINESS_LABEL=acme: business action renders /acme command", () => {
+    process.env.OWNER_BUSINESS_LABEL = "acme";
+    const msg = formatGuidanceRequest({
+      job_id: "abc123de-aaaa-bbbb-cccc-111122223333",
+      reason: "classifier_unknown",
+      missing_fields: ["owner"],
+      context: {},
+      suggested_actions: ["set:owner=business", "set:owner=personal", "skip"],
+    });
+    expect(msg).toContain("/acme");
+    expect(msg).not.toContain("/techlab");
+  });
+});
+
+describe("buildGuidanceReplyMarkup — OWNER_BUSINESS_LABEL", () => {
+  afterEach(() => {
+    delete process.env.OWNER_BUSINESS_LABEL;
+  });
+
+  test("default: business owner button shows 'Techlab'", () => {
+    const markup = buildGuidanceReplyMarkup({
+      job_id: "abc12345-aaaa-bbbb-cccc-111122223333",
+      suggested_actions: ["set:owner=business", "skip"],
+    });
+    const allTexts = markup.inline_keyboard.flat().map((b) => b.text);
+    expect(allTexts).toContain("Techlab");
+    expect(allTexts).not.toContain("Acme");
+  });
+
+  test("OWNER_BUSINESS_LABEL=acme: business owner button shows 'Acme'", () => {
+    process.env.OWNER_BUSINESS_LABEL = "acme";
+    const markup = buildGuidanceReplyMarkup({
+      job_id: "abc12345-aaaa-bbbb-cccc-111122223333",
+      suggested_actions: ["set:owner=business", "skip"],
+    });
+    const allTexts = markup.inline_keyboard.flat().map((b) => b.text);
+    expect(allTexts).toContain("Acme");
+    expect(allTexts).not.toContain("Techlab");
   });
 });

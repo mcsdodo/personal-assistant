@@ -33,14 +33,20 @@ export function formatNotification(data: NotificationData): string | null {
     return `♻️  ${data.vendor} | ${amountStr} | ${msg}`;
   }
 
+  /** Map the internal role token to the display label. */
+  const ownerLabel = (raw: string | null): string => {
+    if (raw == null) return "?";
+    return raw === "business" ? getBusinessLabel() : raw;
+  };
+
   if (data.outcome === "failed") {
     const err = data.error ?? "unknown error";
-    const owner = data.owner ?? "?";
+    const owner = ownerLabel(data.owner);
     return `❌  ${data.vendor} | ${amountStr} | ${data.doc_type} | ${owner} | ${err}`;
   }
 
   // uploaded or refreshed
-  const owner = data.owner ?? "?";
+  const owner = ownerLabel(data.owner);
   const period = data.month_tag ?? "no-period";
 
   if (data.outcome === "refreshed") {
@@ -71,6 +77,11 @@ export interface GuidanceRequestMessage {
   missing_fields?: string[];
   suggested_actions: string[];
   context: Record<string, unknown>;
+}
+
+/** Return the configurable business-owner label (defaults to `techlab`). */
+function getBusinessLabel(): string {
+  return process.env.OWNER_BUSINESS_LABEL ?? "techlab";
 }
 
 /** Short job_id prefix used in the Telegram header (first 8 chars). */
@@ -116,8 +127,8 @@ function actionToCommand(action: string): string | null {
       const [key, value] = part.split("=");
       if (!key || !value) continue;
       if (key === "owner") {
-        // Role→label mapping: "business" role renders as external label "techlab".
-        const ownerLabel = value === "business" ? "techlab" : value;
+        // Role→label mapping: "business" role renders as the configurable external label.
+        const ownerLabel = value === "business" ? getBusinessLabel() : value;
         segments.push(ownerLabel);
       } else if (key === "doc_type") {
         // Collapse "account_statement" -> "statement" for a compact hint.
@@ -233,8 +244,8 @@ function actionToButtonLabel(action: string): string | null {
       const [key, value] = part.split("=");
       if (!key || !value) continue;
       if (key === "owner") {
-        // "personal" -> "Personal", "business" role -> "Techlab" (role→label mapping).
-        const ownerLabel = value === "business" ? "techlab" : value;
+        // "personal" -> "Personal", "business" role -> capitalized label (role→label mapping).
+        const ownerLabel = value === "business" ? getBusinessLabel() : value;
         segments.push(capitalize(ownerLabel));
       } else if (key === "doc_type") {
         // Collapse "account_statement" -> "statement" for a compact label.

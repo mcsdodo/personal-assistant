@@ -980,6 +980,7 @@ export async function executeInvoiceIntake(
       const allTagNames = buildTagNames(
         { owner, doc_type: merged.doc_type, is_fuel: merged.is_fuel },
         monthTag,
+        process.env.OWNER_BUSINESS_LABEL ?? "techlab",
       );
       const tagIds = await resolveTagIds(allTagNames, adapter, logger);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });

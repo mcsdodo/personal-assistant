@@ -247,9 +247,10 @@ export function resolveMonthTag(inputs: MonthTagInputs): string | null {
 export function buildTagNames(
   classification: { owner: string | null; doc_type: string | null; is_fuel: boolean },
   monthTag: string | null,
+  businessLabel = "techlab",
 ): string[] {
   const tags: string[] = [];
-  tags.push(classification.owner === "business" ? "techlab" : "personal");
+  tags.push(classification.owner === "business" ? businessLabel : "personal");
   if (classification.owner === "business") tags.push("accounting");
   if (classification.doc_type === "credit_note") tags.push("credit-note");
   if (classification.doc_type === "account_statement") tags.push("account-statement");

@@ -437,6 +437,28 @@ describe("buildTagNames", () => {
     const withPersonal = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: false }, "2026-03");
     expect(withPersonal).not.toContain("accounting");
   });
+
+  // ── OWNER_BUSINESS_LABEL configurability ──
+
+  test("business owner with default businessLabel gets 'techlab' tag", () => {
+    const tags = buildTagNames({ owner: "business", doc_type: "invoice", is_fuel: false }, "2026-04");
+    expect(tags).toContain("techlab");
+    expect(tags[0]).toBe("techlab");
+  });
+
+  test("business owner with custom businessLabel 'acme' gets 'acme' tag", () => {
+    const tags = buildTagNames({ owner: "business", doc_type: "invoice", is_fuel: false }, "2026-04", "acme");
+    expect(tags).toContain("acme");
+    expect(tags).not.toContain("techlab");
+    expect(tags[0]).toBe("acme");
+  });
+
+  test("personal owner is unaffected by businessLabel", () => {
+    const tags = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: false }, "2026-04", "acme");
+    expect(tags).toContain("personal");
+    expect(tags).not.toContain("acme");
+    expect(tags[0]).toBe("personal");
+  });
 });
 
 // ── buildScanTagNames ────────────────────────────────────────────────────
