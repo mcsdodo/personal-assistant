@@ -1,3 +1,5 @@
+import { DEFAULT_OWNER_BUSINESS_LABEL } from "./invoice/pipeline";
+
 export type NotifyFn = (message: string) => Promise<void>;
 
 export interface NotificationData {
@@ -79,9 +81,9 @@ export interface GuidanceRequestMessage {
   context: Record<string, unknown>;
 }
 
-/** Return the configurable business-owner label (defaults to `techlab`). */
+/** Return the configurable business-owner label (defaults to `DEFAULT_OWNER_BUSINESS_LABEL`). */
 function getBusinessLabel(): string {
-  return process.env.OWNER_BUSINESS_LABEL ?? "techlab";
+  return process.env.OWNER_BUSINESS_LABEL ?? DEFAULT_OWNER_BUSINESS_LABEL;
 }
 
 /** Short job_id prefix used in the Telegram header (first 8 chars). */

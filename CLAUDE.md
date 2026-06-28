@@ -111,6 +111,15 @@ Pollers are pure data-path containers — they write directly into `workflow.db`
 
 The workflow executor runs in a separate `pa-worker` Docker container — `workflow-mcp` writes a `classification_request_meta` job event when the worker parks a job for classification, and a 2s push loop in `workflow-mcp` (running inside `claude-code` with the live Claude session) drains those breadcrumbs into channel notifications. Net latency cost: one `WORKFLOW_POLL_MS` tick (~2s) before Claude sees the request.
 
+## Business / Personal Owner Model
+
+The document-classifier returns an `owner` field with three possible values: `business`, `personal`, or `unknown`. This is an **internal role** — it never appears as a Paperless tag or Telegram command directly. Instead, the `business` role is mapped to an **external label** configured via `OWNER_BUSINESS_LABEL` (default `techlab`) in two places:
+
+1. **Paperless tag** — [`buildTagNames`](claude-code/channels/invoice/pipeline.ts) pushes the label value (e.g. `techlab`) for `owner === "business"` documents, and the literal `"personal"` for personal ones.
+2. **Telegram guidance command / display** — [`telegram-notify.ts`](claude-code/channels/telegram-notify.ts) renders `set:owner=business` as `/<OWNER_BUSINESS_LABEL>` (e.g. `/techlab`), and the notification displays the title-cased label (e.g. `Techlab`).
+
+To deploy with a different business identity, set `OWNER_BUSINESS_LABEL=yourcompany` in [`.env`](.env.example) and [`komodo.toml`](../../_komodo/komodo.toml). The role rename from `techlab` → `business` is complete and transparent to operators — existing Paperless docs tagged `techlab` remain valid because the label default is unchanged.
+
 ## Robustness & Health
 
 ### Health Checks

@@ -236,6 +236,14 @@ export function resolveMonthTag(inputs: MonthTagInputs): string | null {
 // ── buildTagNames ───────────────────────────────────────────────────────
 
 /**
+ * Default value for the configurable business-owner label.
+ * Referenced by buildTagNames (param default), intake-worker, and telegram-notify
+ * so all three sites share a single source of truth.
+ * Exported so callers can use it as a fallback: `process.env.OWNER_BUSINESS_LABEL ?? DEFAULT_OWNER_BUSINESS_LABEL`.
+ */
+export const DEFAULT_OWNER_BUSINESS_LABEL = "techlab";
+
+/**
  * Build the list of tag NAMES from classification metadata.
  * This is the pure half — actual Paperless tag ID resolution is separate (I/O).
  *
@@ -247,7 +255,7 @@ export function resolveMonthTag(inputs: MonthTagInputs): string | null {
 export function buildTagNames(
   classification: { owner: string | null; doc_type: string | null; is_fuel: boolean },
   monthTag: string | null,
-  businessLabel = "techlab",
+  businessLabel = DEFAULT_OWNER_BUSINESS_LABEL,
 ): string[] {
   const tags: string[] = [];
   tags.push(classification.owner === "business" ? businessLabel : "personal");

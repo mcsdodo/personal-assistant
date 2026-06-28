@@ -4,6 +4,16 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-06-28
+
+### Changed
+- **Decouple business-owner identity from a hard-coded label**
+  - The internal owner role is now `business` / `personal` / `unknown` in all schemas, logic comparisons, classifier prompt, and storage-path map. The string `"techlab"` no longer appears as a role value anywhere in the codebase.
+  - New `OWNER_BUSINESS_LABEL` env var (default `techlab`) is the single place where the `business` role maps to an external string: the Paperless tag name and the Telegram guidance command (`/techlab`) and display (`Techlab`). Change it to deploy under a different label without touching code.
+  - `DEFAULT_OWNER_BUSINESS_LABEL` is exported from [pipeline.ts](claude-code/channels/invoice/pipeline.ts) as the single source of truth for the default — used by [`buildTagNames`](claude-code/channels/invoice/pipeline.ts) (param default), [intake-worker.ts](claude-code/channels/invoice/intake-worker.ts), and [telegram-notify.ts](claude-code/channels/telegram-notify.ts).
+  - Regression-lock test in [regression-lock.test.ts](claude-code/channels/regression-lock.test.ts) asserts `OWNERS`/`DOC_OWNERS` contain `business` (not `techlab`) and `DEFAULT_OWNER_BUSINESS_LABEL === "techlab"`.
+  - No behavior change: default label `techlab` preserves all existing Paperless tags, Telegram commands, and storage paths.
+
 ## 2026-06-18
 
 ### Added

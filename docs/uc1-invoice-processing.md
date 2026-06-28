@@ -195,17 +195,17 @@ The invoice-worker uploads documents directly to the Paperless HTTP API, **not**
 
 Tags are derived deterministically by `buildTagNames()` in `invoice-pipeline.ts:185`. Both pipelines (email and GDrive scan) call the same function — there is **no separate per-source tag logic**. The only difference is where `owner` comes from:
 
-- **Email pipeline** — raw `owner` comes from the document-classifier (`techlab` or `personal`). The classifier inspects the PDF for business identifiers, which is *inference* and can misfire (e.g., a payslip from your own company always has the employer header + IČO and would otherwise be tagged `techlab`). The raw value is then passed through `resolveOwner(rawOwner, docType)` in the same file, which applies one doc_type-aware rule: `doc_type === "payslip" → owner = "personal"`. `resolveOwner` is called once before both `buildTagNames` and `resolveStoragePathId`, so tags and storage path always agree. If the classifier is missing an `owner` field, the email job still fails fast with `missing_owner`.
-- **GDrive scan pipeline** — `owner` comes from the watch folder's first segment (`watch_folder.split("/")[0]`). For `watch_folder=techlab/invoicing` the owner is `techlab`. The classifier's `owner` field is ignored on this path because the operator's folder choice is authoritative.
+- **Email pipeline** — raw `owner` comes from the document-classifier (`business`, `personal`, or `unknown`). The classifier inspects the PDF for business identifiers, which is *inference* and can misfire (e.g., a payslip from your own company always has the employer header + IČO and would otherwise be tagged `business`). The raw value is then passed through `resolveOwner(rawOwner, docType)` in the same file, which applies one doc_type-aware rule: `doc_type === "payslip" → owner = "personal"`. `resolveOwner` is called once before both `buildTagNames` and `resolveStoragePathId`, so tags and storage path always agree. If the classifier is missing an `owner` field, the email job still fails fast with `missing_owner`.
+- **GDrive scan pipeline** — `owner` comes from the watch folder's first segment (`watch_folder.split("/")[0]`). For `watch_folder=techlab/invoicing` the owner segment is `techlab`. The classifier's `owner` field is ignored on this path because the operator's folder choice is authoritative.
 
-**Payslips (email path only):** `doc_type=payslip` from the email path forces owner to `personal` via `resolveOwner`, so the final tags are `[personal, YYYY-MM]` — no `accounting`, no `techlab`, even if the classifier's raw owner field said `techlab`. This keeps payslips out of the `checker-mcp` matching pipeline (which filters on `accounting`). A payslip scanned via GDrive is NOT overridden — folder choice wins.
+**Payslips (email path only):** `doc_type=payslip` from the email path forces owner to `personal` via `resolveOwner`, so the final tags are `[personal, YYYY-MM]` — no `accounting`, no business label, even if the classifier's raw owner field said `business`. This keeps payslips out of the `checker-mcp` matching pipeline (which filters on `accounting`). A payslip scanned via GDrive is NOT overridden — folder choice wins.
 
-Both then go through the same `buildTagNames(...)` rules:
+Both then go through the same `buildTagNames(...)` rules. The `business` owner role emits the **label** configured in `OWNER_BUSINESS_LABEL` (default `techlab`) as the Paperless tag:
 
-| Owner | Always | If `doc_type=credit_note` | If `doc_type=account_statement` | If `is_fuel` | Plus |
-|-------|--------|---------------------------|---------------------------------|--------------|------|
-| techlab | `techlab`, `accounting` | + `credit-note` | + `account-statement` | + `fuel` | + `YYYY-MM` (if validated) |
-| personal | `personal` | + `credit-note` | + `account-statement` | + `fuel` | + `YYYY-MM` (if validated) |
+| Owner role | Always | If `doc_type=credit_note` | If `doc_type=account_statement` | If `is_fuel` | Plus |
+|------------|--------|---------------------------|---------------------------------|--------------|------|
+| `business` | `<OWNER_BUSINESS_LABEL>` (e.g. `techlab`), `accounting` | + `credit-note` | + `account-statement` | + `fuel` | + `YYYY-MM` (if validated) |
+| `personal` | `personal` | + `credit-note` | + `account-statement` | + `fuel` | + `YYYY-MM` (if validated) |
 
 Example: `watch_folder=techlab/invoicing` + invoice + April → `[techlab, accounting, 2026-04]`. Note the second tag is `accounting`, **not** `invoicing` — `invoicing` is a folder path segment, not a Paperless tag.
 
@@ -213,16 +213,16 @@ Example: `watch_folder=techlab/invoicing` + invoice + April → `[techlab, accou
 flowchart TD
     A[Document arrives] --> B{Source?}
 
-    B -->|GDrive scan| Bg["owner = watch_folder.split('/')[0]<br/>e.g. techlab/invoicing → techlab"]
-    B -->|Email| Be["owner = document-classifier.owner"]
+    B -->|GDrive scan| Bg["owner = watch_folder.split('/')[0]<br/>e.g. techlab/invoicing → 'techlab' folder segment"]
+    B -->|Email| Be["owner = document-classifier.owner<br/>(business / personal / unknown)"]
 
     Bg --> D{owner?}
     Be --> Dm{owner?}
 
     Dm -->|missing| X["❌ job fails: missing_owner<br/>(email pipeline only)"]
-    Dm -->|techlab or personal| D
+    Dm -->|business or personal| D
 
-    D -->|techlab| G["base = [techlab, accounting]"]
+    D -->|business| G["base = [OWNER_BUSINESS_LABEL, accounting]<br/>e.g. [techlab, accounting]"]
     D -->|personal| E["base = [personal]"]
 
     G --> Dt
@@ -540,7 +540,7 @@ The last three fields come from the watcher (which captured them at poll time an
 | `confidence` | string | document-classifier |
 | `order_id` | string / null | document-classifier |
 | `subtitle` | string / null | document-classifier |
-| `owner` | "techlab" / "personal" | document-classifier |
+| `owner` | "business" / "personal" / "unknown" | document-classifier |
 | `doc_date` | string / null (YYYY-MM-DD) | document-classifier — issue date as printed |
 | `supply_date` | string / null (YYYY-MM-DD) | document-classifier — Slovak "deň dodania" / legal tax point per § 19 Zákon 222/2004 |
 | `service_period` | string / null (ISO 8601 interval) | document-classifier — `"YYYY-MM-DD/YYYY-MM-DD"` for subscriptions |

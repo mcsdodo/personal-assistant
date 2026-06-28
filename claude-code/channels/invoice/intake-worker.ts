@@ -74,6 +74,7 @@ import {
   buildSuggestedActions,
   buildScanTagNames,
   buildTagNames,
+  DEFAULT_OWNER_BUSINESS_LABEL,
   generateTitle,
   getCompletedSteps,
   mergeClassifications,
@@ -980,7 +981,7 @@ export async function executeInvoiceIntake(
       const allTagNames = buildTagNames(
         { owner, doc_type: merged.doc_type, is_fuel: merged.is_fuel },
         monthTag,
-        process.env.OWNER_BUSINESS_LABEL ?? "techlab",
+        process.env.OWNER_BUSINESS_LABEL ?? DEFAULT_OWNER_BUSINESS_LABEL,
       );
       const tagIds = await resolveTagIds(allTagNames, adapter, logger);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
