@@ -57,7 +57,7 @@ function defaultEmailClassification(overrides: Partial<InvoiceClassification> = 
     vendor: "Alza",
     doc_type: "invoice",
     is_fuel: false,
-    owner: "techlab",
+    owner: "business",
     action: "download_and_upload",
     download_strategy: "attachment",
     strategy_confidence: "high",
@@ -83,7 +83,7 @@ function defaultDocClassification(overrides: Record<string, unknown> = {}): Reco
   return {
     vendor: "Alza",
     total_amount: 59.99,
-    owner: "techlab",
+    owner: "business",
     owner_match_evidence: "Techlab s. r. o.",
     doc_type: "invoice",
     doc_date: "2026-03-25",
@@ -1389,7 +1389,7 @@ function defaultScanClassification(overrides: Partial<ScanClassification> = {}):
     total_amount: 59.99,
     currency: "EUR",
     is_fuel: false,
-    owner: "techlab",
+    owner: "business",
     confidence: "high",
     order_id: "FA2026030001",
     subtitle: null,
@@ -2180,7 +2180,7 @@ describe("executeScanIntake", () => {
       watch_folder: "techlab/documents",
     });
     const job = createRunningScanJob(input, defaultScanClassification({
-      owner: "techlab",
+      owner: "business",
       doc_type: "invoice",
       total_amount: 914.9,
       order_id: "26051300558",
@@ -2244,7 +2244,7 @@ describe("executeScanIntake", () => {
       file_path: filePath,
       watch_folder: "techlab/accounting",
     });
-    const job = createRunningScanJob(input, defaultScanClassification({ owner: "techlab" }));
+    const job = createRunningScanJob(input, defaultScanClassification({ owner: "business" }));
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
@@ -2856,7 +2856,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
     expect(payload.context.subject).toBe("Your invoice FA2026030001");
     expect(payload.context.classifier_notes).toMatch(/no IČO/);
     expect(payload.suggested_actions).toContain("set:owner=personal");
-    expect(payload.suggested_actions).toContain("set:owner=techlab");
+    expect(payload.suggested_actions).toContain("set:owner=business");
   });
 
   test("classifier returns doc_type='unknown' → pause with missing_fields=[doc_type]", async () => {
@@ -3173,7 +3173,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
     );
     addJobEvent(db, job.id, "guidance_applied", {
       action: "patch",
-      patch: { owner: "techlab" },
+      patch: { owner: "business" },
       decrypt_password_provided: false,
     });
     db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
@@ -3228,7 +3228,7 @@ describe("invoice-worker trigger A (classifier unknown)", () => {
       // Both owner AND doc_type must be present (strings).
       addJobEvent(db, job.id, "guidance_applied", {
         action: "patch",
-        patch: { owner: "techlab", doc_type: "invoice" },
+        patch: { owner: "business", doc_type: "invoice" },
         decrypt_password_provided: false,
       });
       const runningJob = getJob(db, job.id)!;

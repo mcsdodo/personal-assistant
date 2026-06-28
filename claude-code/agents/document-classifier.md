@@ -29,7 +29,7 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
   "confidence": "high",
   "order_id": "9E72DD91-0009",
   "subtitle": null,
-  "owner": "techlab",
+  "owner": "business",
   "owner_match_evidence": "Techlab s. r. o.",
   "doc_date": "2026-04-06",
   "supply_date": "2026-04-06",
@@ -48,8 +48,8 @@ Return ONLY a raw JSON object. No markdown fences, no explanation, no extra text
 - `confidence` must be a string: `"high"`, `"medium"`, or `"low"` — never a number.
 - `is_fuel` must be a boolean — never omit it.
 - `total_amount` must be a number, `null`, or `"unknown"` — never omit it. Use `"unknown"` ONLY when the document is genuinely unreadable (encrypted, blank, illegible). When you use `"unknown"`, you MUST populate `notes` with a short explanation.
-- `owner` must be `"techlab"`, `"personal"`, or `"unknown"` — never null, never omit. Use `"unknown"` ONLY when the document is genuinely unreadable (encrypted, blank pages, illegible scan, missing/torn buyer section). When you use `"unknown"`, you MUST populate `notes` with a short explanation.
-- `owner_match_evidence` — when `owner: "techlab"`, this MUST be a non-empty string containing the EXACT substring you found in the document that matched one of the configured business identifiers (`${BUSINESS_COMPANY_NAME}`, `${BUSINESS_TAX_IDS}`, `${BUSINESS_CRN}`, or `${BUSINESS_LICENSE_PLATES}`). Copy it character-for-character as printed — do not paraphrase, do not normalise spacing, do not abbreviate. When `owner: "personal"` or `owner: "unknown"`, this MUST be `null`. **If you cannot quote one of the configured identifiers literally, you MUST return `owner: "personal"` — never `owner: "techlab"`.**
+- `owner` must be `"business"`, `"personal"`, or `"unknown"` — never null, never omit. Use `"unknown"` ONLY when the document is genuinely unreadable (encrypted, blank pages, illegible scan, missing/torn buyer section). When you use `"unknown"`, you MUST populate `notes` with a short explanation.
+- `owner_match_evidence` — when `owner: "business"`, this MUST be a non-empty string containing the EXACT substring you found in the document that matched one of the configured business identifiers (`${BUSINESS_COMPANY_NAME}`, `${BUSINESS_TAX_IDS}`, `${BUSINESS_CRN}`, or `${BUSINESS_LICENSE_PLATES}`). Copy it character-for-character as printed — do not paraphrase, do not normalise spacing, do not abbreviate. When `owner: "personal"` or `owner: "unknown"`, this MUST be `null`. **If you cannot quote one of the configured identifiers literally, you MUST return `owner: "personal"` — never `owner: "business"`.**
 - `doc_type` must be one of the enum values below or `"unknown"` — never omit. Use `"unknown"` ONLY when the document is genuinely unreadable. When you use `"unknown"`, you MUST populate `notes` with a short explanation.
 - `doc_date`, `supply_date` — `"YYYY-MM-DD"`, `null`, or `"unknown"`. Use `"unknown"` ONLY when the date is visibly unreadable (encrypted, torn, illegible) — NOT when it's simply absent (use `null` for that). When you use `"unknown"`, you MUST populate `notes` with a short explanation.
 - `service_period` — ISO 8601 interval `"YYYY-MM-DD/YYYY-MM-DD"` or `null`.
@@ -122,11 +122,11 @@ Short label (max 40 chars) for document title building. Used when `order_id` is 
 ### owner
 Determines whether this document belongs to the business entity or is personal.
 
-**Payslip short-circuit:** if `doc_type === "payslip"`, return `"personal"` **unconditionally** and skip the business-identifier check below. A payslip is by definition a personal income record for the named individual, and the employer's name + IČO will always appear on it — the business-identifier check would incorrectly return `techlab`.
+**Payslip short-circuit:** if `doc_type === "payslip"`, return `"personal"` **unconditionally** and skip the business-identifier check below. A payslip is by definition a personal income record for the named individual, and the employer's name + IČO will always appear on it — the business-identifier check would incorrectly return `business`.
 
-**Proof requirement:** `owner: "techlab"` is only valid if you can quote an EXACT substring from the document that matches one of the configured identifiers below. You must return that substring in `owner_match_evidence`, character-for-character as printed. **If you cannot find one of the configured identifiers literally in the document, you MUST return `owner: "personal"` — even if the document "looks" business-like, even if there's an IČO somewhere on it (the configured `${BUSINESS_CRN}` is the only one that counts), even if the buyer field is blank.**
+**Proof requirement:** `owner: "business"` is only valid if you can quote an EXACT substring from the document that matches one of the configured identifiers below. You must return that substring in `owner_match_evidence`, character-for-character as printed. **If you cannot find one of the configured identifiers literally in the document, you MUST return `owner: "personal"` — even if the document "looks" business-like, even if there's an IČO somewhere on it (the configured `${BUSINESS_CRN}` is the only one that counts), even if the buyer field is blank.**
 
-**Configured business identifiers** — `owner: "techlab"` requires the document to contain at least one of these as a literal substring (on the **buyer/recipient** side for the first three; **anywhere** on the document for license plates):
+**Configured business identifiers** — `owner: "business"` requires the document to contain at least one of these as a literal substring (on the **buyer/recipient** side for the first three; **anywhere** on the document for license plates):
 - Company name: `${BUSINESS_COMPANY_NAME}`
   - Tolerance: case-insensitive match, ignore extra whitespace between tokens (e.g., "TECHLAB s.r.o." and "Techlab s. r. o." both match the configured "Techlab s.r.o."). Quote what the document actually prints — preserve its casing and spacing in `owner_match_evidence`.
 - Tax/VAT ID: `${BUSINESS_TAX_IDS}` (look for IČ DPH, DIČ, VAT ID, VAT number, Tax ID labels)
@@ -140,13 +140,13 @@ Important:
 - For license plates: match **anywhere** on the document (parking tickets, toll receipts have no buyer section — the plate IS the identifier).
 - A personal name appearing alongside a company name does NOT make it personal — the company name takes precedence.
 - Empty IČO/DIČ/IČ DPH fields (as on personal invoices) are NOT a match — they confirm the absence of business identifiers.
-- "Business-looking" documents are NOT automatically `techlab`. An invoice can be perfectly formatted, have a structured layout, list a IČO/DIČ in the seller block, and still be a **personal** purchase if none of the configured identifiers appear on the buyer side.
+- "Business-looking" documents are NOT automatically `business`. An invoice can be perfectly formatted, have a structured layout, list a IČO/DIČ in the seller block, and still be a **personal** purchase if none of the configured identifiers appear on the buyer side.
 
 **The two-column invoice trap**
 
 Many Slovak invoice templates print the seller (Dodávateľ) and the buyer (Odberateľ) as two side-by-side columns. The seller's `IČO`, `DIČ`, and `IČ DPH` line is visually near the buyer's address block. When the page is read top-to-bottom, those identifiers can look like they belong to the buyer.
 
-They do not. **Only quote an identifier as `owner_match_evidence` if it matches one of the CONFIGURED `${BUSINESS_*}` values, not just any company registration number on the page.** Before returning `owner: "techlab"`, ask yourself: "if I had to copy the substring I matched into `owner_match_evidence`, does its value equal one of `${BUSINESS_COMPANY_NAME}`, `${BUSINESS_TAX_IDS}`, `${BUSINESS_CRN}`, or `${BUSINESS_LICENSE_PLATES}`?" If the answer is no — even if there is a IČO/DIČ printed on the document — the correct answer is `owner: "personal"`, `owner_match_evidence: null`.
+They do not. **Only quote an identifier as `owner_match_evidence` if it matches one of the CONFIGURED `${BUSINESS_*}` values, not just any company registration number on the page.** Before returning `owner: "business"`, ask yourself: "if I had to copy the substring I matched into `owner_match_evidence`, does its value equal one of `${BUSINESS_COMPANY_NAME}`, `${BUSINESS_TAX_IDS}`, `${BUSINESS_CRN}`, or `${BUSINESS_LICENSE_PLATES}`?" If the answer is no — even if there is a IČO/DIČ printed on the document — the correct answer is `owner: "personal"`, `owner_match_evidence: null`.
 
 ### When to use `"unknown"`
 
@@ -156,7 +156,7 @@ Use `"unknown"` only when the document is genuinely unreadable for that field. E
 - The relevant section is missing (e.g. `owner: "unknown"` if the buyer block is cropped out).
 - Two values conflict and you cannot choose (e.g. `doc_date: "unknown"` if the header says one date and the footer says another).
 
-Do NOT use `"unknown"` as a hedge when you have a reasonable read. A confident `"personal"` or `"techlab"` is better than `"unknown"` on a clearly-personal or clearly-business invoice.
+Do NOT use `"unknown"` as a hedge when you have a reasonable read. A confident `"personal"` or `"business"` is better than `"unknown"` on a clearly-personal or clearly-business invoice.
 
 When you return `"unknown"` for any field, the `notes` field MUST contain a short (<200 char) explanation of why. Example: `"PDF rendered as blank pages, possibly encrypted"`. The notes are shown to the user when the system asks for guidance.
 

@@ -99,7 +99,7 @@ function formatContextValue(v: unknown): string {
  *   "retry"                                        -> "/retry"
  *   "send_password"                                -> "/password"
  *   "set:owner=personal"                           -> "/personal"
- *   "set:owner=techlab"                            -> "/techlab"
+ *   "set:owner=business"                           -> "/techlab"
  *   "set:doc_type=account_statement"               -> "/statement"
  *   "set:owner=personal,doc_type=account_statement"-> "/personal_statement"
  */
@@ -116,7 +116,9 @@ function actionToCommand(action: string): string | null {
       const [key, value] = part.split("=");
       if (!key || !value) continue;
       if (key === "owner") {
-        segments.push(value);
+        // Role→label mapping: "business" role renders as external label "techlab".
+        const ownerLabel = value === "business" ? "techlab" : value;
+        segments.push(ownerLabel);
       } else if (key === "doc_type") {
         // Collapse "account_statement" -> "statement" for a compact hint.
         segments.push(value === "account_statement" ? "statement" : value);
@@ -231,8 +233,9 @@ function actionToButtonLabel(action: string): string | null {
       const [key, value] = part.split("=");
       if (!key || !value) continue;
       if (key === "owner") {
-        // "personal" -> "Personal", "techlab" -> "Techlab"
-        segments.push(capitalize(value));
+        // "personal" -> "Personal", "business" role -> "Techlab" (role→label mapping).
+        const ownerLabel = value === "business" ? "techlab" : value;
+        segments.push(capitalize(ownerLabel));
       } else if (key === "doc_type") {
         // Collapse "account_statement" -> "statement" for a compact label.
         segments.push(value === "account_statement" ? "statement" : value);

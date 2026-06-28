@@ -144,7 +144,7 @@ describe("workflow-db", () => {
       step: "classify_document",
       reason: "classifier_unknown",
       missing_fields: ["owner"],
-      suggested_actions: ["set:owner=personal", "set:owner=techlab", "skip"],
+      suggested_actions: ["set:owner=personal", "set:owner=business", "skip"],
       context: { filename: "x.pdf", classifier_notes: "no IČO" },
     });
 

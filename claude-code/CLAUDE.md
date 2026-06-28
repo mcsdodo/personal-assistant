@@ -141,7 +141,7 @@ Use `get_job_events(job_id)` on the target job to read the `guidance_request` ev
 | `/retry` | `provide_guidance(job_id, { action: "retry" })` |
 | `/cancel` or `/fail` | `provide_guidance(job_id, { action: "fail" })` |
 | `/personal` | `provide_guidance(job_id, { action: "patch", patch: { owner: "personal" } })` |
-| `/techlab` | `provide_guidance(job_id, { action: "patch", patch: { owner: "techlab" } })` |
+| `/techlab` | `provide_guidance(job_id, { action: "patch", patch: { owner: "business" } })` |
 | `/password <value>` | `provide_guidance(job_id, { action: "patch", decrypt_password: "<value>" })` |
 
 **Free-form replies** — parse the natural-language message into the same guidance shape. Examples (accept Slovak or English; the bot's buttons are English for compactness but replies can be in either language):
@@ -149,7 +149,7 @@ Use `get_job_events(job_id)` on the target job to read the `guidance_request` ev
 - "personal, period 03/2026" → `{ action: "patch", patch: { owner: "personal", month_tag: "2026-03" } }`
 - "password is mojeheslo123" / "heslo je mojeheslo123" → `{ action: "patch", decrypt_password: "mojeheslo123" }`
 - "this is a duplicate of #418, skip it" / "duplikát #418, preskoč" → `{ action: "skip", user_note: "duplicate of #418" }`
-- "techlab, but the doc_date should be 2026-03-31, not 2026-04-01" → `{ action: "patch", patch: { owner: "techlab", doc_date: "2026-03-31" } }`
+- "techlab, but the doc_date should be 2026-03-31, not 2026-04-01" → `{ action: "patch", patch: { owner: "business", doc_date: "2026-03-31" } }`
 
 Rules for parsing:
 - If the user mentions a value for a field listed in `missing_fields`, include it in `patch`.
@@ -157,7 +157,7 @@ Rules for parsing:
 - If the user asks to retry ("try again", "skús znova") without providing new info, use `action: "retry"`.
 - If the user asks to cancel / abandon ("zruš", "cancel", "fail it"), use `action: "fail"`.
 - If the message contains a password (often after "password is", "heslo je", or in response to an encrypted-PDF prompt), route it via `decrypt_password` — **never** put password material into `patch`, and never repeat it back in your own Telegram replies. The workflow MCP stores it under a separate `guidance_password` event so it doesn't land in normal audit logs.
-- If the user mixes several things ("techlab, password is XYZ, doc_date 2026-03-31"), combine them into one call: `{ action: "patch", patch: { owner: "techlab", doc_date: "2026-03-31" }, decrypt_password: "XYZ" }`.
+- If the user mixes several things ("techlab, password is XYZ, doc_date 2026-03-31"), combine them into one call: `{ action: "patch", patch: { owner: "business", doc_date: "2026-03-31" }, decrypt_password: "XYZ" }`.
 - If the reply is ambiguous or doesn't obviously match any action, ask a clarifying question via Telegram rather than guessing. A confident wrong patch is worse than a round-trip.
 
 ### Step 3: Confirm back

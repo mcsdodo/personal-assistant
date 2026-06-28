@@ -9,9 +9,9 @@ describe("formatNotification", () => {
       total_amount: 42.99,
       currency: "EUR",
       doc_type: "invoice",
-      owner: "techlab",
+      owner: "business",
       month_tag: "2026-04",
-    })).toBe("✔️  Slovak Telekom | 42.99 EUR | invoice | techlab | 2026-04");
+    })).toBe("✔️  Slovak Telekom | 42.99 EUR | invoice | business | 2026-04");
   });
 
   test("uploaded — null amount shows ?", () => {
@@ -33,9 +33,9 @@ describe("formatNotification", () => {
       total_amount: 18.50,
       currency: null,
       doc_type: "invoice",
-      owner: "techlab",
+      owner: "business",
       month_tag: "2026-04",
-    })).toBe("✔️  Tesco | 18.5 EUR | invoice | techlab | 2026-04");
+    })).toBe("✔️  Tesco | 18.5 EUR | invoice | business | 2026-04");
   });
 
   test("uploaded — null owner shows ?", () => {
@@ -80,7 +80,7 @@ describe("formatNotification", () => {
       total_amount: 18.50,
       currency: "EUR",
       doc_type: "invoice",
-      owner: "techlab",
+      owner: "business",
       duplicate_message: 'duplicate of "Tesco FA-2026-001"',
     })).toBe('♻️  Tesco | 18.5 EUR | duplicate of "Tesco FA-2026-001"');
   });
@@ -92,9 +92,9 @@ describe("formatNotification", () => {
       total_amount: null,
       currency: null,
       doc_type: "invoice",
-      owner: "techlab",
+      owner: "business",
       error: "download failed: 404",
-    })).toBe("❌  Orange | ? EUR | invoice | techlab | download failed: 404");
+    })).toBe("❌  Orange | ? EUR | invoice | business | download failed: 404");
   });
 
   test("failed — null error shows unknown error", () => {
@@ -116,7 +116,7 @@ describe("formatNotification", () => {
       total_amount: 18.5,
       currency: "EUR",
       doc_type: "invoice",
-      owner: "techlab",
+      owner: "business",
     })).toBeNull();
   });
 
@@ -127,10 +127,10 @@ describe("formatNotification", () => {
       total_amount: 100.0,
       currency: "EUR",
       doc_type: "invoice",
-      owner: "techlab",
+      owner: "business",
       month_tag: "2026-04",
       paperless_document_id: 411,
-    })).toBe("🔄  Anthropic, PBC | 100 EUR | invoice | techlab | 2026-04 (refreshed #411)");
+    })).toBe("🔄  Anthropic, PBC | 100 EUR | invoice | business | 2026-04 (refreshed #411)");
   });
 
   test("refreshed — without doc id falls back to (refreshed)", () => {
@@ -153,7 +153,7 @@ describe("formatNotification — /car hint", () => {
     total_amount: 4.20,
     currency: "EUR",
     doc_type: "receipt",
-    owner: "techlab" as const,
+    owner: "business" as const,
     month_tag: "2026-04",
     paperless_document_id: 422,
   };
@@ -212,7 +212,7 @@ describe("formatGuidanceRequest", () => {
         total_amount: 142.30,
         classifier_notes: "no IČO printed",
       },
-      suggested_actions: ["set:owner=personal", "set:owner=techlab", "skip"],
+      suggested_actions: ["set:owner=personal", "set:owner=business", "skip"],
     });
     expect(msg).toContain("Owner unclear");
     expect(msg).toContain("no IČO");
@@ -225,13 +225,13 @@ describe("buildGuidanceReplyMarkup", () => {
   test("classifier_unknown — owner choices paired, skip on its own row", () => {
     const markup = buildGuidanceReplyMarkup({
       job_id: "def45678-aaaa-bbbb-cccc-111122223333",
-      suggested_actions: ["skip", "set:owner=personal", "set:owner=techlab"],
+      suggested_actions: ["skip", "set:owner=personal", "set:owner=business"],
     });
     expect(markup).toEqual({
       inline_keyboard: [
         [
           { text: "Personal", callback_data: "g:def45678:set:owner=personal" },
-          { text: "Techlab", callback_data: "g:def45678:set:owner=techlab" },
+          { text: "Techlab", callback_data: "g:def45678:set:owner=business" },
         ],
         [
           { text: "Skip", callback_data: "g:def45678:skip" },
@@ -246,7 +246,7 @@ describe("buildGuidanceReplyMarkup", () => {
       suggested_actions: [
         "send_password",
         "set:owner=personal,doc_type=account_statement",
-        "set:owner=techlab,doc_type=account_statement",
+        "set:owner=business,doc_type=account_statement",
         "skip",
         "retry",
       ],
@@ -258,7 +258,7 @@ describe("buildGuidanceReplyMarkup", () => {
         ],
         [
           { text: "Personal+statement", callback_data: "g:abc123de:set:owner=personal,doc_type=account_statement" },
-          { text: "Techlab+statement", callback_data: "g:abc123de:set:owner=techlab,doc_type=account_statement" },
+          { text: "Techlab+statement", callback_data: "g:abc123de:set:owner=business,doc_type=account_statement" },
         ],
         [
           { text: "Skip", callback_data: "g:abc123de:skip" },
@@ -276,7 +276,7 @@ describe("buildGuidanceReplyMarkup", () => {
       job_id: "ffffffff-eeee-dddd-cccc-111122223333",
       suggested_actions: [
         "set:owner=personal,doc_type=account_statement",
-        "set:owner=techlab,doc_type=account_statement",
+        "set:owner=business,doc_type=account_statement",
         "send_password",
         "skip",
         "retry",

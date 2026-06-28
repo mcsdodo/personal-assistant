@@ -323,8 +323,8 @@ describe("resolveMonthTag", () => {
 // ── resolveOwner ─────────────────────────────────────────────────────────
 
 describe("resolveOwner", () => {
-  test("payslip always resolves to personal, even if raw owner is techlab", () => {
-    expect(resolveOwner("techlab", "payslip")).toBe("personal");
+  test("payslip always resolves to personal, even if raw owner is business", () => {
+    expect(resolveOwner("business", "payslip")).toBe("personal");
   });
 
   test("payslip with null raw owner resolves to personal", () => {
@@ -335,8 +335,8 @@ describe("resolveOwner", () => {
     expect(resolveOwner(undefined, "payslip")).toBe("personal");
   });
 
-  test("invoice keeps techlab owner", () => {
-    expect(resolveOwner("techlab", "invoice")).toBe("techlab");
+  test("invoice keeps business owner", () => {
+    expect(resolveOwner("business", "invoice")).toBe("business");
   });
 
   test("invoice keeps personal owner", () => {
@@ -347,8 +347,8 @@ describe("resolveOwner", () => {
     expect(resolveOwner("weird", "invoice")).toBe("personal");
   });
 
-  test("null doc_type with techlab raw owner returns techlab", () => {
-    expect(resolveOwner("techlab", null)).toBe("techlab");
+  test("null doc_type with business raw owner returns business", () => {
+    expect(resolveOwner("business", null)).toBe("business");
   });
 });
 
@@ -362,8 +362,8 @@ describe("buildTagNames", () => {
     expect(tags).not.toContain("techlab");
   });
 
-  test("techlab owner gets techlab + accounting tags", () => {
-    const tags = buildTagNames({ owner: "techlab", doc_type: "invoice", is_fuel: false }, "2026-04");
+  test("business owner gets techlab tag + accounting tags", () => {
+    const tags = buildTagNames({ owner: "business", doc_type: "invoice", is_fuel: false }, "2026-04");
     expect(tags).toContain("techlab");
     expect(tags).toContain("accounting");
   });
@@ -393,7 +393,7 @@ describe("buildTagNames", () => {
     // Even if a buggy upstream caller passes a junk tag, buildTagNames must drop it
     // so it never reaches Paperless and silently auto-creates a malformed tag.
     const tags = buildTagNames(
-      { owner: "techlab", doc_type: "invoice", is_fuel: false },
+      { owner: "business", doc_type: "invoice", is_fuel: false },
       "2940-61",
     );
     expect(tags).not.toContain("2940-61");
@@ -432,8 +432,8 @@ describe("buildTagNames", () => {
   });
 
   test("owner-based accounting logic unchanged (email path)", () => {
-    const withTechlab = buildTagNames({ owner: "techlab", doc_type: "invoice", is_fuel: false }, "2026-03");
-    expect(withTechlab).toContain("accounting");
+    const withBusiness = buildTagNames({ owner: "business", doc_type: "invoice", is_fuel: false }, "2026-03");
+    expect(withBusiness).toContain("accounting");
     const withPersonal = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: false }, "2026-03");
     expect(withPersonal).not.toContain("accounting");
   });
@@ -477,7 +477,7 @@ describe("applyScanFolderOverrides", () => {
     total_amount: 914.9,
     currency: "EUR",
     is_fuel: false,
-    owner: "techlab",
+    owner: "business",
     confidence: "high",
     order_id: "26051300558",
     subtitle: null,
@@ -498,7 +498,7 @@ describe("applyScanFolderOverrides", () => {
   test("documents folder preserves vendor, owner, is_fuel, dates", () => {
     const result = applyScanFolderOverrides(base, "techlab/documents");
     expect(result.vendor).toBe("twd SK");
-    expect(result.owner).toBe("techlab");
+    expect(result.owner).toBe("business");
     expect(result.is_fuel).toBe(false);
   });
 
@@ -562,7 +562,7 @@ describe("UNKNOWN_FIELDS", () => {
 describe("buildSuggestedActions", () => {
   test("owner unknown emits owner buttons + skip", () => {
     const actions = buildSuggestedActions(["owner"], { doc_type: "invoice" });
-    expect(actions).toEqual(["set:owner=personal", "set:owner=techlab", "skip"]);
+    expect(actions).toEqual(["set:owner=personal", "set:owner=business", "skip"]);
   });
 
   test("doc_type unknown emits doc_type buttons + skip", () => {
@@ -578,7 +578,7 @@ describe("buildSuggestedActions", () => {
   test("owner + doc_type both unknown emits both button sets + skip", () => {
     const actions = buildSuggestedActions(["owner", "doc_type"], {});
     expect(actions).toContain("set:owner=personal");
-    expect(actions).toContain("set:owner=techlab");
+    expect(actions).toContain("set:owner=business");
     expect(actions).toContain("set:doc_type=invoice");
     expect(actions).toContain("skip");
   });

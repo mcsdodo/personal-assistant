@@ -37,8 +37,21 @@ const tracer = getTracer("invoice-worker");
 
 // ── Owner / doc-type → Paperless name mappings ────────────────────────
 
-/** Storage path name mapping: owner → bucket → Paperless storage path name. */
+/**
+ * Storage path name mapping: owner → bucket → Paperless storage path name.
+ *
+ * Two keys are maintained for "business" storage:
+ *   - "business" — used by the invoice path (classification.owner role value
+ *     after the task-97 rename)
+ *   - "techlab"  — used by the scan path (watch_folder level-1 directory name
+ *     is an external label, not a role value; Task B will make this configurable)
+ * Both point to the same Paperless storage paths so behaviour is identical.
+ */
 const STORAGE_PATH_NAMES: Record<string, Record<string, string>> = {
+  business: {
+    invoices: "Techlab Invoices",
+    documents: "Techlab Documents",
+  },
   techlab: {
     invoices: "Techlab Invoices",
     documents: "Techlab Documents",

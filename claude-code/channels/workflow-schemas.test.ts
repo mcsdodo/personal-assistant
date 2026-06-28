@@ -276,7 +276,7 @@ const VALID_DOC_CLASS = {
   total_amount: 100.0,
   currency: "EUR",
   is_fuel: false,
-  owner: "techlab",
+  owner: "business",
   owner_match_evidence: "Techlab s. r. o.",
   confidence: "high",
   order_id: "9E72DD91-0009",
@@ -292,7 +292,7 @@ describe("validateDocumentClassificationResult", () => {
   test("accepts a full canonical document classifier output", () => {
     const out = validateDocumentClassificationResult(VALID_DOC_CLASS);
     expect(out.vendor).toBe("Anthropic, PBC");
-    expect(out.owner).toBe("techlab");
+    expect(out.owner).toBe("business");
     expect(out.accounting_period).toBe("2026-04");
   });
 
@@ -314,49 +314,49 @@ describe("validateDocumentClassificationResult", () => {
 
   // ── owner_match_evidence (task 83) ─────────────────────────────────
   // Haiku must quote the literal BUSINESS_* substring it matched before
-  // claiming owner=techlab. The validator rejects techlab without proof
+  // claiming owner=business. The validator rejects business without proof
   // and rejects evidence on personal/unknown classifications.
 
-  test("accepts owner=techlab with non-empty evidence", () => {
+  test("accepts owner=business with non-empty evidence", () => {
     const out = validateDocumentClassificationResult({
       ...VALID_DOC_CLASS,
-      owner: "techlab",
+      owner: "business",
       owner_match_evidence: "Techlab s. r. o.",
     });
-    expect(out.owner).toBe("techlab");
+    expect(out.owner).toBe("business");
     expect(out.owner_match_evidence).toBe("Techlab s. r. o.");
   });
 
-  test("rejects owner=techlab with null evidence (proof required)", () => {
+  test("rejects owner=business with null evidence (proof required)", () => {
     expectSchemaError(
       () =>
         validateDocumentClassificationResult({
           ...VALID_DOC_CLASS,
-          owner: "techlab",
+          owner: "business",
           owner_match_evidence: null,
         }),
-      { field: "owner_match_evidence", expected: "non-empty string when owner=techlab" },
+      { field: "owner_match_evidence", expected: "non-empty string when owner=business" },
     );
   });
 
-  test("rejects owner=techlab with missing evidence (proof required)", () => {
+  test("rejects owner=business with missing evidence (proof required)", () => {
     const { owner_match_evidence: _e, ...rest } = VALID_DOC_CLASS;
     expectSchemaError(
       () =>
         validateDocumentClassificationResult({
           ...rest,
-          owner: "techlab",
+          owner: "business",
         }),
       { field: "owner_match_evidence" },
     );
   });
 
-  test("rejects owner=techlab with empty/whitespace evidence", () => {
+  test("rejects owner=business with empty/whitespace evidence", () => {
     expectSchemaError(
       () =>
         validateDocumentClassificationResult({
           ...VALID_DOC_CLASS,
-          owner: "techlab",
+          owner: "business",
           owner_match_evidence: "",
         }),
       { field: "owner_match_evidence" },
@@ -365,7 +365,7 @@ describe("validateDocumentClassificationResult", () => {
       () =>
         validateDocumentClassificationResult({
           ...VALID_DOC_CLASS,
-          owner: "techlab",
+          owner: "business",
           owner_match_evidence: "   ",
         }),
       { field: "owner_match_evidence" },
@@ -420,11 +420,35 @@ describe("validateDocumentClassificationResult", () => {
       () =>
         validateDocumentClassificationResult({
           ...VALID_DOC_CLASS,
-          owner: "techlab",
+          owner: "business",
           owner_match_evidence: 42,
         }),
       { field: "owner_match_evidence", expected: "string | null" },
     );
+  });
+
+  // ── owner enum rename: techlab→business (task 97) ────────────────────
+  // Asserts the schema now rejects the old "techlab" token and accepts "business".
+
+  test("rejects owner=techlab (renamed to business — old token invalid)", () => {
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult({
+          ...VALID_DOC_CLASS,
+          owner: "techlab",
+          owner_match_evidence: "Techlab s. r. o.",
+        }),
+      { field: "owner" },
+    );
+  });
+
+  test("accepts owner=business (renamed from techlab — new token valid)", () => {
+    const out = validateDocumentClassificationResult({
+      ...VALID_DOC_CLASS,
+      owner: "business",
+      owner_match_evidence: "Techlab s. r. o.",
+    });
+    expect(out.owner).toBe("business");
   });
 
   test("rejects missing owner (required for tag routing)", () => {
@@ -495,7 +519,7 @@ describe("DocumentClassificationResult — litres + receipt_datetime", () => {
     total_amount: 45.30,
     currency: "EUR",
     is_fuel: true,
-    owner: "techlab",
+    owner: "business",
     owner_match_evidence: "SK12345678",
     confidence: "high",
     order_id: null,
@@ -593,7 +617,7 @@ describe("compatibility with existing test fixtures", () => {
       vendor: "Alza",
       doc_type: "invoice",
       is_fuel: false,
-      owner: "techlab",
+      owner: "business",
       action: "download_and_upload",
       download_strategy: "attachment",
       strategy_confidence: "high",
@@ -617,7 +641,7 @@ describe("compatibility with existing test fixtures", () => {
       total_amount: 59.99,
       currency: "EUR",
       is_fuel: false,
-      owner: "techlab",
+      owner: "business",
       owner_match_evidence: "Techlab s. r. o.",
       confidence: "high",
       order_id: "FA2026030001",

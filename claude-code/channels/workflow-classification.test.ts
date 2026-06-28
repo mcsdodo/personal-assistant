@@ -142,7 +142,7 @@ describe("awaiting_classification state", () => {
     // Use a doc-classification-shaped payload but for the wrong step name
     const docPayload = {
       doc_type: "invoice", vendor: "X", total_amount: 10, currency: "EUR",
-      is_fuel: false, owner: "techlab", confidence: "high",
+      is_fuel: false, owner: "business", confidence: "high",
       order_id: null, subtitle: null, doc_date: null,
     };
     const ok = submitClassification(db, job.id, "classify_document", docPayload);

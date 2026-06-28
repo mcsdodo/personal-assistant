@@ -231,7 +231,7 @@ export const EMAIL_ACTIONS = ["download_and_upload", "notify_user", "ignore"] as
 
 export const CONFIDENCE_LEVELS = ["high", "medium", "low"] as const;
 
-export const OWNERS = ["techlab", "personal"] as const;
+export const OWNERS = ["business", "personal"] as const;
 
 /**
  * Owners accepted by the document classifier. "unknown" is allowed when the
@@ -239,7 +239,7 @@ export const OWNERS = ["techlab", "personal"] as const;
  * printed, buyer name only) — the worker pauses the job and requests user
  * guidance instead of guessing. See task 57.
  */
-export const DOC_OWNERS = ["techlab", "personal", "unknown"] as const;
+export const DOC_OWNERS = ["business", "personal", "unknown"] as const;
 
 export interface EmailClassificationResultSchema {
   is_invoice: boolean;
@@ -248,7 +248,7 @@ export interface EmailClassificationResultSchema {
   vendor: string | null;
   doc_type?: string;
   is_fuel: boolean;
-  owner?: "techlab" | "personal";
+  owner?: "business" | "personal";
   action: "download_and_upload" | "notify_user" | "ignore";
   download_strategy:
     | "attachment"
@@ -359,17 +359,17 @@ export interface DocumentClassificationResultSchema {
   total_amount: number | "unknown" | null;
   currency: string | null;
   is_fuel: boolean;
-  owner: "techlab" | "personal" | "unknown";
+  owner: "business" | "personal" | "unknown";
   /**
    * Proof string for the `owner` classification.
    *
-   * Required (non-empty string) when `owner === "techlab"`: the literal
+   * Required (non-empty string) when `owner === "business"`: the literal
    * substring from the document that matched one of the configured
    * `BUSINESS_*` identifiers (company name, tax ID, CRN, or license plate).
    * Must be `null` when `owner === "personal"` or `owner === "unknown"`.
    *
    * The classifier prompt instructs Haiku to quote the matched identifier
-   * before claiming `techlab` — this is enforced here so a `techlab`
+   * before claiming `business` — this is enforced here so a `business`
    * classification without proof gets rejected at submitClassification time.
    * Missing on backward-compat replay of old stored payloads (validator only
    * runs on new submissions). See task 83.
@@ -468,8 +468,8 @@ function numberOrUnknown(
  * Validate `owner_match_evidence` against the resolved `owner`.
  *
  * Task 83. The classifier prompt requires Haiku to quote the literal
- * substring it matched from the document before claiming `owner: "techlab"`.
- * The validator rejects techlab classifications that lack proof, and
+ * substring it matched from the document before claiming `owner: "business"`.
+ * The validator rejects business classifications that lack proof, and
  * rejects evidence on personal/unknown classifications (which have nothing
  * to prove).
  *
@@ -477,12 +477,12 @@ function numberOrUnknown(
  * of stored payloads written before task 83 shipped (the validator runs
  * via `getCompletedSteps` defense-in-depth path). For NEW classifier
  * outputs, the prompt enforces presence; if Haiku omits the field on a
- * techlab claim, the `null` fallback triggers the proof-required throw
+ * business claim, the `null` fallback triggers the proof-required throw
  * below.
  */
 function validateOwnerMatchEvidence(
   obj: Record<string, unknown>,
-  owner: "techlab" | "personal" | "unknown",
+  owner: "business" | "personal" | "unknown",
 ): string | null {
   const raw = "owner_match_evidence" in obj ? obj.owner_match_evidence : null;
 
@@ -497,17 +497,17 @@ function validateOwnerMatchEvidence(
 
   const value = raw === undefined || raw === null ? null : (raw as string);
 
-  if (owner === "techlab") {
+  if (owner === "business") {
     if (value === null || value.trim().length === 0) {
       throw new WorkflowSchemaError(
         "DocumentClassificationResult",
         "owner_match_evidence",
-        "non-empty string when owner=techlab",
+        "non-empty string when owner=business",
         value,
         undefined,
         {
           message:
-            "DocumentClassificationResult: owner_match_evidence required when owner=techlab — the classifier must quote the literal BUSINESS_* substring it matched",
+            "DocumentClassificationResult: owner_match_evidence required when owner=business — the classifier must quote the literal BUSINESS_* substring it matched",
         },
       );
     }

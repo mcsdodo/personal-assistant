@@ -276,7 +276,7 @@ const VALID_DOC_CLASS = {
   total_amount: 100.0,
   currency: "EUR",
   is_fuel: false,
-  owner: "techlab",
+  owner: "business",
   confidence: "high",
   order_id: "9E72DD91-0009",
   subtitle: null,
@@ -291,7 +291,7 @@ describe("validateDocumentClassificationResult", () => {
   test("accepts a full canonical document classifier output", () => {
     const out = validateDocumentClassificationResult(VALID_DOC_CLASS);
     expect(out.vendor).toBe("Anthropic, PBC");
-    expect(out.owner).toBe("techlab");
+    expect(out.owner).toBe("business");
     expect(out.accounting_period).toBe("2026-04");
   });
 
@@ -413,7 +413,7 @@ describe("compatibility with existing test fixtures", () => {
       vendor: "Alza",
       doc_type: "invoice",
       is_fuel: false,
-      owner: "techlab",
+      owner: "business",
       action: "download_and_upload",
       download_strategy: "attachment",
       strategy_confidence: "high",
@@ -437,7 +437,7 @@ describe("compatibility with existing test fixtures", () => {
       total_amount: 59.99,
       currency: "EUR",
       is_fuel: false,
-      owner: "techlab",
+      owner: "business",
       confidence: "high",
       order_id: "FA2026030001",
       subtitle: null,
@@ -446,6 +446,30 @@ describe("compatibility with existing test fixtures", () => {
     const out = validateDocumentClassificationResult(fixture);
     expect(out.vendor).toBe("Alza");
     expect(out.doc_date).toBeNull();
+  });
+});
+
+// ── owner enum rename: techlab→business (task 97) ────────────────────────
+// Asserts the schema now rejects the old "techlab" token and accepts "business".
+
+describe("owner enum rename (task 97)", () => {
+  test("rejects owner=techlab (renamed to business — old token invalid)", () => {
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult({
+          ...VALID_DOC_CLASS,
+          owner: "techlab",
+        }),
+      { field: "owner" },
+    );
+  });
+
+  test("accepts owner=business (renamed from techlab — new token valid)", () => {
+    const out = validateDocumentClassificationResult({
+      ...VALID_DOC_CLASS,
+      owner: "business",
+    });
+    expect(out.owner).toBe("business");
   });
 });
 

@@ -111,7 +111,7 @@ export interface InvoiceClassification {
   vendor: string | null;
   doc_type: string;
   is_fuel: boolean;
-  owner?: "techlab" | "personal";
+  owner?: "business" | "personal";
   action: string;
   download_strategy: DownloadStrategy | null;
   /** Null when action=ignore — no strategy to have confidence in. */
@@ -168,7 +168,7 @@ export interface ScanClassification {
   total_amount: number | null;
   currency: string | null;
   is_fuel: boolean;
-  owner?: "techlab" | "personal";
+  owner?: "business" | "personal";
   confidence: string;
   order_id: string | null;
   subtitle: string | null;
@@ -521,7 +521,7 @@ async function runDecryptAndGuidancePhase(
       suggested_actions: [
         "skip",
         "set:owner=personal,doc_type=account_statement",
-        "set:owner=techlab,doc_type=account_statement",
+        "set:owner=business,doc_type=account_statement",
         "send_password",
         "retry",
       ],

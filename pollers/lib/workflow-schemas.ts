@@ -232,7 +232,7 @@ export const EMAIL_ACTIONS = ["download_and_upload", "notify_user", "ignore"] as
 
 export const CONFIDENCE_LEVELS = ["high", "medium", "low"] as const;
 
-export const OWNERS = ["techlab", "personal"] as const;
+export const OWNERS = ["business", "personal"] as const;
 
 /**
  * Owners accepted by the document classifier. "unknown" is allowed when the
@@ -240,7 +240,7 @@ export const OWNERS = ["techlab", "personal"] as const;
  * printed, buyer name only) — the worker pauses the job and requests user
  * guidance instead of guessing. See task 57.
  */
-export const DOC_OWNERS = ["techlab", "personal", "unknown"] as const;
+export const DOC_OWNERS = ["business", "personal", "unknown"] as const;
 
 export interface EmailClassificationResultSchema {
   is_invoice: boolean;
@@ -249,7 +249,7 @@ export interface EmailClassificationResultSchema {
   vendor: string | null;
   doc_type?: string;
   is_fuel: boolean;
-  owner?: "techlab" | "personal";
+  owner?: "business" | "personal";
   action: "download_and_upload" | "notify_user" | "ignore";
   download_strategy:
     | "attachment"
@@ -360,7 +360,7 @@ export interface DocumentClassificationResultSchema {
   total_amount: number | "unknown" | null;
   currency: string | null;
   is_fuel: boolean;
-  owner: "techlab" | "personal" | "unknown";
+  owner: "business" | "personal" | "unknown";
   confidence: "high" | "medium" | "low";
   order_id: string | null;
   subtitle: string | null;

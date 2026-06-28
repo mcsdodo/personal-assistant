@@ -139,7 +139,7 @@ export function validMonthTag(s: string | null | undefined): string | null {
  *   issued it. The business-identifier check in the document-classifier
  *   would otherwise misfire because the employer's name + IČO appear on
  *   every payslip.
- * - Otherwise: return `"techlab"` iff `rawOwner === "techlab"`, else
+ * - Otherwise: return `"business"` iff `rawOwner === "business"`, else
  *   `"personal"`. Matches the pre-existing `buildTagNames` default.
  *
  * Extend this function when new personal-income doc types are introduced
@@ -149,9 +149,9 @@ export function validMonthTag(s: string | null | undefined): string | null {
 export function resolveOwner(
   rawOwner: string | null | undefined,
   docType: string | null | undefined,
-): "techlab" | "personal" {
+): "business" | "personal" {
   if (docType === "payslip") return "personal";
-  return rawOwner === "techlab" ? "techlab" : "personal";
+  return rawOwner === "business" ? "business" : "personal";
 }
 
 /** Convert an ISO date string (or any Date-parseable string) to a validated `YYYY-MM` tag. */
@@ -249,8 +249,8 @@ export function buildTagNames(
   monthTag: string | null,
 ): string[] {
   const tags: string[] = [];
-  tags.push(classification.owner === "techlab" ? "techlab" : "personal");
-  if (classification.owner === "techlab") tags.push("accounting");
+  tags.push(classification.owner === "business" ? "techlab" : "personal");
+  if (classification.owner === "business") tags.push("accounting");
   if (classification.doc_type === "credit_note") tags.push("credit-note");
   if (classification.doc_type === "account_statement") tags.push("account-statement");
   if (classification.is_fuel) tags.push("fuel");
@@ -366,7 +366,7 @@ export const UNKNOWN_FIELDS: UnknownCapableField[] = [
  * vocabulary so the user can patch the unknowns with a single tap.
  *
  * Rules:
- *   - `owner` unknown → `set:owner=personal`, `set:owner=techlab`
+ *   - `owner` unknown → `set:owner=personal`, `set:owner=business`
  *   - `doc_type` unknown → three doc-type buttons
  *   - always finish with `skip` so the user can abort without patching
  */
@@ -376,7 +376,7 @@ export function buildSuggestedActions(
 ): string[] {
   const actions: string[] = [];
   if (unknownFields.includes("owner")) {
-    actions.push("set:owner=personal", "set:owner=techlab");
+    actions.push("set:owner=personal", "set:owner=business");
   }
   if (unknownFields.includes("doc_type")) {
     actions.push(
