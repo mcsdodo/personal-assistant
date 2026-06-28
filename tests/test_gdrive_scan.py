@@ -38,14 +38,17 @@ from pathlib import Path
 import pytest
 
 from .helpers import (
-    paperless_search_documents,
     paperless_get_document,
     paperless_ensure_storage_paths,
+    poll_scan_doc,
 )
 
 GDRIVE_TEST_FILENAME_PREFIX = "e2e-gdrive-scan-"
 
 TEST_PDF = Path(__file__).parent / "test_data" / "invoice.pdf"
+# Distinct invoice for the personal-owner test so it does not dedup against the
+# business-owner doc (the worker dedups by order_id + correspondent + amount).
+PERSONAL_PDF = Path(__file__).parent / "test_data" / "personal.pdf"
 
 
 @pytest.mark.gdrive
@@ -62,19 +65,20 @@ def test_gdrive_scan_uploads_to_paperless(reset_pipeline, drive_client):
         parent_folder_id=watch_folder_id,
     )
 
-    # 2. Poll Paperless for up to 5 minutes for a doc with our filename as title
-    deadline = time.time() + 5 * 60
-    found_doc = None
-    while time.time() < deadline:
-        results = paperless_search_documents(query=unique_filename)
-        if results:
-            found_doc = results[0]
-            break
-        time.sleep(10)
-
-    assert found_doc is not None, (
-        f"Paperless never received doc for '{unique_filename}'. "
+    # 2. Wait for the scan_intake job to finish and resolve the Paperless doc id
+    #    from the job (the worker titles the doc by vendor+order_id, so searching
+    #    Paperless by the upload filename would never match).
+    result = poll_scan_doc(unique_filename, timeout=5 * 60)
+    assert result is not None, (
+        f"No scan_intake job reached a terminal state for '{unique_filename}'. "
         "Check gdrive-watcher logs and workflow-mcp jobs."
+    )
+    assert result["outcome"] == "uploaded" and result["paperless_doc_id"], (
+        f"Expected outcome=uploaded with a doc id; got {result}"
+    )
+    found_doc = paperless_get_document(result["paperless_doc_id"])
+    assert found_doc is not None, (
+        f"Paperless doc #{result['paperless_doc_id']} not found after upload."
     )
 
     # 3. Verify the file moved to processed/ and is no longer in the watch root.
@@ -122,37 +126,33 @@ def test_gdrive_scan_personal_owner(reset_pipeline, personal_drive_client):
     - ``storage_path_name`` is ``Personal Invoices`` (not None — the B3 enum
       fail-loud guard confirms the storage path exists before upload)
     """
-    assert TEST_PDF.exists(), f"Test fixture PDF not found: {TEST_PDF}"
+    assert PERSONAL_PDF.exists(), f"Test fixture PDF not found: {PERSONAL_PDF}"
 
     # Ensure both business and personal storage paths exist in Paperless
     paperless_ensure_storage_paths()
 
-    # 1. Upload to the personal-owner bucket
+    # 1. Upload a DISTINCT invoice to the personal-owner bucket (a different
+    #    order_id from the business test's invoice.pdf, so dedup doesn't reject it)
     unique_filename = f"{GDRIVE_TEST_FILENAME_PREFIX}personal-{uuid.uuid4().hex[:8]}.pdf"
     watch_folder_id = personal_drive_client.resolve_watch_folder_id()
     personal_drive_client.upload_file(
-        file_path=TEST_PDF,
+        file_path=PERSONAL_PDF,
         filename=unique_filename,
         parent_folder_id=watch_folder_id,
     )
 
-    # 2. Poll Paperless for up to 5 minutes
-    deadline = time.time() + 5 * 60
-    found_doc = None
-    while time.time() < deadline:
-        results = paperless_search_documents(query=unique_filename)
-        if results:
-            found_doc = results[0]
-            break
-        time.sleep(10)
-
-    assert found_doc is not None, (
-        f"Paperless never received doc for '{unique_filename}'. "
+    # 2. Wait for the scan_intake job and resolve the Paperless doc id from it.
+    result = poll_scan_doc(unique_filename, timeout=5 * 60)
+    assert result is not None, (
+        f"No scan_intake job reached a terminal state for '{unique_filename}'. "
         "Check gdrive-watcher logs and workflow-mcp jobs."
+    )
+    assert result["outcome"] == "uploaded" and result["paperless_doc_id"], (
+        f"Expected outcome=uploaded with a doc id; got {result}"
     )
 
     # 3. Verify owner tags: must have 'personal', must NOT have 'accounting'
-    doc = paperless_get_document(found_doc["id"])
+    doc = paperless_get_document(result["paperless_doc_id"])
     tag_names = doc.get("tag_names", [])
     assert "personal" in tag_names, (
         f"Expected 'personal' tag; got tags: {tag_names}"

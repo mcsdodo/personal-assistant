@@ -497,6 +497,45 @@ def workflow_db_query(sql: str) -> list[dict]:
     return json.loads(raw) if raw else []
 
 
+def poll_scan_doc(unique_filename: str, timeout: int = 300) -> dict | None:
+    """Poll workflow.db for the scan_intake job created from a Drive upload whose
+    filename matches ``unique_filename``.
+
+    The gdrive-poller stamps ``filename`` into the job's ``input_json``; the worker
+    titles the resulting Paperless doc by vendor+order_id (not the filename) and
+    stores its id in the indexed ``paperless_doc_id`` column — so locating the doc
+    via the job is robust, whereas searching Paperless by the upload filename never
+    matches.
+
+    Returns ``{"state", "outcome", "paperless_doc_id"}`` once the job reaches a
+    terminal state, or ``None`` on timeout.
+    """
+    import json as _json
+
+    # NOTE: _bun_query wraps the SQL in `bun -e '...'` (single-quoted shell), so the
+    # SQL MUST NOT contain single quotes. We therefore select without a WHERE string
+    # literal and filter in Python by workflow_type + filename + terminal state.
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        rows = workflow_db_query(
+            "SELECT workflow_type, state, paperless_doc_id, output_json, input_json FROM jobs"
+        )
+        for r in rows:
+            if r.get("workflow_type") != "scan_intake":
+                continue
+            if unique_filename not in (r.get("input_json") or ""):
+                continue
+            if r.get("state") in ("completed", "failed"):
+                out = _json.loads(r["output_json"]) if r.get("output_json") else {}
+                return {
+                    "state": r["state"],
+                    "outcome": out.get("outcome"),
+                    "paperless_doc_id": r.get("paperless_doc_id"),
+                }
+        time.sleep(5)
+    return None
+
+
 # NOTE: A previous version of this file exposed `EmailStatus` and
 # `poll_email_status` which queried `emails.db` for status/action/vendor/
 # process_result columns. Those columns no longer exist on the current
