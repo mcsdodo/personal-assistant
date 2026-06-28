@@ -464,29 +464,45 @@ describe("buildTagNames", () => {
 // ── buildScanTagNames ────────────────────────────────────────────────────
 
 describe("buildScanTagNames", () => {
-  test("accounting folder adds accounting tag", () => {
-    const tags = buildScanTagNames("techlab/accounting", { doc_type: "invoice", is_fuel: false }, "2026-03");
+  const LABEL = "techlab";
+
+  test("business/accounting → business label tag + accounting", () => {
+    const tags = buildScanTagNames("business", "accounting", LABEL, { doc_type: "invoice", is_fuel: false }, "2026-03");
     expect(tags).toContain("techlab");
     expect(tags).toContain("accounting");
     expect(tags).toContain("2026-03");
   });
 
-  test("DOCUMENTS folder does not add accounting tag", () => {
-    const tags = buildScanTagNames("techlab/DOCUMENTS", { doc_type: "invoice", is_fuel: false }, "2026-03");
+  test("business/documents → no accounting tag", () => {
+    const tags = buildScanTagNames("business", "documents", LABEL, { doc_type: "invoice", is_fuel: false }, "2026-03");
     expect(tags).toContain("techlab");
     expect(tags).not.toContain("accounting");
   });
 
-  test("fuel classification adds fuel tag regardless of folder", () => {
-    const tags = buildScanTagNames("techlab/accounting", { doc_type: "receipt", is_fuel: true }, "2026-03");
-    expect(tags).toContain("fuel");
+  test("personal/accounting → personal tag with NO accounting tag", () => {
+    const tags = buildScanTagNames("personal", "accounting", LABEL, { doc_type: "invoice", is_fuel: false }, "2026-03");
+    expect(tags).toContain("personal");
+    expect(tags).not.toContain("accounting");
+    expect(tags).not.toContain("techlab");
   });
 
-  test("owner comes from level1 segment", () => {
-    const tags = buildScanTagNames("personal/receipts", { doc_type: "receipt", is_fuel: false }, null);
+  test("personal/documents → personal tag only", () => {
+    const tags = buildScanTagNames("personal", "documents", LABEL, { doc_type: "receipt", is_fuel: false }, null);
     expect(tags).toContain("personal");
     expect(tags).not.toContain("techlab");
     expect(tags).not.toContain("accounting");
+  });
+
+  test("non-default businessLabel is used for the owner tag", () => {
+    const tags = buildScanTagNames("business", "accounting", "acme", { doc_type: "invoice", is_fuel: false }, "2026-03");
+    expect(tags).toContain("acme");
+    expect(tags).not.toContain("techlab");
+    expect(tags).toContain("accounting");
+  });
+
+  test("fuel classification adds fuel tag regardless of bucket", () => {
+    const tags = buildScanTagNames("business", "accounting", LABEL, { doc_type: "receipt", is_fuel: true }, "2026-03");
+    expect(tags).toContain("fuel");
   });
 });
 
@@ -506,37 +522,32 @@ describe("applyScanFolderOverrides", () => {
     doc_date: null,
   };
 
-  test("documents folder forces doc_type to document", () => {
-    const result = applyScanFolderOverrides(base, "techlab/documents");
+  test("documents bucket forces doc_type to document", () => {
+    const result = applyScanFolderOverrides(base, "documents");
     expect(result.doc_type).toBe("document");
   });
 
-  test("documents folder nulls total_amount and order_id", () => {
-    const result = applyScanFolderOverrides(base, "techlab/documents");
+  test("documents bucket nulls total_amount and order_id", () => {
+    const result = applyScanFolderOverrides(base, "documents");
     expect(result.total_amount).toBeNull();
     expect(result.order_id).toBeNull();
   });
 
-  test("documents folder preserves vendor, owner, is_fuel, dates", () => {
-    const result = applyScanFolderOverrides(base, "techlab/documents");
+  test("documents bucket preserves vendor, owner, is_fuel, dates", () => {
+    const result = applyScanFolderOverrides(base, "documents");
     expect(result.vendor).toBe("twd SK");
     expect(result.owner).toBe("business");
     expect(result.is_fuel).toBe(false);
   });
 
-  test("accounting folder leaves classification unchanged", () => {
-    const result = applyScanFolderOverrides(base, "techlab/accounting");
-    expect(result).toEqual(base);
-  });
-
-  test("unrecognized level2 leaves classification unchanged", () => {
-    const result = applyScanFolderOverrides(base, "techlab/somethingelse");
+  test("accounting bucket leaves classification unchanged", () => {
+    const result = applyScanFolderOverrides(base, "accounting");
     expect(result).toEqual(base);
   });
 
   test("returns new object, does not mutate input", () => {
     const original = { ...base };
-    applyScanFolderOverrides(base, "techlab/documents");
+    applyScanFolderOverrides(base, "documents");
     expect(base).toEqual(original);
   });
 });

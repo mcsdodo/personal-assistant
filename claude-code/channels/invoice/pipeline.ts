@@ -269,17 +269,26 @@ export function buildTagNames(
 }
 
 /**
- * Build tag names for a GDrive scan. Tags are derived from the watch_folder
- * path — owner from LEVEL1, accounting from LEVEL2 — not from classification.
+ * Build tag names for a GDrive scan from the poller-resolved owner ROLE and
+ * bucket (task 96 — no more positional re-parse of the watch_folder string).
+ *
+ * Owner-aware, mirroring the email path's `buildTagNames`:
+ *   - owner tag = `businessLabel` (default {@link DEFAULT_OWNER_BUSINESS_LABEL})
+ *     when `owner === "business"`, else the literal `"personal"`.
+ *   - `"accounting"` is pushed ONLY for `bucket === "accounting"` AND
+ *     `owner === "business"` — a personal accounting drop is not a business
+ *     bookkeeping document.
  */
 export function buildScanTagNames(
-  watchFolder: string,
+  owner: "business" | "personal",
+  bucket: "accounting" | "documents",
+  businessLabel: string,
   classification: { doc_type: string | null; is_fuel: boolean },
   monthTag: string | null,
 ): string[] {
-  const [owner, level2] = watchFolder.split("/").filter(Boolean);
-  const tags: string[] = [owner];
-  if (level2 === "accounting") tags.push("accounting");
+  const tags: string[] = [];
+  tags.push(owner === "business" ? businessLabel : "personal");
+  if (bucket === "accounting" && owner === "business") tags.push("accounting");
   if (classification.doc_type === "credit_note") tags.push("credit-note");
   if (classification.doc_type === "account_statement") tags.push("account-statement");
   if (classification.is_fuel) tags.push("fuel");
@@ -289,12 +298,12 @@ export function buildScanTagNames(
 }
 
 /**
- * Apply folder-driven overrides to a scan classification. The watch_folder
- * LEVEL2 segment expresses user intent and overrides content-based classifier
- * decisions: a file dropped in `documents` is a non-monetary document even if
- * the classifier visually identifies it as an invoice. Forces `doc_type` to
- * `"document"` and nulls `total_amount` / `order_id` to maintain the
- * non-monetary invariants. No-op for other folders (e.g. `accounting`).
+ * Apply bucket-driven overrides to a scan classification. The `bucket`
+ * (resolved by the poller) expresses user intent and overrides content-based
+ * classifier decisions: a file dropped in `documents` is a non-monetary
+ * document even if the classifier visually identifies it as an invoice.
+ * Forces `doc_type` to `"document"` and nulls `total_amount` / `order_id` to
+ * maintain the non-monetary invariants. No-op for `accounting`.
  *
  * Pure / immutable — does not mutate the input.
  */
@@ -302,9 +311,8 @@ export function applyScanFolderOverrides<T extends {
   doc_type: string | null;
   total_amount?: number | null;
   order_id?: string | null;
-}>(classification: T, watchFolder: string): T {
-  const level2 = watchFolder.split("/").filter(Boolean)[1];
-  if (level2 === "documents") {
+}>(classification: T, bucket: "accounting" | "documents"): T {
+  if (bucket === "documents") {
     return { ...classification, doc_type: "document", total_amount: null, order_id: null };
   }
   return classification;

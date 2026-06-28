@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { openDb as openGdriveDb } from "../../lib/gdrive-db";
 import { openWorkflowDb } from "../../lib/workflow-db";
-import { processNewFiles } from "./main";
+import { processNewFiles, ownerFolderToRole } from "./main";
 
 function tmpPath(prefix: string): string {
   return `/tmp/${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`;
@@ -25,6 +25,9 @@ describe("gdrive-poller processNewFiles", () => {
       createdTime: "2026-04-15T10:00:00Z",
       modifiedTime: "2026-04-15T10:00:00Z",
       watchFolder: "techlab/accounting",
+      owner: "business" as const,
+      bucket: "accounting" as const,
+      folderId: "drive-acct-id",
     }];
 
     await processNewFiles(gdriveDb, wfDb, files, 5);
@@ -41,6 +44,32 @@ describe("gdrive-poller processNewFiles", () => {
     const input = JSON.parse(job.input_json);
     expect(input.file_id).toBe("file-A");
     expect(input.month_tag).toBe("2026-04");
+    // task 96: owner/bucket/folder_id written explicitly onto the job
+    expect(input.owner).toBe("business");
+    expect(input.bucket).toBe("accounting");
+    expect(input.folder_id).toBe("drive-acct-id");
+  });
+
+  it("writes the personal owner onto the job", async () => {
+    const files = [{
+      id: "file-P",
+      name: "personal-scan.pdf",
+      mimeType: "application/pdf",
+      createdTime: "2026-04-15T10:00:00Z",
+      modifiedTime: "2026-04-15T10:00:00Z",
+      watchFolder: "personal/documents",
+      owner: "personal" as const,
+      bucket: "documents" as const,
+      folderId: "drive-personal-docs-id",
+    }];
+
+    await processNewFiles(gdriveDb, wfDb, files, 5);
+
+    const job = wfDb.prepare("SELECT input_json FROM jobs").get() as any;
+    const input = JSON.parse(job.input_json);
+    expect(input.owner).toBe("personal");
+    expect(input.bucket).toBe("documents");
+    expect(input.folder_id).toBe("drive-personal-docs-id");
   });
 
   it("caps file count to MAX_NEW_PER_CYCLE", async () => {
@@ -51,11 +80,29 @@ describe("gdrive-poller processNewFiles", () => {
       createdTime: "2026-04-15T10:00:00Z",
       modifiedTime: "2026-04-15T10:00:00Z",
       watchFolder: "techlab/accounting",
+      owner: "business" as const,
+      bucket: "accounting" as const,
+      folderId: "drive-acct-id",
     }));
 
     await processNewFiles(gdriveDb, wfDb, files, 3);
 
     const jobs = wfDb.prepare("SELECT id FROM jobs").all();
     expect(jobs.length).toBe(3);
+  });
+});
+
+describe("ownerFolderToRole", () => {
+  it("maps the OWNER_BUSINESS_LABEL folder (default techlab) to business", () => {
+    expect(ownerFolderToRole("techlab")).toBe("business");
+  });
+
+  it("maps the personal folder to personal", () => {
+    expect(ownerFolderToRole("personal")).toBe("personal");
+  });
+
+  it("returns null for any unknown owner-folder name (fail loud)", () => {
+    expect(ownerFolderToRole("_documents_intake")).toBeNull();
+    expect(ownerFolderToRole("acme")).toBeNull();
   });
 });

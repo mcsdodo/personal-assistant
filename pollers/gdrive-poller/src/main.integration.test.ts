@@ -36,6 +36,12 @@ const LEVEL2 = (process.env.GDRIVE_LEVEL2 ?? "accounting").split(",").map(s => s
 const PRIMARY_L1 = LEVEL1[0];
 const PRIMARY_L2 = LEVEL2[0];
 const PRIMARY_WATCH = `${PRIMARY_L1}/${PRIMARY_L2}`;
+// With the default config (PRIMARY_L1 == "techlab" == OWNER_BUSINESS_LABEL,
+// PRIMARY_L2 == "accounting"), the poller resolves owner role "business",
+// bucket "accounting", and the bucket folder id returned by the standard mock.
+const PRIMARY_OWNER_ROLE = "business";
+const PRIMARY_BUCKET = "accounting";
+const PRIMARY_FOLDER_ID = "invoicing-folder-id";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -517,7 +523,109 @@ describe("gdrive-watcher integration", () => {
       filename: "detailed_scan.pdf",
       month_tag: "2026-06",
       watch_folder: PRIMARY_WATCH,
+      owner: PRIMARY_OWNER_ROLE,
+      bucket: PRIMARY_BUCKET,
+      folder_id: PRIMARY_FOLDER_ID,
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // backward-compat (GDRIVE_ROOT unset): job carries the resolved owner/bucket
+  // -------------------------------------------------------------------------
+  test("2-deep (no root): job carries owner role + bucket + folder_id", async () => {
+    const driveFile = {
+      id: "file-bc",
+      name: "bc.pdf",
+      mimeType: "application/pdf",
+      createdTime: "2026-05-15T10:00:00Z",
+      modifiedTime: "2026-05-15T10:00:00Z",
+    };
+    callToolImpl = createStandardCallTool([driveFile]);
+
+    await pollCycle(db, wfDb);
+
+    const job = getJobByIdempotencyKey(wfDb, "gdrive:file-bc");
+    const input = JSON.parse(job!.input_json!);
+    expect(input.owner).toBe(PRIMARY_OWNER_ROLE);
+    expect(input.bucket).toBe(PRIMARY_BUCKET);
+    expect(input.folder_id).toBe(PRIMARY_FOLDER_ID);
+    expect(input.watch_folder).toBe(PRIMARY_WATCH);
+  });
+
+  // -------------------------------------------------------------------------
+  // 3-deep resolution with GDRIVE_ROOT set (the nested-root path)
+  // -------------------------------------------------------------------------
+  test("3-deep with GDRIVE_ROOT: resolves root → owner → bucket, job carries role", async () => {
+    process.env.GDRIVE_ROOT = "_documents_intake";
+    process.env.GDRIVE_OWNERS = "techlab,personal";
+    process.env.GDRIVE_BUCKETS = "accounting,documents";
+    resetWatchFolders();
+    resetDriveClient();
+
+    // Root → owners under root → buckets under each owner. Returns one file
+    // only from techlab/accounting so the assertion target is unambiguous.
+    callToolImpl = async (params) => {
+      const { name, arguments: args } = params;
+      if (name === "search_drive_files") {
+        const q = args.query as string;
+        if (q.includes("name = '_documents_intake'") && !q.includes("in parents")) {
+          return jsonArrayResult([{ id: "root-id", name: "_documents_intake" }]);
+        }
+        if (q.includes("name = 'techlab'") && q.includes("'root-id' in parents")) {
+          return jsonArrayResult([{ id: "techlab-id", name: "techlab" }]);
+        }
+        if (q.includes("name = 'personal'") && q.includes("'root-id' in parents")) {
+          return jsonArrayResult([{ id: "personal-id", name: "personal" }]);
+        }
+        if (q.includes("name = 'accounting'") && q.includes("'techlab-id' in parents")) {
+          return jsonArrayResult([{ id: "techlab-acct-id", name: "accounting" }]);
+        }
+        if (q.includes("name = 'documents'") && q.includes("'techlab-id' in parents")) {
+          return jsonArrayResult([{ id: "techlab-docs-id", name: "documents" }]);
+        }
+        if (q.includes("name = 'accounting'") && q.includes("'personal-id' in parents")) {
+          return jsonArrayResult([{ id: "personal-acct-id", name: "accounting" }]);
+        }
+        if (q.includes("name = 'documents'") && q.includes("'personal-id' in parents")) {
+          return jsonArrayResult([{ id: "personal-docs-id", name: "documents" }]);
+        }
+        if (q.includes("name = 'processed'") || q.includes("name = 'errors'")) {
+          return jsonArrayResult([{ id: "sub", name: "sub" }]);
+        }
+        return textResult("No results");
+      }
+      if (name === "list_drive_items") {
+        // Only the techlab/accounting bucket (id techlab-acct-id) yields a file.
+        if (args.folder_id === "techlab-acct-id") {
+          return jsonArrayResult([{
+            id: "root-file-1", name: "nested.pdf", mimeType: "application/pdf",
+            createdTime: "2026-05-15T10:00:00Z", modifiedTime: "2026-05-15T10:00:00Z",
+          }]);
+        }
+        return textResult("No items found");
+      }
+      return { content: [] };
+    };
+
+    try {
+      await pollCycle(db, wfDb);
+
+      const job = getJobByIdempotencyKey(wfDb, "gdrive:root-file-1");
+      expect(job).not.toBeNull();
+      const input = JSON.parse(job!.input_json!);
+      // techlab folder maps to the business ROLE; folder_id is the resolved
+      // techlab/accounting bucket id (root excluded from the watch_folder label).
+      expect(input.owner).toBe("business");
+      expect(input.bucket).toBe("accounting");
+      expect(input.folder_id).toBe("techlab-acct-id");
+      expect(input.watch_folder).toBe("techlab/accounting");
+    } finally {
+      delete process.env.GDRIVE_ROOT;
+      delete process.env.GDRIVE_OWNERS;
+      delete process.env.GDRIVE_BUCKETS;
+      resetWatchFolders();
+      resetDriveClient();
+    }
   });
 
   // -------------------------------------------------------------------------

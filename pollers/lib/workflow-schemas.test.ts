@@ -99,16 +99,36 @@ describe("validateInvoiceIntakeInput", () => {
 // ── ScanIntakeInput ───────────────────────────────────────────────────
 
 describe("validateScanIntakeInput", () => {
-  test("accepts a valid scan input", () => {
+  test("accepts a valid scan input with owner/bucket/folder_id", () => {
     const out = validateScanIntakeInput({
       source: "gdrive",
       file_id: "fid-1",
-      watch_folder: "techlab/invoicing",
+      watch_folder: "techlab/accounting",
       month_tag: "2026-03",
+      owner: "business",
+      bucket: "accounting",
+      folder_id: "drive-folder-xyz",
       filename: "scan.pdf",
     });
     expect(out.file_id).toBe("fid-1");
     expect(out.month_tag).toBe("2026-03");
+    expect(out.owner).toBe("business");
+    expect(out.bucket).toBe("accounting");
+    expect(out.folder_id).toBe("drive-folder-xyz");
+  });
+
+  test("accepts the personal owner", () => {
+    const out = validateScanIntakeInput({
+      source: "gdrive",
+      file_id: "fid-2",
+      watch_folder: "personal/documents",
+      month_tag: "2026-03",
+      owner: "personal",
+      bucket: "documents",
+      folder_id: "drive-folder-abc",
+    });
+    expect(out.owner).toBe("personal");
+    expect(out.bucket).toBe("documents");
   });
 
   test("rejects missing file_id", () => {
@@ -118,6 +138,9 @@ describe("validateScanIntakeInput", () => {
           source: "gdrive",
           watch_folder: "x",
           month_tag: "2026-03",
+          owner: "business",
+          bucket: "accounting",
+          folder_id: "f",
         }),
       { field: "file_id" },
     );
@@ -131,8 +154,58 @@ describe("validateScanIntakeInput", () => {
           file_id: "x",
           watch_folder: "y",
           month_tag: "2026-03",
+          owner: "business",
+          bucket: "accounting",
+          folder_id: "f",
         }),
       { field: "source" },
+    );
+  });
+
+  test("rejects unknown owner (B3 fail-loud)", () => {
+    expectSchemaError(
+      () =>
+        validateScanIntakeInput({
+          source: "gdrive",
+          file_id: "x",
+          watch_folder: "techlab/accounting",
+          month_tag: "2026-03",
+          owner: "techlab",
+          bucket: "accounting",
+          folder_id: "f",
+        }),
+      { field: "owner" },
+    );
+  });
+
+  test("rejects unknown bucket (B3 fail-loud)", () => {
+    expectSchemaError(
+      () =>
+        validateScanIntakeInput({
+          source: "gdrive",
+          file_id: "x",
+          watch_folder: "techlab/invoicing",
+          month_tag: "2026-03",
+          owner: "business",
+          bucket: "invoicing",
+          folder_id: "f",
+        }),
+      { field: "bucket" },
+    );
+  });
+
+  test("rejects missing folder_id", () => {
+    expectSchemaError(
+      () =>
+        validateScanIntakeInput({
+          source: "gdrive",
+          file_id: "x",
+          watch_folder: "techlab/accounting",
+          month_tag: "2026-03",
+          owner: "business",
+          bucket: "accounting",
+        }),
+      { field: "folder_id" },
     );
   });
 });

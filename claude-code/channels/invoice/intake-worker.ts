@@ -148,10 +148,17 @@ export interface InvoiceClassification {
 export interface ScanIntakeInput {
   source: "gdrive";
   file_id: string;
-  /** Watch folder path (e.g. "techlab/invoicing") — segments become Paperless tags */
+  /** Human-readable label only (e.g. "techlab/accounting"). Owner/bucket are
+   *  carried explicitly below; this is for audit/display, no longer parsed. */
   watch_folder: string;
   /** YYYY-MM tag from scan date — fallback if document classifier has no doc_date */
   month_tag: string;
+  /** Owner ROLE resolved by the poller (task 96). Drives tags + storage path. */
+  owner: "business" | "personal";
+  /** Bucket resolved by the poller — drives accounting tag + content override. */
+  bucket: "accounting" | "documents";
+  /** Resolved Drive folder ID of the bucket folder — the move parent (B2 fix). */
+  folder_id: string;
   /** Original filename from GDrive (for title fallback) */
   filename?: string;
   /** Path to pre-downloaded file on disk (worker reads instead of downloading from GDrive) */
@@ -1186,7 +1193,7 @@ export async function executeScanIntake(
     throw err;
   }
 
-  const { file_id, watch_folder, month_tag } = input;
+  const { file_id, watch_folder, month_tag, owner, bucket, folder_id } = input;
 
   await tracer.startActiveSpan(`scan-worker.execute`, {
     attributes: {
@@ -1199,7 +1206,9 @@ export async function executeScanIntake(
       "scan.file_id": file_id,
       "scan.filename": input.filename ?? "",
       "scan.watch_folder": watch_folder,
-      "gdrive.watch_folder": watch_folder,
+      "scan.owner": owner,
+      "scan.bucket": bucket,
+      "gdrive.folder_id": folder_id,
     },
   }, async (span: Span) => {
     let outcome = "unknown";
@@ -1323,10 +1332,10 @@ export async function executeScanIntake(
         );
       }
 
-      // Folder-driven overrides: watch_folder LEVEL2 expresses user intent
+      // Bucket-driven overrides: the resolved `bucket` expresses user intent
       // and overrides the classifier's content-based decisions (e.g. dropping
       // an invoice-shaped doc in `documents` makes it a non-monetary document).
-      Object.assign(classification, applyScanFolderOverrides(classification, watch_folder));
+      Object.assign(classification, applyScanFolderOverrides(classification, bucket));
 
       vendorForSpan = classification.vendor;
       span.setAttribute("invoice.vendor", classification.vendor);
@@ -1433,7 +1442,7 @@ export async function executeScanIntake(
             duplicate_of: dedupeResult.existing_id,
             duplicate_message: dedupeResult.message,
           });
-          await moveGdriveFileImpl(file_id, "processed", watch_folder, GMAIL_MCP_URL, GOOGLE_EMAIL, logger);
+          await moveGdriveFileImpl(file_id, "processed", folder_id, GMAIL_MCP_URL, GOOGLE_EMAIL, logger);
           logger.log(`Job ${job.id} completed: duplicate`);
           outcome = "duplicate";
           span.setAttribute("invoice.outcome", "duplicate");
@@ -1455,16 +1464,21 @@ export async function executeScanIntake(
         addJobEvent(db, job.id, "step_completed", { step: "deduplicate", outcome: "no_duplicate" });
       }
 
-      // Step 5: Resolve tags — folder-driven (owner from LEVEL1, accounting from LEVEL2)
+      // Step 5: Resolve tags — owner-aware, from the poller-resolved owner role + bucket.
       addJobEvent(db, job.id, "step_started", { step: "resolve_tags" });
-      const scanTagOwner = watch_folder.split("/").filter(Boolean)[0];
-      const allTagNames = buildScanTagNames(watch_folder, classification, resolvedMonthTag);
+      const allTagNames = buildScanTagNames(
+        owner,
+        bucket,
+        process.env.OWNER_BUSINESS_LABEL ?? DEFAULT_OWNER_BUSINESS_LABEL,
+        classification,
+        resolvedMonthTag,
+      );
       const tagIds = await resolveTagIds(allTagNames, adapter, logger);
       addJobEvent(db, job.id, "step_completed", { step: "resolve_tags", tags: tagIds });
 
-      // Step 6: Resolve document type + storage path
+      // Step 6: Resolve document type + storage path (owner is the resolved role)
       const documentTypeId = await resolveDocumentTypeId(classification.doc_type, adapter, logger);
-      const storagePathId = await resolveStoragePathId(scanTagOwner, classification.doc_type, adapter, logger);
+      const storagePathId = await resolveStoragePathId(owner, classification.doc_type, adapter, logger);
 
       // Step 7: Upload to Paperless — or PATCH the existing doc if force-refresh.
       addJobEvent(db, job.id, "step_started", { step: "upload" });
@@ -1518,7 +1532,7 @@ export async function executeScanIntake(
       }
 
       // Step 9: Move GDrive file to Processed/
-      await moveGdriveFileImpl(file_id, "processed", watch_folder, GMAIL_MCP_URL, GOOGLE_EMAIL, logger);
+      await moveGdriveFileImpl(file_id, "processed", folder_id, GMAIL_MCP_URL, GOOGLE_EMAIL, logger);
 
       const result: InvoiceIntakeResult = {
         outcome: finalOutcome, title,
@@ -1537,7 +1551,7 @@ export async function executeScanIntake(
           total_amount: classification.total_amount,
           currency: classification.currency,
           doc_type: classification.doc_type,
-          owner: scanTagOwner,
+          owner,
           month_tag: resolvedMonthTag,
           paperless_document_id: finalDocId,
           is_fuel: classification.is_fuel,
@@ -1560,7 +1574,7 @@ export async function executeScanIntake(
         span.setAttribute("invoice.outcome", "retryable");
       } else {
         failJob(db, job.id, errPayload);
-        await moveGdriveFileImpl(file_id, "errors", watch_folder, GMAIL_MCP_URL, GOOGLE_EMAIL, logger).catch((moveErr) => {
+        await moveGdriveFileImpl(file_id, "errors", folder_id, GMAIL_MCP_URL, GOOGLE_EMAIL, logger).catch((moveErr) => {
           logger.log(`Failed to move file to errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
         });
         logger.log(`Job ${job.id} failed permanently: ${message}`);

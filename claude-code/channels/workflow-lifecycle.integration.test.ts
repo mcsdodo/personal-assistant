@@ -111,6 +111,9 @@ function makeScanInput(overrides: Partial<ScanIntakeInput> = {}): ScanIntakeInpu
     filename: "scan_lifecycle.pdf",
     month_tag: "2026-03",
     watch_folder: "techlab/accounting",
+    owner: "business",
+    bucket: "accounting",
+    folder_id: "bucket-folder-id",
     ...overrides,
   };
 }
@@ -183,12 +186,11 @@ function customFieldsMockHandlers(docId = 999): FetchHandler[] {
   ];
 }
 
-/** Mock handlers for moveGdriveFile: search watch folder, search target folder, move file */
+/** Mock handlers for moveGdriveFile (B2): target subfolder search within
+ *  folder_id, then move — no global watch-folder lookup. */
 function moveGdriveMockHandlers(): FetchHandler[] {
   return [
-    // search_drive_files → watch folder ID
-    () => jsonResponse(rpcResponse([{ id: "watch-folder-id", name: "accounting" }])),
-    // search_drive_files → target subfolder ("processed") ID
+    // search_drive_files → target subfolder ("processed"/"errors") within folder_id
     () => jsonResponse(rpcResponse([{ id: "processed-folder-id", name: "processed" }])),
     // update_drive_file → move file
     () => jsonResponse(rpcResponse({ id: "gdrive-file-lifecycle" })),

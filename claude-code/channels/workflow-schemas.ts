@@ -182,11 +182,28 @@ export function validateInvoiceIntakeInput(input: unknown): InvoiceIntakeInputSc
   };
 }
 
+/** Owner roles accepted on a scan job (task 96 — resolved by the poller). */
+export const SCAN_OWNERS = ["business", "personal"] as const;
+/** Bucket types accepted on a scan job (task 96). */
+export const SCAN_BUCKETS = ["accounting", "documents"] as const;
+
 export interface ScanIntakeInputSchema {
   source: "gdrive";
   file_id: string;
   watch_folder: string;
   month_tag: string;
+  /**
+   * Owner ROLE resolved once by the gdrive-poller (task 96). The poller maps
+   * the Drive owner-folder name → role (folder == OWNER_BUSINESS_LABEL →
+   * "business"; "personal" → "personal"). Enum-gated here so a misconfigured
+   * owner fails loud at job creation rather than silently misrouting (B3).
+   */
+  owner: "business" | "personal";
+  /** Bucket resolved by the poller — drives the accounting tag + content override (B1). */
+  bucket: "accounting" | "documents";
+  /** Resolved Drive folder ID of the bucket folder. Used directly as the move
+   *  parent so processed/errors resolution is unambiguous across owners (B2). */
+  folder_id: string;
   filename?: string;
   file_path?: string;
   force?: boolean;
@@ -199,6 +216,9 @@ export function validateScanIntakeInput(input: unknown): ScanIntakeInputSchema {
     file_id: reqString("ScanIntakeInput", obj, "file_id"),
     watch_folder: reqString("ScanIntakeInput", obj, "watch_folder"),
     month_tag: reqString("ScanIntakeInput", obj, "month_tag"),
+    owner: reqEnum("ScanIntakeInput", obj, "owner", SCAN_OWNERS),
+    bucket: reqEnum("ScanIntakeInput", obj, "bucket", SCAN_BUCKETS),
+    folder_id: reqString("ScanIntakeInput", obj, "folder_id"),
     filename: optString("ScanIntakeInput", obj, "filename"),
     file_path: optString("ScanIntakeInput", obj, "file_path"),
     force: optBool("ScanIntakeInput", obj, "force"),

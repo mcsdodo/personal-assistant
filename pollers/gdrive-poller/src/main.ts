@@ -17,7 +17,8 @@ import {
 } from "../../lib/watcher-runtime";
 import { openDb as openGdriveDb, insertFile, fileExists } from "../../lib/gdrive-db";
 import { openWorkflowDb, createJob } from "../../lib/workflow-db";
-import { validateScanIntakeInput, WorkflowSchemaError } from "../../lib/workflow-schemas";
+import { validateScanIntakeInput, WorkflowSchemaError, SCAN_BUCKETS } from "../../lib/workflow-schemas";
+import { DEFAULT_OWNER_BUSINESS_LABEL } from "../../lib/owner-config";
 import {
   initTracing, getTracer, getMeter, withSpan, createLogger,
   getActiveTraceId, SpanStatusCode,
@@ -33,11 +34,45 @@ const HEALTH_STALE_MULTIPLIER = 5;
 const STARTUP_DELAY_MS = parseInt(process.env.GDRIVE_STARTUP_DELAY_MS ?? "20000", 10);
 
 const GDRIVE_MCP_URL = process.env.GDRIVE_MCP_URL ?? "http://gmail-mcp:8000/mcp";
-const GDRIVE_LEVEL1 = (process.env.GDRIVE_LEVEL1 ?? "techlab")
-  .split(",").map(s => s.trim()).filter(Boolean);
-const GDRIVE_LEVEL2 = (process.env.GDRIVE_LEVEL2 ?? "accounting")
-  .split(",").map(s => s.trim()).filter(Boolean);
 const GOOGLE_EMAIL = process.env.GMAIL_EMAIL ?? "";
+
+/**
+ * Folder-structure config (task 96). Read from env at call time (not frozen at
+ * module load) so it stays testable and a config flip takes effect on the next
+ * folder resolution.
+ *   - `root`   — GDRIVE_ROOT (optional). Empty = resolve owners at the Drive
+ *                root exactly as before (backward-compatible 2-deep path).
+ *   - `owners` — GDRIVE_OWNERS, falling back to the old GDRIVE_LEVEL1 for one
+ *                release. Folder NAMES; mapped to roles via ownerFolderToRole.
+ *   - `buckets`— GDRIVE_BUCKETS, falling back to GDRIVE_LEVEL2. Each must be a
+ *                SCAN_BUCKETS enum value (accounting | documents).
+ */
+function gdriveConfig(): { root: string; owners: string[]; buckets: string[] } {
+  return {
+    root: (process.env.GDRIVE_ROOT ?? "").trim(),
+    owners: (process.env.GDRIVE_OWNERS ?? process.env.GDRIVE_LEVEL1 ?? "techlab")
+      .split(",").map((s) => s.trim()).filter(Boolean),
+    buckets: (process.env.GDRIVE_BUCKETS ?? process.env.GDRIVE_LEVEL2 ?? "accounting")
+      .split(",").map((s) => s.trim()).filter(Boolean),
+  };
+}
+
+/** Configured external label for the business owner (default "techlab"). */
+function businessLabel(): string {
+  return process.env.OWNER_BUSINESS_LABEL ?? DEFAULT_OWNER_BUSINESS_LABEL;
+}
+
+/**
+ * Map a Drive owner-folder NAME to the company-agnostic owner ROLE (task 96).
+ * The folder whose name equals OWNER_BUSINESS_LABEL (default "techlab") →
+ * "business"; a folder named "personal" → "personal". Any other name → null
+ * (caller fails loud and skips, never emitting an invalid job).
+ */
+export function ownerFolderToRole(folderName: string): "business" | "personal" | null {
+  if (folderName === businessLabel()) return "business";
+  if (folderName === "personal") return "personal";
+  return null;
+}
 
 // ── Tracing + logging ────────────────────────────────────────────────
 initTracing("gdrive-poller");
@@ -53,7 +88,14 @@ export interface DriveFile {
   mimeType: string;
   createdTime: string;
   modifiedTime: string;
+  /** Human-readable label (e.g. "techlab/accounting"), root excluded. */
   watchFolder: string;
+  /** Owner role resolved by the poller from the owner-folder name. */
+  owner: "business" | "personal";
+  /** Bucket resolved from the bucket-folder name. */
+  bucket: "accounting" | "documents";
+  /** Resolved Drive ID of the bucket folder (the move parent — B2 fix). */
+  folderId: string;
 }
 
 // ── Process new files (exported for unit tests) ──────────────────────
@@ -86,6 +128,9 @@ export async function processNewFiles(
       file_id: file.id,
       watch_folder: file.watchFolder,
       month_tag: monthTag,
+      owner: file.owner,
+      bucket: file.bucket,
+      folder_id: file.folderId,
       filename: file.name,
     };
     try {
@@ -107,6 +152,9 @@ export async function processNewFiles(
           "gdrive.file_id": file.id,
           "gdrive.filename": file.name,
           "gdrive.watch_folder": file.watchFolder,
+          "gdrive.owner": file.owner,
+          "gdrive.bucket": file.bucket,
+          "gdrive.folder_id": file.folderId,
           "gdrive.month_tag": monthTag,
         },
       },
@@ -175,7 +223,16 @@ export function parseToolResult(result: any): any {
   try { return JSON.parse(texts[0]); } catch { return texts[0]; }
 }
 
-interface WatchedFolder { path: string; level2: string; folderId: string; }
+export interface WatchedFolder {
+  /** Label = "{ownerFolder}/{bucket}", root excluded — for audit/display. */
+  path: string;
+  /** Owner ROLE (mapped from the owner-folder name). */
+  owner: "business" | "personal";
+  /** Bucket (one of SCAN_BUCKETS). */
+  bucket: "accounting" | "documents";
+  /** Resolved Drive ID of the bucket folder. */
+  folderId: string;
+}
 let watchedFolders: WatchedFolder[] | null = null;
 export function resetWatchFolders(): void { watchedFolders = null; }
 
@@ -221,42 +278,73 @@ async function resolveWatchFolders(): Promise<WatchedFolder[]> {
   if (watchedFolders) return watchedFolders;
   const client = await getDriveClient();
   const folders: WatchedFolder[] = [];
-  for (const level1 of GDRIVE_LEVEL1) {
-    const level1Result = await client.callTool({
+  const { root, owners, buckets } = gdriveConfig();
+
+  // Optional nested root. When unset, owner folders are resolved at the Drive
+  // root exactly as before — byte-identical query, so the backward-compat path
+  // is provably unchanged.
+  let rootId: string | undefined;
+  if (root) {
+    const rootResult = await client.callTool({
       name: "search_drive_files",
       arguments: {
-        query: `name = '${level1}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        query: `name = '${root}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         user_google_email: GOOGLE_EMAIL,
       },
     });
-    const level1Id = extractFolderId(parseToolResult(level1Result));
-    if (!level1Id) { log(`Warning: level1 folder "${level1}" not found, skipping`); continue; }
-    log(`Resolved level1 "${level1}" → ${level1Id}`);
-    for (const level2 of GDRIVE_LEVEL2) {
+    rootId = extractFolderId(parseToolResult(rootResult));
+    if (!rootId) { throw new Error(`GDRIVE_ROOT folder "${root}" not found`); }
+    log(`Resolved root "${root}" → ${rootId}`);
+  }
+
+  for (const ownerName of owners) {
+    const role = ownerFolderToRole(ownerName);
+    if (!role) {
+      log(`✗ Owner folder "${ownerName}" maps to no known role (expected "${OWNER_BUSINESS_LABEL}" or "personal") — skipping`);
+      continue;
+    }
+    const ownerParentClause = rootId ? ` and '${rootId}' in parents` : "";
+    const ownerResult = await client.callTool({
+      name: "search_drive_files",
+      arguments: {
+        query: `name = '${ownerName}'${ownerParentClause} and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        user_google_email: GOOGLE_EMAIL,
+      },
+    });
+    const ownerId = extractFolderId(parseToolResult(ownerResult));
+    if (!ownerId) { log(`Warning: owner folder "${ownerName}" not found, skipping`); continue; }
+    log(`Resolved owner "${ownerName}" (role=${role}) → ${ownerId}`);
+
+    for (const bucketName of buckets) {
+      if (!(SCAN_BUCKETS as readonly string[]).includes(bucketName)) {
+        log(`✗ Bucket folder "${bucketName}" is not a known bucket (expected one of ${SCAN_BUCKETS.join(", ")}) — skipping`);
+        continue;
+      }
+      const bucket = bucketName as "accounting" | "documents";
       const result = await client.callTool({
         name: "search_drive_files",
         arguments: {
-          query: `name = '${level2}' and '${level1Id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+          query: `name = '${bucketName}' and '${ownerId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
           user_google_email: GOOGLE_EMAIL,
         },
       });
       const folderId = extractFolderId(parseToolResult(result));
-      if (!folderId) { log(`Warning: level2 folder "${level2}" not found under "${level1}", skipping`); continue; }
-      const path = `${level1}/${level2}`;
-      log(`Resolved "${path}" → ${folderId}`);
+      if (!folderId) { log(`Warning: bucket folder "${bucketName}" not found under "${ownerName}", skipping`); continue; }
+      const path = `${ownerName}/${bucketName}`;
+      log(`Resolved "${path}" (owner=${role}, bucket=${bucket}) → ${folderId}`);
       await ensureSubfolder(client, folderId, "processed");
       await ensureSubfolder(client, folderId, "errors");
-      folders.push({ path, level2, folderId });
+      folders.push({ path, owner: role, bucket, folderId });
     }
   }
   if (folders.length === 0) {
-    throw new Error(`No watch folders resolved (level1: ${GDRIVE_LEVEL1.join(",")}, level2: ${GDRIVE_LEVEL2.join(",")})`);
+    throw new Error(`No watch folders resolved (owners: ${owners.join(",")}, buckets: ${buckets.join(",")})`);
   }
   watchedFolders = folders;
   return folders;
 }
 
-export function parseDriveTextOutput(text: string, watchFolder: string): DriveFile[] {
+export function parseDriveTextOutput(text: string, folder: WatchedFolder): DriveFile[] {
   const files: DriveFile[] = [];
   const lineRegex = /Name:\s*"([^"]+)"\s*\(ID:\s*([^,]+),\s*Type:\s*([^,]+)(?:,\s*Size:\s*\d+)?,\s*Modified:\s*([^)]+)\)/g;
   let match: RegExpExecArray | null;
@@ -265,7 +353,8 @@ export function parseDriveTextOutput(text: string, watchFolder: string): DriveFi
     if (mimeType.trim() === "application/vnd.google-apps.folder") continue;
     files.push({
       id: id.trim(), name: name.trim(), mimeType: mimeType.trim(),
-      createdTime: modified.trim(), modifiedTime: modified.trim(), watchFolder,
+      createdTime: modified.trim(), modifiedTime: modified.trim(),
+      watchFolder: folder.path, owner: folder.owner, bucket: folder.bucket, folderId: folder.folderId,
     });
   }
   return files;
@@ -293,10 +382,13 @@ export async function pollGdrive(): Promise<DriveFile[]> {
             createdTime: item.createdTime ?? item.modifiedTime ?? new Date().toISOString(),
             modifiedTime: item.modifiedTime ?? new Date().toISOString(),
             watchFolder: folder.path,
+            owner: folder.owner,
+            bucket: folder.bucket,
+            folderId: folder.folderId,
           }));
         allFiles.push(...files);
       } else if (typeof data === "string") {
-        allFiles.push(...parseDriveTextOutput(data, folder.path));
+        allFiles.push(...parseDriveTextOutput(data, folder));
       }
     }
     return allFiles;
@@ -333,8 +425,10 @@ async function main(): Promise<void> {
   });
   log(`Waiting ${STARTUP_DELAY_MS}ms for gmail-mcp to start...`);
   await new Promise((resolve) => setTimeout(resolve, STARTUP_DELAY_MS));
-  const folderPaths = GDRIVE_LEVEL1.flatMap((l1) => GDRIVE_LEVEL2.map((l2) => `${l1}/${l2}`)).join(", ");
-  log(`Config: watch=[${folderPaths}], mcp=${GDRIVE_MCP_URL}, poll=${POLL_INTERVAL_MS}ms`);
+  const { root, owners, buckets } = gdriveConfig();
+  const folderPaths = owners.flatMap((o) => buckets.map((b) => `${o}/${b}`)).join(", ");
+  const rootLabel = root ? `${root}/` : "(no root)";
+  log(`Config: root=${rootLabel}, watch=[${folderPaths}], businessLabel=${businessLabel()}, mcp=${GDRIVE_MCP_URL}, poll=${POLL_INTERVAL_MS}ms`);
   await startPollLoop({
     name: "gdrive-poller", intervalMs: POLL_INTERVAL_MS,
     poll: () => pollCycle(gdriveDb, wfDb),

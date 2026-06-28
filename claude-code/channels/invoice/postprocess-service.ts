@@ -38,21 +38,15 @@ const tracer = getTracer("invoice-worker");
 // ── Owner / doc-type → Paperless name mappings ────────────────────────
 
 /**
- * Storage path name mapping: owner → bucket → Paperless storage path name.
+ * Storage path name mapping: owner ROLE → bucket → Paperless storage path name.
  *
- * Two keys are maintained for "business" storage:
- *   - "business" — used by the invoice path (classification.owner role value
- *     after the task-97 rename)
- *   - "techlab"  — used by the scan path (watch_folder level-1 directory name
- *     is an external label, not a role value; Task B will make this configurable)
- * Both point to the same Paperless storage paths so behaviour is identical.
+ * Both the invoice path and (since task 96) the scan path pass the resolved
+ * `business`/`personal` ROLE here — the gdrive-poller maps the Drive owner-
+ * folder name → role before the job is created, so there is no longer a
+ * folder-name (`techlab`) key to maintain.
  */
 const STORAGE_PATH_NAMES: Record<string, Record<string, string>> = {
   business: {
-    invoices: "Techlab Invoices",
-    documents: "Techlab Documents",
-  },
-  techlab: {
     invoices: "Techlab Invoices",
     documents: "Techlab Documents",
   },
@@ -357,15 +351,20 @@ function extractDriveFolderId(text: string): string | undefined {
 }
 
 /**
- * Move a Drive file to a sibling subfolder of its watch folder. Resolves
- * the watch folder by name, finds or creates the target subfolder
- * ("processed" or "errors"), then issues the parent change. Best-effort:
- * logs and swallows on failure so a Drive hiccup doesn't fail the whole job.
+ * Move a Drive file into a subfolder ("processed" or "errors") of the bucket
+ * folder it was discovered in. The bucket folder's resolved Drive ID
+ * (`folderId`, written onto the scan job by the poller) is used DIRECTLY as
+ * the parent — no global `name = '<leaf>'` search. This is the B2 fix (task
+ * 96): a global leaf-name lookup matched both `techlab/accounting` and
+ * `personal/accounting` once a second owner existed, misfiling into the wrong
+ * owner's `processed/`. Finds or creates the target subfolder within
+ * `folderId`, then issues the parent change. Best-effort: logs and swallows on
+ * failure so a Drive hiccup doesn't fail the whole job.
  */
 export async function moveGdriveFile(
   fileId: string,
   targetFolder: string,
-  watchFolder: string,
+  folderId: string,
   gmailMcpUrl: string,
   googleEmail: string,
   logger: PostprocessLogger,
@@ -373,37 +372,27 @@ export async function moveGdriveFile(
   return withSpan(tracer, "invoice-worker.move_file", {
     "gdrive.file_id": fileId,
     "gdrive.target_folder": targetFolder,
-    "gdrive.watch_folder": watchFolder,
+    "gdrive.folder_id": folderId,
   }, async (_span) => {
     try {
-      // Resolve watch folder (level2) ID — the parent where processed/errors subfolders live
-      const watchFolderLeaf = watchFolder.split("/").pop()!;
-      const watchResult = await callMcpTool(gmailMcpUrl, "search_drive_files", {
-        query: `name = '${watchFolderLeaf}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      // Resolve target subfolder (e.g. "processed") within the bucket folder,
+      // parent-filtered by the resolved folderId (no global name search).
+      let targetFolderId: string | undefined;
+      const searchResult = await callMcpTool(gmailMcpUrl, "search_drive_files", {
+        query: `name = '${targetFolder}' and '${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         user_google_email: googleEmail,
       });
-      const watchText = extractText(watchResult);
-      const watchFolderId = watchText ? extractDriveFolderId(watchText) : undefined;
-
-      // Resolve target subfolder (e.g. "processed") within the watch folder
-      let targetFolderId: string | undefined;
-      if (watchFolderId) {
-        const searchResult = await callMcpTool(gmailMcpUrl, "search_drive_files", {
-          query: `name = '${targetFolder}' and '${watchFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-          user_google_email: googleEmail,
-        });
-        const searchText = extractText(searchResult);
-        if (searchText) {
-          targetFolderId = extractDriveFolderId(searchText);
-        }
+      const searchText = extractText(searchResult);
+      if (searchText) {
+        targetFolderId = extractDriveFolderId(searchText);
       }
 
       // Create target folder if it doesn't exist
-      if (!targetFolderId && watchFolderId) {
-        logger.log(`Creating folder "${targetFolder}" in ${watchFolder}`);
+      if (!targetFolderId) {
+        logger.log(`Creating folder "${targetFolder}" in ${folderId}`);
         const createResult = await callMcpTool(gmailMcpUrl, "create_drive_folder", {
           name: targetFolder,
-          parent_id: watchFolderId,
+          parent_id: folderId,
           user_google_email: googleEmail,
         });
         const createText = extractText(createResult);
@@ -411,20 +400,20 @@ export async function moveGdriveFile(
       }
 
       if (!targetFolderId) {
-        logger.log(`Warning: could not find or create folder "${targetFolder}" in ${watchFolder}, skipping move`);
+        logger.log(`Warning: could not find or create folder "${targetFolder}" in ${folderId}, skipping move`);
         return;
       }
 
       await callMcpTool(gmailMcpUrl, "update_drive_file", {
         file_id: fileId,
         add_parents: targetFolderId,
-        remove_parents: watchFolderId ?? undefined,
+        remove_parents: folderId,
         user_google_email: googleEmail,
       });
-      logger.log(`Moved file ${fileId} to ${watchFolder}/${targetFolder}/`);
+      logger.log(`Moved file ${fileId} to ${folderId}/${targetFolder}/`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.log(`Warning: failed to move GDrive file ${fileId} to ${watchFolder}/${targetFolder}/: ${message}`);
+      logger.log(`Warning: failed to move GDrive file ${fileId} to ${folderId}/${targetFolder}/: ${message}`);
     }
   });
 }

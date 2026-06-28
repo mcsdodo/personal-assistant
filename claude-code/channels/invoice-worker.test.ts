@@ -17,6 +17,7 @@ import type { InvoiceIntakeInputSchema as InvoiceIntakeInput } from "./workflow-
 import * as downloadHelper from "./download-helper";
 import * as sampleDetection from "./invoice/sample-detection";
 import { createPaperlessAdapter } from "./paperless-adapter";
+import { moveGdriveFile } from "./invoice/postprocess-service";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 import {
@@ -1377,6 +1378,9 @@ function makeScanInput(overrides: Partial<ScanIntakeInput> = {}): ScanIntakeInpu
     filename: "scan_invoice.pdf",
     month_tag: "2026-03",
     watch_folder: "techlab/accounting",
+    owner: "business",
+    bucket: "accounting",
+    folder_id: "bucket-folder-id",
     ...overrides,
   };
 }
@@ -1422,12 +1426,12 @@ function createRunningScanJob(
   return getJob(db, job.id)!;
 }
 
-/** Mock handlers for moveGdriveFile: search watch folder, search target folder, move file */
+/** Mock handlers for moveGdriveFile (B2 fix): the bucket folder_id is used
+ *  directly as the parent — only the target subfolder search + move remain
+ *  (no global watch-folder name lookup). */
 function moveGdriveMockHandlers(): FetchHandler[] {
   return [
-    // search_drive_files → watch folder ID
-    () => jsonResponse(rpcResponse([{ id: "watch-folder-id", name: "accounting" }])),
-    // search_drive_files → target subfolder ("processed") ID
+    // search_drive_files → target subfolder ("processed"/"errors") within folder_id
     () => jsonResponse(rpcResponse([{ id: "processed-folder-id", name: "processed" }])),
     // update_drive_file → move file
     () => jsonResponse(rpcResponse({ id: "gdrive-file-abc" })),
@@ -1834,6 +1838,66 @@ describe("invoice-worker force-refresh (scan pipeline)", () => {
 
 // ── Scan intake tests ───────────────────────────────────────────────────
 
+// ── B2 regression lock: moveGdriveFile uses folder_id, no global name search ──
+
+describe("moveGdriveFile (B2: folder_id is the move parent, no global search)", () => {
+  /** Capture every MCP tool call (name + arguments) issued by moveGdriveFile. */
+  function captureMcpCalls(): { calls: Array<{ tool: string; args: any }> } {
+    const calls: Array<{ tool: string; args: any }> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      const tool = body?.params?.name as string;
+      const args = body?.params?.arguments ?? {};
+      calls.push({ tool, args });
+      if (tool === "search_drive_files") {
+        // target subfolder ("processed") resolves within the bucket folder
+        return jsonResponse(rpcResponse([{ id: "processed-sub-id", name: "processed" }]));
+      }
+      // update_drive_file (the move)
+      return jsonResponse(rpcResponse({ id: "file-xyz" }));
+    }) as typeof fetch;
+    return { calls };
+  }
+
+  test("targets processed/ within the passed folder_id and issues NO global name search", async () => {
+    const { calls } = captureMcpCalls();
+
+    await moveGdriveFile(
+      "file-xyz",
+      "processed",
+      "BUCKET-FOLDER-XYZ", // the resolved bucket folder_id
+      "http://gmail-mcp:8000/mcp",
+      "user@example.com",
+      { log: () => {} },
+    );
+
+    const searches = calls.filter((c) => c.tool === "search_drive_files");
+    expect(searches.length).toBeGreaterThan(0);
+
+    // (a) the subfolder search is parent-filtered by the passed folder_id
+    const folderScoped = searches.find((s) =>
+      String(s.args.query).includes("'BUCKET-FOLDER-XYZ' in parents"),
+    );
+    expect(folderScoped).toBeDefined();
+    expect(String(folderScoped!.args.query)).toContain("name = 'processed'");
+
+    // (b) NO search issues a bare global `name = '...'` lookup without a parent
+    // filter — that was the B2 bug that matched the wrong owner's folder.
+    for (const s of searches) {
+      const q = String(s.args.query);
+      if (q.includes("name = ")) {
+        expect(q).toContain("in parents");
+      }
+    }
+
+    // The move targets the resolved subfolder and removes the bucket folder parent.
+    const move = calls.find((c) => c.tool === "update_drive_file");
+    expect(move).toBeDefined();
+    expect(move!.args.add_parents).toBe("processed-sub-id");
+    expect(move!.args.remove_parents).toBe("BUCKET-FOLDER-XYZ");
+  });
+});
+
 describe("executeScanIntake", () => {
   test("happy path: scan file read from disk, uploaded, moved to processed", async () => {
     const filePath = join(tmpDir, "scan_invoice.pdf");
@@ -1903,6 +1967,7 @@ describe("executeScanIntake", () => {
     const input = makeScanInput({
       file_path: filePath,
       watch_folder: "techlab/documents",
+      bucket: "documents",
     });
     const job = createRunningScanJob(
       input,
@@ -2122,20 +2187,27 @@ describe("executeScanIntake", () => {
     expect(output.outcome).toBe("uploaded");
   });
 
-  test("tags derived from watch_folder owner only, not LEVEL2", async () => {
-    const filePath = join(tmpDir, "custom_folder_scan.pdf");
+  test("personal owner: personal tag + Personal storage + NO accounting tag", async () => {
+    const filePath = join(tmpDir, "personal_scan.pdf");
     writeFileSync(filePath, Buffer.from("fake-pdf"));
 
+    // owner=personal, bucket=accounting — proves the accounting tag is gated
+    // OFF for the personal owner even when the bucket is accounting.
     const input = makeScanInput({
       file_path: filePath,
-      watch_folder: "personal/receipts",
+      watch_folder: "personal/accounting",
+      owner: "personal",
+      bucket: "accounting",
       month_tag: "2026-01",
     });
     const job = createRunningScanJob(input, defaultScanClassification({
+      owner: "personal",
       order_id: null,
       total_amount: null,
       is_fuel: true,
     }));
+
+    let storagePathAssigned: number | undefined;
 
     mockFetch(
       // 1. list_correspondents
@@ -2151,8 +2223,13 @@ describe("executeScanIntake", () => {
       () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
       // 6. resolveStoragePath
       storagePathsMockHandler(),
-      // 7. post_document
-      () => new Response('"task-uuid-tags"', { status: 200 }),
+      // 7. post_document — capture storage_path
+      (_url, init) => {
+        const body = String(init?.body);
+        const sp = body.match(/name="storage_path"\r\n\r\n(\d+)/);
+        storagePathAssigned = sp ? Number(sp[1]) : undefined;
+        return new Response('"task-uuid-personal"', { status: 200 });
+      },
       // 8-10. moveGdriveFile
       ...moveGdriveMockHandlers(),
     );
@@ -2162,8 +2239,12 @@ describe("executeScanIntake", () => {
     const updated = getJob(db, job.id)!;
     expect(updated.state).toBe("completed");
     const output = JSON.parse(updated.output_json!);
-    // Only owner tag from LEVEL1 + fuel + month — no "receipts" from LEVEL2
+    // personal owner tag, fuel + month — NO accounting, NO techlab
     expect(output.tags).toEqual(["personal", "fuel", "2026-01"]);
+    expect(output.tags).not.toContain("accounting");
+    expect(output.tags).not.toContain("techlab");
+    // Personal Invoices storage path (id 4 per storagePathsMockHandler)
+    expect(storagePathAssigned).toBe(4);
   });
 
   test("documents folder scan: classifier 'invoice' is overridden to 'document' end-to-end", async () => {
@@ -2178,6 +2259,7 @@ describe("executeScanIntake", () => {
     const input = makeScanInput({
       file_path: filePath,
       watch_folder: "techlab/documents",
+      bucket: "documents",
     });
     const job = createRunningScanJob(input, defaultScanClassification({
       owner: "business",
@@ -2730,10 +2812,16 @@ describe("scan-worker trigger A (classifier unknown)", () => {
   test("scan resume after patch: patched owner applied, job completes", async () => {
     const filePath = join(tmpDir, "scan_resume.pdf");
     writeFileSync(filePath, Buffer.from("fake pdf"));
-    const input = makeScanInput({ file_path: filePath, watch_folder: "personal/receipts" });
+    const input = makeScanInput({
+      file_path: filePath,
+      watch_folder: "personal/accounting",
+      owner: "personal",
+      bucket: "accounting",
+    });
     const job = createRunningScanJob(
       input,
       defaultScanClassification({
+        owner: "personal",
         doc_type: "unknown",
         notes: "unclear layout",
       }),
