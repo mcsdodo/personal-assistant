@@ -834,4 +834,78 @@ describe("gdrive-watcher integration", () => {
     const result = await pollGdrive();
     expect(result).toEqual([]);
   });
+
+  // -------------------------------------------------------------------------
+  // unknown owner skip path (task 96 bug fix — ReferenceError on OWNER_BUSINESS_LABEL)
+  //
+  // resolveWatchFolders must skip an unrecognised owner folder with a log
+  // message, NOT throw a ReferenceError that pollGdrive's catch swallows.
+  // Concretely: when GDRIVE_OWNERS contains an unknown name alongside a valid
+  // one, the poll cycle must (a) continue past the bad owner, (b) still
+  // resolve the valid owner and return/create jobs for its files, and (c) emit
+  // no job for the bad owner.
+  // -------------------------------------------------------------------------
+  test("pollCycle skips unknown owner folder and still processes valid owner", async () => {
+    // Set GDRIVE_OWNERS to include one unknown name and the valid "techlab".
+    process.env.GDRIVE_OWNERS = "bad-owner,techlab";
+    process.env.GDRIVE_BUCKETS = "accounting";
+    resetWatchFolders();
+    resetDriveClient();
+
+    const driveFile = {
+      id: "file-valid-owner",
+      name: "valid_owner_scan.pdf",
+      mimeType: "application/pdf",
+      createdTime: "2026-06-25T10:00:00Z",
+      modifiedTime: "2026-06-25T10:00:00Z",
+    };
+
+    // Mock: "bad-owner" never reaches an MCP search (ownerFolderToRole returns
+    // null first); "techlab" resolves normally.
+    callToolImpl = async (params) => {
+      const { name, arguments: args } = params;
+      if (name === "search_drive_files") {
+        const q = args.query as string;
+        if (q.includes("name = 'techlab'") && !q.includes("in parents")) {
+          return jsonArrayResult([{ id: "techlab-folder-id", name: "techlab" }]);
+        }
+        if (q.includes("name = 'accounting'") && q.includes("'techlab-folder-id' in parents")) {
+          return jsonArrayResult([{ id: "techlab-acct-id", name: "accounting" }]);
+        }
+        if (q.includes("name = 'processed'") || q.includes("name = 'errors'")) {
+          return jsonArrayResult([{ id: "sub", name: "sub" }]);
+        }
+        return textResult("No results");
+      }
+      if (name === "list_drive_items" && args.folder_id === "techlab-acct-id") {
+        return jsonArrayResult([driveFile]);
+      }
+      return textResult("No items found");
+    };
+
+    try {
+      // (b) poll cycle must NOT throw — if OWNER_BUSINESS_LABEL were still
+      // referenced, the ReferenceError would propagate through resolveWatchFolders,
+      // be caught by pollGdrive, and return [], causing pollCycle to create zero jobs.
+      await pollCycle(db, wfDb);
+
+      // (b) valid owner's file was still processed
+      const job = getJobByIdempotencyKey(wfDb, "gdrive:file-valid-owner");
+      expect(job).not.toBeNull();
+      expect(job!.workflow_type).toBe("scan_intake");
+      const input = JSON.parse(job!.input_json!);
+      expect(input.owner).toBe("business");
+      expect(input.bucket).toBe("accounting");
+      expect(input.watch_folder).toBe("techlab/accounting");
+
+      // (c) no job for bad-owner (its folder was never searched)
+      const rows = (wfDb as any).prepare("SELECT id FROM jobs").all() as any[];
+      expect(rows).toHaveLength(1); // exactly one job — for the valid owner file
+    } finally {
+      delete process.env.GDRIVE_OWNERS;
+      delete process.env.GDRIVE_BUCKETS;
+      resetWatchFolders();
+      resetDriveClient();
+    }
+  });
 });

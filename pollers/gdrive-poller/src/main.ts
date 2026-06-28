@@ -300,7 +300,7 @@ async function resolveWatchFolders(): Promise<WatchedFolder[]> {
   for (const ownerName of owners) {
     const role = ownerFolderToRole(ownerName);
     if (!role) {
-      log(`✗ Owner folder "${ownerName}" maps to no known role (expected "${OWNER_BUSINESS_LABEL}" or "personal") — skipping`);
+      log(`✗ Owner folder "${ownerName}" maps to no known role (expected "${businessLabel()}" or "personal") — skipping`);
       continue;
     }
     const ownerParentClause = rootId ? ` and '${rootId}' in parents` : "";
