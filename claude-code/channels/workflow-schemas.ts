@@ -503,9 +503,11 @@ function numberOrUnknown(
 function validateOwnerMatchEvidence(
   obj: Record<string, unknown>,
   owner: "business" | "personal" | "unknown",
+  ownerEvidenceOptional = false,
 ): string | null {
   const raw = "owner_match_evidence" in obj ? obj.owner_match_evidence : null;
 
+  // Non-string type is always rejected, regardless of the flag.
   if (raw !== null && raw !== undefined && typeof raw !== "string") {
     throw new WorkflowSchemaError(
       "DocumentClassificationResult",
@@ -518,7 +520,12 @@ function validateOwnerMatchEvidence(
   const value = raw === undefined || raw === null ? null : (raw as string);
 
   if (owner === "business") {
+    // Scan path: owner is folder-authoritative, so a flaky null evidence from
+    // the classifier must not fail the job. ownerEvidenceOptional=true skips
+    // the proof-required gate for scan_intake jobs. Default (false) preserves
+    // the email-path hard-fail (task 83).
     if (value === null || value.trim().length === 0) {
+      if (ownerEvidenceOptional) return null;
       throw new WorkflowSchemaError(
         "DocumentClassificationResult",
         "owner_match_evidence",
@@ -534,7 +541,7 @@ function validateOwnerMatchEvidence(
     return value;
   }
 
-  // owner is "personal" or "unknown" — evidence must be absent.
+  // owner is "personal" or "unknown" — evidence must be absent regardless of the flag.
   if (value !== null) {
     throw new WorkflowSchemaError(
       "DocumentClassificationResult",
@@ -573,10 +580,13 @@ function receiptDatetimeOrNull(
   );
 }
 
-export function validateDocumentClassificationResult(input: unknown): DocumentClassificationResultSchema {
+export function validateDocumentClassificationResult(
+  input: unknown,
+  opts: { ownerEvidenceOptional?: boolean } = {},
+): DocumentClassificationResultSchema {
   const obj = requireObject("DocumentClassificationResult", input);
   const owner = reqEnum("DocumentClassificationResult", obj, "owner", DOC_OWNERS);
-  const owner_match_evidence = validateOwnerMatchEvidence(obj, owner);
+  const owner_match_evidence = validateOwnerMatchEvidence(obj, owner, opts.ownerEvidenceOptional ?? false);
   const result: DocumentClassificationResultSchema = {
     doc_type: stringOrUnknown("DocumentClassificationResult", obj, "doc_type") as string,
     vendor: reqString("DocumentClassificationResult", obj, "vendor"),
@@ -644,10 +654,14 @@ export function validateDocumentClassificationResult(input: unknown): DocumentCl
  * Returns the validated, narrowed object on success. Throws
  * `WorkflowSchemaError` with the step name in the context on failure.
  */
-export function validateClassificationByStep(step: string, result: unknown): unknown {
+export function validateClassificationByStep(
+  step: string,
+  result: unknown,
+  opts: { ownerEvidenceOptional?: boolean } = {},
+): unknown {
   try {
     if (step === "classify_email") return validateEmailClassificationResult(result);
-    if (step === "classify_document") return validateDocumentClassificationResult(result);
+    if (step === "classify_document") return validateDocumentClassificationResult(result, opts);
     // Unknown step — pass through. Future steps should add cases above.
     return result;
   } catch (err) {

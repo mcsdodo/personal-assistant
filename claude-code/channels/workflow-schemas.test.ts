@@ -646,6 +646,68 @@ describe("DocumentClassificationResult — litres + receipt_datetime", () => {
   });
 });
 
+// ── validateDocumentClassificationResult ownerEvidenceOptional (task 96-fix) ──
+//
+// On the scan path the owner is folder-authoritative (executeScanIntake uses
+// input.owner and ignores the classifier owner). So a null/missing
+// owner_match_evidence on a business classification must NOT fail the job.
+// The flag must be explicitly set; default (false) preserves email-path behaviour.
+
+describe("validateDocumentClassificationResult ownerEvidenceOptional (task 96-fix)", () => {
+  test("owner=business + evidence=null THROWS by default (email path unchanged)", () => {
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult({
+          ...VALID_DOC_CLASS,
+          owner: "business",
+          owner_match_evidence: null,
+        }),
+      { field: "owner_match_evidence", expected: "non-empty string when owner=business" },
+    );
+  });
+
+  test("owner=business + evidence=null is ALLOWED when ownerEvidenceOptional=true (scan path)", () => {
+    const out = validateDocumentClassificationResult(
+      { ...VALID_DOC_CLASS, owner: "business", owner_match_evidence: null },
+      { ownerEvidenceOptional: true },
+    );
+    expect(out.owner).toBe("business");
+    expect(out.owner_match_evidence).toBeNull();
+  });
+
+  test("owner=business + evidence missing is ALLOWED when ownerEvidenceOptional=true (scan path)", () => {
+    const { owner_match_evidence: _e, ...rest } = VALID_DOC_CLASS;
+    const out = validateDocumentClassificationResult(
+      { ...rest, owner: "business" },
+      { ownerEvidenceOptional: true },
+    );
+    expect(out.owner).toBe("business");
+    expect(out.owner_match_evidence).toBeNull();
+  });
+
+  test("owner=personal + non-null evidence still THROWS even with ownerEvidenceOptional=true", () => {
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult(
+          { ...VALID_DOC_CLASS, owner: "personal", owner_match_evidence: "stray string" },
+          { ownerEvidenceOptional: true },
+        ),
+      { field: "owner_match_evidence", expected: "null when owner=personal" },
+    );
+  });
+
+  test("non-string evidence type still THROWS even with ownerEvidenceOptional=true", () => {
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult(
+          { ...VALID_DOC_CLASS, owner: "business", owner_match_evidence: 42 },
+          { ownerEvidenceOptional: true },
+        ),
+      { field: "owner_match_evidence", expected: "string | null" },
+    );
+  });
+});
+
 // ── validateClassificationByStep ──────────────────────────────────────
 
 describe("validateClassificationByStep", () => {
@@ -657,6 +719,16 @@ describe("validateClassificationByStep", () => {
   test("dispatches to doc validator for classify_document", () => {
     const out = validateClassificationByStep("classify_document", VALID_DOC_CLASS) as Record<string, unknown>;
     expect(out.vendor).toBe("Anthropic, PBC");
+  });
+
+  test("classify_document with ownerEvidenceOptional=true allows null evidence", () => {
+    const out = validateClassificationByStep(
+      "classify_document",
+      { ...VALID_DOC_CLASS, owner: "business", owner_match_evidence: null },
+      { ownerEvidenceOptional: true },
+    ) as Record<string, unknown>;
+    expect(out.owner).toBe("business");
+    expect(out.owner_match_evidence).toBeNull();
   });
 
   test("attaches step name to error context", () => {

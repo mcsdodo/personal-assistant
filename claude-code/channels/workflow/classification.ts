@@ -105,9 +105,16 @@ export function submitClassification(
 
   // Validate the payload before storing it. A malformed payload from Claude
   // would silently corrupt the resume path otherwise.
+  // On the scan path the owner is folder-authoritative (executeScanIntake uses
+  // input.owner and ignores the classifier owner). So a flaky null
+  // owner_match_evidence from the document-classifier must not fail a scan job
+  // (task 96-fix). ownerEvidenceOptional defaults to false, preserving the
+  // email-path hard-fail (task 83) for all other workflow types.
   let validated: unknown;
   try {
-    validated = validateClassificationByStep(step, mergedResult);
+    validated = validateClassificationByStep(step, mergedResult, {
+      ownerEvidenceOptional: job.workflow_type === "scan_intake",
+    });
   } catch (err) {
     if (err instanceof WorkflowSchemaError) {
       failJob(db, jobId, {

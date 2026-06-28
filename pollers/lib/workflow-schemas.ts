@@ -460,7 +460,10 @@ function numberOrUnknown(
   return v;
 }
 
-export function validateDocumentClassificationResult(input: unknown): DocumentClassificationResultSchema {
+export function validateDocumentClassificationResult(
+  input: unknown,
+  opts: { ownerEvidenceOptional?: boolean } = {},
+): DocumentClassificationResultSchema {
   const obj = requireObject("DocumentClassificationResult", input);
   const result: DocumentClassificationResultSchema = {
     doc_type: stringOrUnknown("DocumentClassificationResult", obj, "doc_type") as string,
@@ -526,10 +529,14 @@ export function validateDocumentClassificationResult(input: unknown): DocumentCl
  * Returns the validated, narrowed object on success. Throws
  * `WorkflowSchemaError` with the step name in the context on failure.
  */
-export function validateClassificationByStep(step: string, result: unknown): unknown {
+export function validateClassificationByStep(
+  step: string,
+  result: unknown,
+  opts: { ownerEvidenceOptional?: boolean } = {},
+): unknown {
   try {
     if (step === "classify_email") return validateEmailClassificationResult(result);
-    if (step === "classify_document") return validateDocumentClassificationResult(result);
+    if (step === "classify_document") return validateDocumentClassificationResult(result, opts);
     // Unknown step — pass through. Future steps should add cases above.
     return result;
   } catch (err) {

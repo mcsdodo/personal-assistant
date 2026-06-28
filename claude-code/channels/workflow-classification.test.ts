@@ -334,6 +334,61 @@ describe("submitClassification metadata merge", () => {
   });
 });
 
+// ── scan_intake ownerEvidenceOptional (task 96-fix) ───────────────────
+//
+// The scan path is owner-authoritative (folder → owner). The document
+// classifier sometimes returns owner=business with evidence=null (flaky
+// Haiku non-compliance). submitClassification must NOT fail the job for
+// scan_intake; it must fail for invoice_intake (email path — task 83).
+
+describe("submitClassification ownerEvidenceOptional (task 96-fix)", () => {
+  const DOC_CLASS_BUSINESS_NO_EVIDENCE = {
+    doc_type: "invoice",
+    vendor: "Acme s.r.o.",
+    total_amount: 50,
+    currency: "EUR",
+    is_fuel: false,
+    owner: "business",
+    owner_match_evidence: null, // flaky Haiku output
+    confidence: "high",
+    order_id: null,
+    subtitle: null,
+    doc_date: null,
+  };
+
+  function setupParkedDocClassify(workflowType: string) {
+    const job = createJob(db, { workflowType, inputJson: "{}" });
+    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
+    requestClassification(db, job.id, "classify_document", { file_path: "/tmp/test.pdf" });
+    return job;
+  }
+
+  test("scan_intake job proceeds (not failed) when classifier returns business + null evidence", () => {
+    const job = setupParkedDocClassify("scan_intake");
+
+    const ok = submitClassification(db, job.id, "classify_document", DOC_CLASS_BUSINESS_NO_EVIDENCE);
+    expect(ok).toBe(true);
+
+    const updated = getJob(db, job.id);
+    // Job is back to queued (worker will pick it up), NOT failed
+    expect(updated!.state).toBe("queued");
+    expect(updated!.error_json).toBeNull();
+  });
+
+  test("invoice_intake job FAILS schema_validation_failed when classifier returns business + null evidence", () => {
+    const job = setupParkedDocClassify("invoice_intake");
+
+    const ok = submitClassification(db, job.id, "classify_document", DOC_CLASS_BUSINESS_NO_EVIDENCE);
+    expect(ok).toBe(false);
+
+    const updated = getJob(db, job.id);
+    expect(updated!.state).toBe("failed");
+    const err = JSON.parse(updated!.error_json!);
+    expect(err.code).toBe("schema_validation_failed");
+    expect(err.field).toBe("owner_match_evidence");
+  });
+});
+
 // ── provide_guidance MCP tool (task 57 / Task 1.4) ─────────────────────
 //
 // The tool resumes a job paused in `awaiting_user_guidance`. It is the
