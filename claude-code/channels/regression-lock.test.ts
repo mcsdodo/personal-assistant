@@ -4,15 +4,14 @@
  * Guards two invariants that must never silently regress:
  * 1. The owner-role enum values are "business" / "personal" / "unknown" —
  *    "techlab" must not appear as an owner role in OWNERS or DOC_OWNERS.
- * 2. The default for OWNER_BUSINESS_LABEL resolution is "techlab" —
- *    changing this would silently re-tag all future business documents
- *    with a new value and orphan existing Paperless docs tagged "techlab".
+ * 2. requireBusinessLabel() throws when OWNER_BUSINESS_LABEL is unset/empty
+ *    and returns the value when set — no silent fallback to any hard-coded default.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { OWNERS, DOC_OWNERS } from "./workflow-schemas";
-import { DEFAULT_OWNER_BUSINESS_LABEL } from "./invoice/pipeline";
+import { requireBusinessLabel } from "./invoice/pipeline";
 
 describe("task-97 regression lock — owner role enums", () => {
   test('OWNERS does not contain "techlab"', () => {
@@ -32,11 +31,43 @@ describe("task-97 regression lock — owner role enums", () => {
   });
 });
 
-describe("task-97 regression lock — DEFAULT_OWNER_BUSINESS_LABEL", () => {
-  test('DEFAULT_OWNER_BUSINESS_LABEL is "techlab"', () => {
-    // Changing this default would silently re-tag all future business
-    // documents and orphan existing Paperless docs tagged "techlab".
-    // If you intend to change the default, update this test intentionally.
-    expect(DEFAULT_OWNER_BUSINESS_LABEL).toBe("techlab");
+describe("task-96label regression lock — requireBusinessLabel", () => {
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env.OWNER_BUSINESS_LABEL;
+  });
+
+  afterEach(() => {
+    if (saved === undefined) {
+      delete process.env.OWNER_BUSINESS_LABEL;
+    } else {
+      process.env.OWNER_BUSINESS_LABEL = saved;
+    }
+  });
+
+  test("throws when OWNER_BUSINESS_LABEL is unset", () => {
+    delete process.env.OWNER_BUSINESS_LABEL;
+    expect(() => requireBusinessLabel()).toThrow("OWNER_BUSINESS_LABEL must be set");
+  });
+
+  test("throws when OWNER_BUSINESS_LABEL is empty string", () => {
+    process.env.OWNER_BUSINESS_LABEL = "";
+    expect(() => requireBusinessLabel()).toThrow("OWNER_BUSINESS_LABEL must be set");
+  });
+
+  test("throws when OWNER_BUSINESS_LABEL is whitespace only", () => {
+    process.env.OWNER_BUSINESS_LABEL = "   ";
+    expect(() => requireBusinessLabel()).toThrow("OWNER_BUSINESS_LABEL must be set");
+  });
+
+  test("returns the value when OWNER_BUSINESS_LABEL is set", () => {
+    process.env.OWNER_BUSINESS_LABEL = "techlab";
+    expect(requireBusinessLabel()).toBe("techlab");
+  });
+
+  test("returns the value when OWNER_BUSINESS_LABEL is a custom label", () => {
+    process.env.OWNER_BUSINESS_LABEL = "acme";
+    expect(requireBusinessLabel()).toBe("acme");
   });
 });

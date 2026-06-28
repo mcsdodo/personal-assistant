@@ -83,7 +83,7 @@ gdrive-poller container (oven/bun:1-alpine)
 ├── polls Google Drive folders every 30s via gmail-mcp
 │   ├── 3-level (GDRIVE_ROOT set): {root}/{owner}/{bucket} e.g. _documents_intake/techlab/accounting
 │   └── 2-level (GDRIVE_ROOT unset): {owner}/{bucket} e.g. techlab/accounting (backward-compat)
-├── owner folder → role: OWNER_BUSINESS_LABEL (default "techlab") → "business"; "personal" → "personal"
+├── owner folder → role: OWNER_BUSINESS_LABEL (REQUIRED, no default) → "business"; "personal" → "personal"
 ├── writes explicit owner, bucket, folder_id on every scan_intake job in workflow.db
 ├── writes gdrive.db (audit trail) + workflow.db (creates scan_intake jobs)
 └── exposes /health on :9466
@@ -117,12 +117,12 @@ The workflow executor runs in a separate `pa-worker` Docker container — `workf
 
 ## Business / Personal Owner Model
 
-The document-classifier returns an `owner` field with three possible values: `business`, `personal`, or `unknown`. This is an **internal role** — it never appears as a Paperless tag or Telegram command directly. Instead, the `business` role is mapped to an **external label** configured via `OWNER_BUSINESS_LABEL` (default `techlab`) in two places:
+The document-classifier returns an `owner` field with three possible values: `business`, `personal`, or `unknown`. This is an **internal role** — it never appears as a Paperless tag or Telegram command directly. Instead, the `business` role is mapped to an **external label** configured via `OWNER_BUSINESS_LABEL` in two places:
 
 1. **Paperless tag** — [`buildTagNames`](claude-code/channels/invoice/pipeline.ts) pushes the label value (e.g. `techlab`) for `owner === "business"` documents, and the literal `"personal"` for personal ones.
 2. **Telegram guidance command / display** — [`telegram-notify.ts`](claude-code/channels/telegram-notify.ts) renders `set:owner=business` as `/<OWNER_BUSINESS_LABEL>` (e.g. `/techlab`), and the notification displays the title-cased label (e.g. `Techlab`).
 
-To deploy with a different business identity, set `OWNER_BUSINESS_LABEL=yourcompany` in [`.env`](.env.example) and [`komodo.toml`](../../_komodo/komodo.toml). The role rename from `techlab` → `business` is complete and transparent to operators — existing Paperless docs tagged `techlab` remain valid because the label default is unchanged.
+`OWNER_BUSINESS_LABEL` is **REQUIRED** — there is no code default. The stack throws at startup/use if the var is unset or empty. Set it in [`.env`](.env.example) and [`komodo.toml`](../../_komodo/komodo.toml) to your company/project label (e.g. `techlab`, `acme`, `myco`). The accessor `requireBusinessLabel()` (in [`claude-code/channels/invoice/pipeline.ts`](claude-code/channels/invoice/pipeline.ts) and [`pollers/lib/owner-config.ts`](pollers/lib/owner-config.ts)) enforces this at every read site.
 
 ## Robustness & Health
 

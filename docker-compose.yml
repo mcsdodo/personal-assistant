@@ -156,7 +156,7 @@ services:
       - GDRIVE_BUCKETS=${GDRIVE_BUCKETS:-}
       - GDRIVE_LEVEL1=${GDRIVE_LEVEL1:-}
       - GDRIVE_LEVEL2=${GDRIVE_LEVEL2:-accounting,documents}
-      - OWNER_BUSINESS_LABEL=${OWNER_BUSINESS_LABEL:-techlab}
+      - OWNER_BUSINESS_LABEL=${OWNER_BUSINESS_LABEL}
       - GDRIVE_MCP_URL=${GDRIVE_MCP_URL:-http://gmail-mcp:8000/mcp}
       - GDRIVE_DB_PATH=/data/gdrive-watcher/gdrive.db
       - WORKFLOW_DB_PATH=/data/email-watcher/workflow.db
@@ -207,7 +207,7 @@ services:
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       - BANK_PDF_PASSWORD=${BANK_PDF_PASSWORD:-}
       # Business-owner label: Paperless tag + Telegram command for business docs
-      - OWNER_BUSINESS_LABEL=${OWNER_BUSINESS_LABEL:-techlab}
+      - OWNER_BUSINESS_LABEL=${OWNER_BUSINESS_LABEL}
       - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_ENDPOINT:-}
       - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative

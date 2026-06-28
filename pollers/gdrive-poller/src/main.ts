@@ -18,7 +18,7 @@ import {
 import { openDb as openGdriveDb, insertFile, fileExists } from "../../lib/gdrive-db";
 import { openWorkflowDb, createJob } from "../../lib/workflow-db";
 import { validateScanIntakeInput, WorkflowSchemaError, SCAN_BUCKETS } from "../../lib/workflow-schemas";
-import { DEFAULT_OWNER_BUSINESS_LABEL } from "../../lib/owner-config";
+import { requireBusinessLabel } from "../../lib/owner-config";
 import {
   initTracing, getTracer, getMeter, withSpan, createLogger,
   getActiveTraceId, SpanStatusCode,
@@ -57,15 +57,15 @@ function gdriveConfig(): { root: string; owners: string[]; buckets: string[] } {
   };
 }
 
-/** Configured external label for the business owner (default "techlab"). */
+/** Configured external label for the business owner. Throws if OWNER_BUSINESS_LABEL is unset. */
 function businessLabel(): string {
-  return process.env.OWNER_BUSINESS_LABEL ?? DEFAULT_OWNER_BUSINESS_LABEL;
+  return requireBusinessLabel();
 }
 
 /**
  * Map a Drive owner-folder NAME to the company-agnostic owner ROLE (task 96).
- * The folder whose name equals OWNER_BUSINESS_LABEL (default "techlab") →
- * "business"; a folder named "personal" → "personal". Any other name → null
+ * The folder whose name equals OWNER_BUSINESS_LABEL → "business";
+ * a folder named "personal" → "personal". Any other name → null
  * (caller fails loud and skips, never emitting an invalid job).
  */
 export function ownerFolderToRole(folderName: string): "business" | "personal" | null {

@@ -24,6 +24,16 @@ This project was developed as part of a private monorepo. This changelog was gen
   - `DEFAULT_OWNER_BUSINESS_LABEL` is exported from [pipeline.ts](claude-code/channels/invoice/pipeline.ts) as the single source of truth for the default — used by [`buildTagNames`](claude-code/channels/invoice/pipeline.ts) (param default), [intake-worker.ts](claude-code/channels/invoice/intake-worker.ts), and [telegram-notify.ts](claude-code/channels/telegram-notify.ts).
   - Regression-lock test in [regression-lock.test.ts](claude-code/channels/regression-lock.test.ts) asserts `OWNERS`/`DOC_OWNERS` contain `business` (not `techlab`) and `DEFAULT_OWNER_BUSINESS_LABEL === "techlab"`.
   - No behavior change: default label `techlab` preserves all existing Paperless tags, Telegram commands, and storage paths.
+- **`OWNER_BUSINESS_LABEL` is now REQUIRED — no code default, fail loud (task 96-label)**
+  - Removed `DEFAULT_OWNER_BUSINESS_LABEL = "techlab"` from both workspaces ([pipeline.ts](claude-code/channels/invoice/pipeline.ts) and [pollers/lib/owner-config.ts](pollers/lib/owner-config.ts)). No hard-coded company name remains anywhere in code.
+  - Added `requireBusinessLabel()` to both workspaces (documented twins). Throws `"OWNER_BUSINESS_LABEL must be set (configure it in komodo.toml / .env)"` when the var is unset or whitespace-only.
+  - Every read site updated: [intake-worker.ts](claude-code/channels/invoice/intake-worker.ts) (both `buildTagNames` and `buildScanTagNames` call sites), [telegram-notify.ts](claude-code/channels/telegram-notify.ts) `getBusinessLabel()`, and [gdrive-poller/src/main.ts](pollers/gdrive-poller/src/main.ts) `businessLabel()`.
+  - `buildTagNames` `businessLabel` parameter is now required (no default) — functions stay pure, env is read only at call sites.
+  - `docker-compose.yml`: `${OWNER_BUSINESS_LABEL:-techlab}` → `${OWNER_BUSINESS_LABEL}` for both gdrive-poller and pa-worker services (no compose default masking the throw).
+  - [.env.example](.env.example): marked REQUIRED in comment.
+  - Regression-lock test updated: drops `DEFAULT_OWNER_BUSINESS_LABEL === "techlab"` assertion; adds `requireBusinessLabel()` throw/return tests (save + restore env).
+  - Behavior-neutral for real deployments: `komodo.toml` and `.env` already set `OWNER_BUSINESS_LABEL=techlab`. Only a misconfig (unset var) now fails loud instead of silently using `"techlab"`.
+  - Test preloads ([test-preload.ts](claude-code/channels/test-preload.ts) and [pollers/test-preload.ts](pollers/test-preload.ts)) seed `OWNER_BUSINESS_LABEL=techlab` as a test fixture default.
 
 ## 2026-06-18
 

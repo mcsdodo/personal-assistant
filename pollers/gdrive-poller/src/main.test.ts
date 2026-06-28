@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { openDb as openGdriveDb } from "../../lib/gdrive-db";
 import { openWorkflowDb } from "../../lib/workflow-db";
@@ -93,8 +93,29 @@ describe("gdrive-poller processNewFiles", () => {
 });
 
 describe("ownerFolderToRole", () => {
-  it("maps the OWNER_BUSINESS_LABEL folder (default techlab) to business", () => {
+  let savedLabel: string | undefined;
+
+  beforeEach(() => {
+    savedLabel = process.env.OWNER_BUSINESS_LABEL;
+    process.env.OWNER_BUSINESS_LABEL = "techlab";
+  });
+
+  afterEach(() => {
+    if (savedLabel === undefined) {
+      delete process.env.OWNER_BUSINESS_LABEL;
+    } else {
+      process.env.OWNER_BUSINESS_LABEL = savedLabel;
+    }
+  });
+
+  it("maps the OWNER_BUSINESS_LABEL folder to business", () => {
     expect(ownerFolderToRole("techlab")).toBe("business");
+  });
+
+  it("maps a custom OWNER_BUSINESS_LABEL folder to business", () => {
+    process.env.OWNER_BUSINESS_LABEL = "acme";
+    expect(ownerFolderToRole("acme")).toBe("business");
+    expect(ownerFolderToRole("techlab")).toBeNull();
   });
 
   it("maps the personal folder to personal", () => {
@@ -103,6 +124,5 @@ describe("ownerFolderToRole", () => {
 
   it("returns null for any unknown owner-folder name (fail loud)", () => {
     expect(ownerFolderToRole("_documents_intake")).toBeNull();
-    expect(ownerFolderToRole("acme")).toBeNull();
   });
 });

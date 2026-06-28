@@ -236,12 +236,20 @@ export function resolveMonthTag(inputs: MonthTagInputs): string | null {
 // ── buildTagNames ───────────────────────────────────────────────────────
 
 /**
- * Default value for the configurable business-owner label.
- * Referenced by buildTagNames (param default), intake-worker, and telegram-notify
- * so all three sites share a single source of truth.
- * Exported so callers can use it as a fallback: `process.env.OWNER_BUSINESS_LABEL ?? DEFAULT_OWNER_BUSINESS_LABEL`.
+ * Read OWNER_BUSINESS_LABEL from env, throwing a clear error if it is unset
+ * or empty. Call sites in the claude-code workspace use this so a misconfigured
+ * deployment fails loud at use-time rather than silently falling back to a
+ * hard-coded company name.
+ *
+ * Twin: pollers/lib/owner-config.ts exports an identical copy (separate
+ * workspace, no shared module path — same pattern as the schema twin).
  */
-export const DEFAULT_OWNER_BUSINESS_LABEL = "techlab";
+export function requireBusinessLabel(): string {
+  const v = process.env.OWNER_BUSINESS_LABEL?.trim();
+  if (!v) throw new Error(
+    "OWNER_BUSINESS_LABEL must be set (configure it in komodo.toml / .env)");
+  return v;
+}
 
 /**
  * Build the list of tag NAMES from classification metadata.
@@ -251,11 +259,14 @@ export const DEFAULT_OWNER_BUSINESS_LABEL = "techlab";
  * (e.g. `"2940-61"` from a buggy upstream caller) cannot leak into Paperless and
  * silently auto-create a junk tag. If invalid, the document is tagged without a
  * month — better than fabricating one.
+ *
+ * `businessLabel` is REQUIRED — callers must pass it (obtain via `requireBusinessLabel()`
+ * or pass a test fixture value). The function is pure and does not read env itself.
  */
 export function buildTagNames(
   classification: { owner: string | null; doc_type: string | null; is_fuel: boolean },
   monthTag: string | null,
-  businessLabel = DEFAULT_OWNER_BUSINESS_LABEL,
+  businessLabel: string,
 ): string[] {
   const tags: string[] = [];
   tags.push(classification.owner === "business" ? businessLabel : "personal");
@@ -273,11 +284,13 @@ export function buildTagNames(
  * bucket (task 96 — no more positional re-parse of the watch_folder string).
  *
  * Owner-aware, mirroring the email path's `buildTagNames`:
- *   - owner tag = `businessLabel` (default {@link DEFAULT_OWNER_BUSINESS_LABEL})
- *     when `owner === "business"`, else the literal `"personal"`.
+ *   - owner tag = `businessLabel` when `owner === "business"`, else `"personal"`.
  *   - `"accounting"` is pushed ONLY for `bucket === "accounting"` AND
  *     `owner === "business"` — a personal accounting drop is not a business
  *     bookkeeping document.
+ *
+ * `businessLabel` is REQUIRED — callers must pass it (obtain via `requireBusinessLabel()`
+ * or pass a test fixture value). The function is pure and does not read env itself.
  */
 export function buildScanTagNames(
   owner: "business" | "personal",

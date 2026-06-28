@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { buildGuidanceReplyMarkup, formatGuidanceRequest, formatNotification } from "./telegram-notify";
 
 describe("formatNotification", () => {
@@ -309,11 +309,15 @@ describe("buildGuidanceReplyMarkup", () => {
 // ── OWNER_BUSINESS_LABEL env var ────────────────────────────────────────────
 
 describe("formatNotification — OWNER_BUSINESS_LABEL", () => {
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env.OWNER_BUSINESS_LABEL; });
   afterEach(() => {
-    delete process.env.OWNER_BUSINESS_LABEL;
+    if (saved === undefined) delete process.env.OWNER_BUSINESS_LABEL;
+    else process.env.OWNER_BUSINESS_LABEL = saved;
   });
 
-  test("default (no env var): business owner shows 'techlab' in summary", () => {
+  test("OWNER_BUSINESS_LABEL=techlab: business owner shows 'techlab' in summary", () => {
+    process.env.OWNER_BUSINESS_LABEL = "techlab";
     const msg = formatNotification({
       outcome: "uploaded",
       vendor: "Telekom",
@@ -360,11 +364,15 @@ describe("formatNotification — OWNER_BUSINESS_LABEL", () => {
 });
 
 describe("formatGuidanceRequest — OWNER_BUSINESS_LABEL", () => {
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env.OWNER_BUSINESS_LABEL; });
   afterEach(() => {
-    delete process.env.OWNER_BUSINESS_LABEL;
+    if (saved === undefined) delete process.env.OWNER_BUSINESS_LABEL;
+    else process.env.OWNER_BUSINESS_LABEL = saved;
   });
 
-  test("default: business action renders /techlab command", () => {
+  test("OWNER_BUSINESS_LABEL=techlab: business action renders /techlab command", () => {
+    process.env.OWNER_BUSINESS_LABEL = "techlab";
     const msg = formatGuidanceRequest({
       job_id: "abc123de-aaaa-bbbb-cccc-111122223333",
       reason: "classifier_unknown",
@@ -391,11 +399,15 @@ describe("formatGuidanceRequest — OWNER_BUSINESS_LABEL", () => {
 });
 
 describe("buildGuidanceReplyMarkup — OWNER_BUSINESS_LABEL", () => {
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env.OWNER_BUSINESS_LABEL; });
   afterEach(() => {
-    delete process.env.OWNER_BUSINESS_LABEL;
+    if (saved === undefined) delete process.env.OWNER_BUSINESS_LABEL;
+    else process.env.OWNER_BUSINESS_LABEL = saved;
   });
 
-  test("default: business owner button shows 'Techlab'", () => {
+  test("OWNER_BUSINESS_LABEL=techlab: business owner button shows 'Techlab'", () => {
+    process.env.OWNER_BUSINESS_LABEL = "techlab";
     const markup = buildGuidanceReplyMarkup({
       job_id: "abc12345-aaaa-bbbb-cccc-111122223333",
       suggested_actions: ["set:owner=business", "skip"],

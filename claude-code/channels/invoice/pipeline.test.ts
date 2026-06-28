@@ -356,35 +356,35 @@ describe("resolveOwner", () => {
 
 describe("buildTagNames", () => {
   test("personal owner gets personal tag", () => {
-    const tags = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: false }, "2026-04");
+    const tags = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: false }, "2026-04", "techlab");
     expect(tags).toContain("personal");
     expect(tags).toContain("2026-04");
     expect(tags).not.toContain("techlab");
   });
 
   test("business owner gets techlab tag + accounting tags", () => {
-    const tags = buildTagNames({ owner: "business", doc_type: "invoice", is_fuel: false }, "2026-04");
+    const tags = buildTagNames({ owner: "business", doc_type: "invoice", is_fuel: false }, "2026-04", "techlab");
     expect(tags).toContain("techlab");
     expect(tags).toContain("accounting");
   });
 
   test("fuel flag adds fuel tag", () => {
-    const tags = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: true }, "2026-04");
+    const tags = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: true }, "2026-04", "techlab");
     expect(tags).toContain("fuel");
   });
 
   test("credit_note doc_type adds credit-note tag", () => {
-    const tags = buildTagNames({ owner: "personal", doc_type: "credit_note", is_fuel: false }, null);
+    const tags = buildTagNames({ owner: "personal", doc_type: "credit_note", is_fuel: false }, null, "techlab");
     expect(tags).toContain("credit-note");
   });
 
   test("account_statement doc_type adds account-statement tag", () => {
-    const tags = buildTagNames({ owner: "personal", doc_type: "account_statement", is_fuel: false }, null);
+    const tags = buildTagNames({ owner: "personal", doc_type: "account_statement", is_fuel: false }, null, "techlab");
     expect(tags).toContain("account-statement");
   });
 
   test("null month_tag is not included", () => {
-    const tags = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: false }, null);
+    const tags = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: false }, null, "techlab");
     expect(tags).not.toContain(null);
     expect(tags).toEqual(["personal"]);
   });
@@ -395,6 +395,7 @@ describe("buildTagNames", () => {
     const tags = buildTagNames(
       { owner: "business", doc_type: "invoice", is_fuel: false },
       "2940-61",
+      "techlab",
     );
     expect(tags).not.toContain("2940-61");
     expect(tags).toEqual(["techlab", "accounting"]);
@@ -404,6 +405,7 @@ describe("buildTagNames", () => {
     const tags = buildTagNames(
       { owner: "personal", doc_type: "invoice", is_fuel: false },
       "2026-13",
+      "techlab",
     );
     expect(tags).not.toContain("2026-13");
     expect(tags).toEqual(["personal"]);
@@ -413,6 +415,7 @@ describe("buildTagNames", () => {
     const tags = buildTagNames(
       { owner: "personal", doc_type: "invoice", is_fuel: false },
       "2026-04",
+      "techlab",
     );
     expect(tags).toContain("2026-04");
   });
@@ -425,6 +428,7 @@ describe("buildTagNames", () => {
     const tags = buildTagNames(
       { owner: "personal", doc_type: "payslip", is_fuel: false },
       "2026-03",
+      "techlab",
     );
     expect(tags).toEqual(["personal", "2026-03"]);
     expect(tags).not.toContain("accounting");
@@ -432,16 +436,16 @@ describe("buildTagNames", () => {
   });
 
   test("owner-based accounting logic unchanged (email path)", () => {
-    const withBusiness = buildTagNames({ owner: "business", doc_type: "invoice", is_fuel: false }, "2026-03");
+    const withBusiness = buildTagNames({ owner: "business", doc_type: "invoice", is_fuel: false }, "2026-03", "techlab");
     expect(withBusiness).toContain("accounting");
-    const withPersonal = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: false }, "2026-03");
+    const withPersonal = buildTagNames({ owner: "personal", doc_type: "invoice", is_fuel: false }, "2026-03", "techlab");
     expect(withPersonal).not.toContain("accounting");
   });
 
   // ── OWNER_BUSINESS_LABEL configurability ──
 
-  test("business owner with default businessLabel gets 'techlab' tag", () => {
-    const tags = buildTagNames({ owner: "business", doc_type: "invoice", is_fuel: false }, "2026-04");
+  test("business owner with explicit businessLabel 'techlab' gets 'techlab' tag", () => {
+    const tags = buildTagNames({ owner: "business", doc_type: "invoice", is_fuel: false }, "2026-04", "techlab");
     expect(tags).toContain("techlab");
     expect(tags[0]).toBe("techlab");
   });
