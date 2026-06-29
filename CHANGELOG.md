@@ -6,6 +6,12 @@ This project was developed as part of a private monorepo. This changelog was gen
 
 ## 2026-06-29
 
+### Added
+- **OTel span coverage for scan pipeline gaps (task 98)**
+  - [`invoice-worker.gdrive_download`](claude-code/channels/invoice/download-service.ts) — wraps the `fetch(downloadUrl)` call in `downloadFromGdrive`; attributes: `file.id`, `file.name`, `file.content_type`. Closes the ~300ms GDrive download gap that was invisible between the MCP span and `scan-worker.execute`.
+  - `classification-wait` sentinel span — emitted at resume time in [`intake-worker.ts`](claude-code/channels/invoice/intake-worker.ts) after both `classify_email` and `classify_document` resume paths. Bridges the ~60s park-to-resume gap across two separate process executions using a fake remote-parent pattern (stored `sentinel_trace_id` / `sentinel_parent_span_id` / `sentinel_start_ms` in the `classification_request_meta` job event).
+  - [`paperless-adapter.wait_for_consumption`](claude-code/channels/paperless-adapter.ts) — wraps the Paperless task polling loop; attributes: `task.uuid` (at creation), `doc.id` (set on SUCCESS before the 10s OCR-grace sleep). Makes the ~25s Paperless consumption wait visible as a child span inside `invoice-worker.set_fields`.
+
 ### Fixed
 - personal-assistant: create_scan_intake_job reads owner/bucket/folder_id from gdrive audit row, fixing manual scan reprocess
 - gdrive-poller: persist owner/bucket/folder_id onto gdrive.db audit row (v3 migration) so the manual-reprocess path can replay them
