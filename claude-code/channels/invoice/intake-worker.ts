@@ -23,8 +23,8 @@ import type { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { extname } from "path";
 
-import { getTracer, getMeter, SpanStatusCode } from "../tracing";
-import type { Span } from "../tracing";
+import { getTracer, getMeter, SpanStatusCode, context, trace } from "../tracing";
+import type { Span, Tracer } from "../tracing";
 
 import {
   addJobEvent,
@@ -245,6 +245,44 @@ const accountantSkippedCounter = meter.createCounter("invoice_worker_accountant_
   description: "Accountant non-invoice emails (questions, payslips, payment orders, close) skipped before upload, by reason",
 });
 const ACCOUNTANT_SKIP_REASONS = ["query", "payslip", "payment_order", "close", "other"] as const;
+
+// ── Classification-wait sentinel span ─────────────────────────────────
+//
+// The ~60s gap while a job is parked for Claude classification is invisible
+// in traces. emitSentinelSpan closes that gap retroactively at resume time
+// by reading the stored traceId/spanId/startMs from the classification_request_meta
+// event and emitting a child span with the stored start time.
+function emitSentinelSpan(
+  tracer: Tracer,
+  events: ReturnType<typeof getJobEvents>,
+  step: "classify_email" | "classify_document",
+): void {
+  const meta = events.find(
+    (e) =>
+      e.event_type === "classification_request_meta" &&
+      (e.data as Record<string, unknown>)?.["step"] === step,
+  );
+  if (!meta) return;
+  const d = meta.data as Record<string, unknown>;
+  const traceId = d["sentinel_trace_id"] as string | undefined;
+  const parentSpanId = d["sentinel_parent_span_id"] as string | undefined;
+  const startMs = d["sentinel_start_ms"] as number | undefined;
+  if (!traceId || !parentSpanId || !startMs) return;
+
+  const ctx = trace.setSpanContext(context.active(), {
+    traceId,
+    spanId: parentSpanId,
+    traceFlags: 1,
+    isRemote: true,
+  });
+  context.with(ctx, () => {
+    const s = tracer.startSpan("classification-wait", {
+      startTime: startMs,
+      attributes: { "classification.step": step },
+    });
+    s.end();
+  });
+}
 
 // ── Guidance resume helpers ────────────────────────────────────────────
 //
@@ -608,6 +646,7 @@ export async function executeInvoiceIntake(
       // Step 0: Email classification via channel
       const cachedEmailClass = completedSteps.get("classify_email");
       if (!cachedEmailClass?.result) {
+        const _activeCtx = trace.getActiveSpan()?.spanContext();
         await parkForClassification(db, job.id, {
           step: "classify_email",
           parkedPayload: {
@@ -623,6 +662,14 @@ export async function executeInvoiceIntake(
             // Pre-resolve here so the subagent can fetch the body in one turn
             // (matches the strict maxTurns: 2 contract: one MCP call + final JSON).
             ...(input.email_source === "gmail" ? { user_google_email: GOOGLE_EMAIL } : {}),
+            step: "classify_email",
+            ...(_activeCtx
+              ? {
+                  sentinel_trace_id: _activeCtx.traceId,
+                  sentinel_parent_span_id: _activeCtx.spanId,
+                  sentinel_start_ms: Date.now(),
+                }
+              : {}),
           },
         }, logger);
         outcome = "awaiting_classification";
@@ -630,6 +677,8 @@ export async function executeInvoiceIntake(
         span.setStatus({ code: SpanStatusCode.OK });
         return;
       }
+
+      emitSentinelSpan(tracer, events, "classify_email");
 
       const classification = cachedEmailClass.result as InvoiceClassification;
       // `vendor` is nullable when action=ignore — the classifier has no
@@ -783,6 +832,7 @@ export async function executeInvoiceIntake(
       // Step 1.5: Document classification via channel (non-blocking)
       const cachedDocClassification = completedSteps.get("classify_document");
       if (!cachedDocClassification?.result) {
+        const _activeCtx = trace.getActiveSpan()?.spanContext();
         await parkForClassification(db, job.id, {
           step: "classify_document",
           parkedPayload: { file_path: filePath },
@@ -791,6 +841,14 @@ export async function executeInvoiceIntake(
             job_id: job.id,
             file_path: filePath,
             vendor: classification.vendor,
+            step: "classify_document",
+            ...(_activeCtx
+              ? {
+                  sentinel_trace_id: _activeCtx.traceId,
+                  sentinel_parent_span_id: _activeCtx.spanId,
+                  sentinel_start_ms: Date.now(),
+                }
+              : {}),
           },
         }, logger);
         outcome = "awaiting_classification";
@@ -798,6 +856,8 @@ export async function executeInvoiceIntake(
         span.setStatus({ code: SpanStatusCode.OK });
         return;
       }
+
+      emitSentinelSpan(tracer, events, "classify_document");
 
       // Merge doc classification into email classification.
       // mergeClassifications carries forward ALL doc keys (shared + doc-only),
@@ -1289,6 +1349,7 @@ export async function executeScanIntake(
       // Step 2: Document classification via channel
       const cachedDocClassification = completedSteps.get("classify_document");
       if (!cachedDocClassification?.result) {
+        const _activeCtx = trace.getActiveSpan()?.spanContext();
         await parkForClassification(db, job.id, {
           step: "classify_document",
           parkedPayload: { file_path: filePath },
@@ -1297,6 +1358,14 @@ export async function executeScanIntake(
             job_id: job.id,
             file_path: filePath,
             source: "gdrive",
+            step: "classify_document",
+            ...(_activeCtx
+              ? {
+                  sentinel_trace_id: _activeCtx.traceId,
+                  sentinel_parent_span_id: _activeCtx.spanId,
+                  sentinel_start_ms: Date.now(),
+                }
+              : {}),
           },
         }, logger);
         outcome = "awaiting_classification";
@@ -1304,6 +1373,8 @@ export async function executeScanIntake(
         span.setStatus({ code: SpanStatusCode.OK });
         return;
       }
+
+      emitSentinelSpan(tracer, events, "classify_document");
 
       const cachedClassification = cachedDocClassification.result as ScanClassification;
       // Apply any pending `guidance_applied` patch so the user's choices
