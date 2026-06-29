@@ -20,7 +20,7 @@
 import { callMcpTool, extractText } from "./mcp-client";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
 import { findBestCorrespondentMatch } from "./fuzzy-match";
-import { getTracer, withSpan } from "./tracing";
+import { getTracer, withSpan, SpanStatusCode } from "./tracing";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -510,6 +510,7 @@ export class PaperlessAdapter {
         }
         logger.log(`Waiting for Paperless consumption (attempt ${attempt + 1}/12, status: ${task.status})`);
       }
+      span.setStatus({ code: SpanStatusCode.ERROR, message: "consumption timeout" });
       return { doc_id: docId, status: "TIMEOUT" };
     });
   }

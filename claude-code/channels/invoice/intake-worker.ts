@@ -261,10 +261,10 @@ function emitSentinelSpan(
   const meta = events.find(
     (e) =>
       e.event_type === "classification_request_meta" &&
-      (e.data as Record<string, unknown>)?.["step"] === step,
+      (JSON.parse(e.payload_json ?? "{}")?.step as string) === step,
   );
   if (!meta) return;
-  const d = meta.data as Record<string, unknown>;
+  const d = JSON.parse(meta.payload_json ?? "{}") as Record<string, unknown>;
   const traceId = d["sentinel_trace_id"] as string | undefined;
   const parentSpanId = d["sentinel_parent_span_id"] as string | undefined;
   const startMs = d["sentinel_start_ms"] as number | undefined;
@@ -663,7 +663,6 @@ export async function executeInvoiceIntake(
             // Pre-resolve here so the subagent can fetch the body in one turn
             // (matches the strict maxTurns: 2 contract: one MCP call + final JSON).
             ...(input.email_source === "gmail" ? { user_google_email: GOOGLE_EMAIL } : {}),
-            step: "classify_email",
             ...(activeCtx
               ? {
                   sentinel_trace_id: activeCtx.traceId,
@@ -842,7 +841,6 @@ export async function executeInvoiceIntake(
             job_id: job.id,
             file_path: filePath,
             vendor: classification.vendor,
-            step: "classify_document",
             ...(activeCtx
               ? {
                   sentinel_trace_id: activeCtx.traceId,
@@ -1359,7 +1357,6 @@ export async function executeScanIntake(
             job_id: job.id,
             file_path: filePath,
             source: "gdrive",
-            step: "classify_document",
             ...(activeCtx
               ? {
                   sentinel_trace_id: activeCtx.traceId,

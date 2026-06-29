@@ -48,6 +48,6 @@ export async function parkForClassification(
   logger: ClassificationStateLogger,
 ): Promise<void> {
   requestClassification(db, jobId, params.step, params.parkedPayload);
-  addJobEvent(db, jobId, "classification_request_meta", params.notificationMeta);
+  addJobEvent(db, jobId, "classification_request_meta", { step: params.step, ...params.notificationMeta });
   logger.log(`Job ${jobId} parked for ${params.step}`);
 }

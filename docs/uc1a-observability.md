@@ -42,19 +42,25 @@ gdrive-watcher.poll
 
 workflow.execute_job invoice_intake
 └── invoice-worker.execute {vendor} → {outcome}
+    ├── classification-wait          (sentinel; duration = time parked for classify_email)
     ├── invoice-worker.download
+    │   └── invoice-worker.gdrive_download  (when GDrive strategy)
+    ├── classification-wait          (sentinel; duration = time parked for classify_document)
     ├── invoice-worker.resolve_correspondent
     ├── invoice-worker.dedup
     ├── invoice-worker.resolve_tags
     ├── invoice-worker.upload
+    │   └── paperless-adapter.wait_for_consumption
     └── invoice-worker.set_fields
 
 workflow.execute_job scan_intake
 └── scan-worker.execute {vendor} → {outcome}
+    ├── classification-wait          (sentinel; duration = time parked for classify_document)
     ├── invoice-worker.resolve_correspondent
     ├── invoice-worker.dedup
     ├── invoice-worker.resolve_tags
     ├── invoice-worker.upload
+    │   └── paperless-adapter.wait_for_consumption
     ├── invoice-worker.set_fields
     └── invoice-worker.move_file
 ```
@@ -66,9 +72,11 @@ workflow.execute_job scan_intake
 3. **Worker** reads `job.trace_id` and creates its execution span as a child of the watcher's trace context.
 4. All spans in a job's lifecycle connect back to the watcher poll that discovered the email or file.
 
-### Classification gap
+### Classification gap (closed)
 
-When the worker parks a job for classification (`awaiting_classification`), the execution span ends. Claude's classification work (fetch email, run Haiku subagent, submit result) happens in a separate Claude Code session span tree. The resumed worker execution creates a new span. Both spans share the same job trace, but there is no explicit span link between the parking span and Claude's classification work.
+When the worker parks a job for classification (`awaiting_classification`), the execution span ends. Claude's classification work happens in a separate Claude Code session span tree. Both spans share the same job trace.
+
+The wait time is captured retroactively as a `classification-wait` sentinel span, emitted at resume time. At park time, the worker stores the active OTel span context and timestamp in the `classification_request_meta` job event (`sentinel_trace_id`, `sentinel_parent_span_id`, `sentinel_start_ms`). On resume, [`emitSentinelSpan`](./../../claude-code/channels/invoice/intake-worker.ts) reads these fields back and emits a child span with the stored start time — duration equals the actual classification wait. The sentinel appears as a child of `invoice-worker.execute` in the same trace.
 
 ## Email-watcher metrics (OTLP push from `email-watcher`, meter: `email-watcher`)
 
