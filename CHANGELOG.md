@@ -13,6 +13,8 @@ This project was developed as part of a private monorepo. This changelog was gen
   - [`paperless-adapter.wait_for_consumption`](claude-code/channels/paperless-adapter.ts) — wraps the Paperless task polling loop; attributes: `task.uuid` (at creation), `doc.id` (set on SUCCESS before the 10s OCR-grace sleep). Makes the ~25s Paperless consumption wait visible as a child span inside `invoice-worker.set_fields`.
 
 ### Fixed
+- personal-assistant: sentinel span (classification-wait) was silently no-oping — emitSentinelSpan read e.data (undefined); fixed to parse payload_json
+- personal-assistant: consumption TIMEOUT now marks span ERROR in Tempo instead of silently green
 - personal-assistant: create_scan_intake_job reads owner/bucket/folder_id from gdrive audit row, fixing manual scan reprocess
 - gdrive-poller: persist owner/bucket/folder_id onto gdrive.db audit row (v3 migration) so the manual-reprocess path can replay them
 - checker-mcp: match_invoices/get_month_status returned empty description/invoice_name/skip_label (wrong engine row keys)
