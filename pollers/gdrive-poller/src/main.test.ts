@@ -32,9 +32,14 @@ describe("gdrive-poller processNewFiles", () => {
 
     await processNewFiles(gdriveDb, wfDb, files, 5);
 
-    const audit = gdriveDb.prepare("SELECT id, watch_folder FROM gdrive_files").all();
+    const audit = gdriveDb.prepare("SELECT id, watch_folder, owner, bucket, folder_id FROM gdrive_files").all();
     expect(audit.length).toBe(1);
     expect((audit[0] as any).id).toBe("file-A");
+    // task 96 follow-up: the audit row also carries the resolved owner/bucket/folder_id
+    // so the manual create_scan_intake_job path can rebuild a schema-valid job.
+    expect((audit[0] as any).owner).toBe("business");
+    expect((audit[0] as any).bucket).toBe("accounting");
+    expect((audit[0] as any).folder_id).toBe("drive-acct-id");
 
     const jobs = wfDb.prepare("SELECT workflow_type, source_ref, input_json FROM jobs").all();
     expect(jobs.length).toBe(1);

@@ -75,6 +75,9 @@ describe("insertFile", () => {
     mime_type: "application/pdf",
     created_at: "2026-03-25T10:00:00Z",
     watch_folder: "techlab/invoicing",
+    owner: "business",
+    bucket: "accounting",
+    folder_id: "drive-folder-abc",
   };
 
   test("inserts a new file", () => {
@@ -87,6 +90,23 @@ describe("insertFile", () => {
     expect(row.created_at).toBe("2026-03-25T10:00:00Z");
     expect(row.watch_folder).toBe("techlab/invoicing");
     expect(row.discovered_at).toBeTruthy();
+  });
+
+  test("persists owner, bucket, and folder_id (manual-reprocess carry)", () => {
+    insertFile(db, {
+      id: "gdrive-personal",
+      filename: "scan.pdf",
+      mime_type: "application/pdf",
+      created_at: null,
+      watch_folder: "personal/accounting",
+      owner: "personal",
+      bucket: "accounting",
+      folder_id: "drive-folder-personal-acct",
+    });
+    const row = db.query("SELECT * FROM gdrive_files WHERE id = ?").get("gdrive-personal") as FileRow;
+    expect(row.owner).toBe("personal");
+    expect(row.bucket).toBe("accounting");
+    expect(row.folder_id).toBe("drive-folder-personal-acct");
   });
 
   test("ignores duplicate (INSERT OR IGNORE)", () => {
@@ -103,6 +123,9 @@ describe("insertFile", () => {
       mime_type: null,
       created_at: null,
       watch_folder: "techlab/documents",
+      owner: "business",
+      bucket: "documents",
+      folder_id: "drive-folder-docs",
     });
     const row = db.query("SELECT * FROM gdrive_files WHERE id = ?").get("gdrive-minimal") as FileRow;
     expect(row.filename).toBeNull();
@@ -127,6 +150,9 @@ describe("fileExists", () => {
       mime_type: "application/pdf",
       created_at: null,
       watch_folder: "techlab/invoicing",
+      owner: "business",
+      bucket: "accounting",
+      folder_id: "drive-folder-abc",
     });
     expect(fileExists(db, "gdrive-exist")).toBe(true);
   });
@@ -147,6 +173,9 @@ describe("hasAnyFiles", () => {
       mime_type: "application/pdf",
       created_at: null,
       watch_folder: "techlab/invoicing",
+      owner: "business",
+      bucket: "accounting",
+      folder_id: "drive-folder-abc",
     });
     expect(hasAnyFiles(db)).toBe(true);
   });

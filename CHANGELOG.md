@@ -4,6 +4,12 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-06-29
+
+### Fixed
+- personal-assistant: create_scan_intake_job reads owner/bucket/folder_id from gdrive audit row, fixing manual scan reprocess
+- gdrive-poller: persist owner/bucket/folder_id onto gdrive.db audit row (v3 migration) so the manual-reprocess path can replay them
+
 ## 2026-06-28
 
 ### Added

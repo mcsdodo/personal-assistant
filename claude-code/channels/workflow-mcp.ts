@@ -369,6 +369,72 @@ export function buildInvoiceIntakeInputPayload(
   };
 }
 
+export interface ScanIntakeInputPayload {
+  source: "gdrive";
+  file_id: string;
+  watch_folder: string;
+  month_tag: string;
+  owner: string;
+  bucket: string;
+  folder_id: string;
+  filename?: string;
+  force?: true;
+}
+
+// Builds the input_json payload for a manual `create_scan_intake_job` call.
+// The gdrive-poller resolves owner/bucket/folder_id once and persists them onto
+// the gdrive.db audit row (same role emails.db plays for the invoice path), so a
+// manual reprocess only needs the file_id — everything else is read back here.
+// Fails loud rather than emitting a schema-invalid job (the worker's
+// `validateScanIntakeInput` would reject a job missing owner/bucket/folder_id).
+export function buildScanIntakeInputPayload(
+  gdriveDbRo: Database,
+  args: { file_id: string; force: boolean; month_tag?: string },
+): ScanIntakeInputPayload {
+  const row = gdriveDbRo
+    .prepare("SELECT filename, watch_folder, owner, bucket, folder_id, created_at FROM gdrive_files WHERE id = ? LIMIT 1")
+    .get(args.file_id) as
+      | { filename: string | null; watch_folder: string | null; owner: string | null;
+          bucket: string | null; folder_id: string | null; created_at: string | null }
+      | null;
+  if (!row) {
+    throw new Error(
+      `gdrive:${args.file_id} not found in the gdrive audit DB — only files the poller has already seen (i.e. inside a configured watch folder) can be reprocessed by id`,
+    );
+  }
+  if (!row.owner || !row.bucket || !row.folder_id) {
+    throw new Error(
+      `gdrive:${args.file_id} audit row predates owner/bucket/folder_id (pre-migration row) — re-drop the file into its watch folder so the poller repopulates the resolved fields`,
+    );
+  }
+  const monthTag = args.month_tag ?? deriveMonthTag(row.created_at);
+  if (!monthTag) {
+    throw new Error(
+      `gdrive:${args.file_id} has no created_at to derive month_tag from — pass month_tag explicitly`,
+    );
+  }
+  return {
+    source: "gdrive",
+    file_id: args.file_id,
+    watch_folder: row.watch_folder ?? "",
+    month_tag: monthTag,
+    owner: row.owner,
+    bucket: row.bucket,
+    folder_id: row.folder_id,
+    ...(row.filename ? { filename: row.filename } : {}),
+    ...(args.force ? { force: true as const } : {}),
+  };
+}
+
+// YYYY-MM from an ISO timestamp, mirroring the gdrive-poller's month_tag rule
+// (`processNewFiles`). Returns null when the timestamp is absent/unparseable.
+function deriveMonthTag(createdAt: string | null): string | null {
+  if (!createdAt) return null;
+  const d = new Date(createdAt);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
 const mcp = new Server(
   { name: "workflow", version: "0.3.0" },
   {
@@ -416,17 +482,18 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         "Create a durable workflow job for a scanned document from Google Drive. " +
         "The worker handles the full pipeline: download, classification (via channel), upload. " +
+        "owner/bucket/folder_id/watch_folder/month_tag are read back from the gdrive audit DB by file_id " +
+        "(the poller resolved them once), so you only pass file_id. The file must already have been seen " +
+        "by the poller (i.e. live in a configured watch folder). " +
         "Set force=true to reprocess a file that already has a completed job.",
       inputSchema: {
         type: "object" as const,
         properties: {
-          file_id: { type: "string", description: "Google Drive file ID" },
-          watch_folder: { type: "string", description: "Watch folder path (e.g. techlab/invoicing)" },
-          month_tag: { type: "string", description: "YYYY-MM tag from scan date (hard rule)" },
-          filename: { type: "string", description: "Original filename from GDrive" },
+          file_id: { type: "string", description: "Google Drive file ID (must exist in the gdrive audit DB)" },
+          month_tag: { type: "string", description: "Optional YYYY-MM override; defaults to the scan date from the audit row" },
           force: { type: "boolean", description: "Bypass idempotency check" },
         },
-        required: ["file_id", "watch_folder", "month_tag"],
+        required: ["file_id"],
       },
     },
     {
@@ -627,21 +694,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "create_scan_intake_job": {
         const fileId = args?.file_id as string;
-        const watchFolder = args?.watch_folder as string;
-        const monthTag = args?.month_tag as string;
-        if (!fileId || !watchFolder || !monthTag) {
-          return { content: [text("Error: file_id, watch_folder, and month_tag are required")], isError: true };
+        if (!fileId) {
+          return { content: [text("Error: file_id is required")], isError: true };
         }
 
         const force = Boolean(args?.force);
-        const inputPayload = {
-          source: "gdrive",
-          file_id: fileId,
-          watch_folder: watchFolder,
-          month_tag: monthTag,
-          filename: (args?.filename as string | undefined) ?? undefined,
-          ...(force ? { force: true } : {}),
-        };
+        // Rebuild the full, schema-valid payload from the poller's audit row.
+        // Fails loud (no job created) if the file was never seen or its row
+        // predates owner/bucket/folder_id — surfaced to the caller as an error.
+        let inputPayload;
+        try {
+          inputPayload = buildScanIntakeInputPayload(getGdriveDbRo(), {
+            file_id: fileId,
+            force,
+            month_tag: (args?.month_tag as string | undefined) ?? undefined,
+          });
+        } catch (err) {
+          return { content: [text(`Error: ${err instanceof Error ? err.message : String(err)}`)], isError: true };
+        }
 
         const idempotencyKey = force
           ? `gdrive:${fileId}:force-${Date.now()}`

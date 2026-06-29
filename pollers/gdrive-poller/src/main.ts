@@ -118,6 +118,9 @@ export async function processNewFiles(
       mime_type: file.mimeType,
       created_at: file.createdTime,
       watch_folder: file.watchFolder,
+      owner: file.owner,
+      bucket: file.bucket,
+      folder_id: file.folderId,
     });
 
     const scanDate = new Date(file.createdTime);

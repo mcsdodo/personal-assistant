@@ -5,8 +5,10 @@ import {
   handleGetRecentEmails, handleGetEmailStats,
   handleGetGdriveScanStatus, handleGetGdriveScanStats,
   buildInvoiceIntakeInputPayload,
+  buildScanIntakeInputPayload,
   isJobState,
 } from "./workflow-mcp";
+import { validateScanIntakeInput } from "./workflow-schemas";
 import type { JobState } from "./workflow-db";
 
 describe("isJobState", () => {
@@ -84,13 +86,18 @@ function seedGdriveDb(path: string, rows: Array<Record<string, unknown>>): void 
   const db = new Database(path, { create: true });
   db.exec(`CREATE TABLE IF NOT EXISTS gdrive_files (
     id TEXT PRIMARY KEY, filename TEXT, mime_type TEXT, created_at TEXT,
-    watch_folder TEXT, discovered_at TEXT NOT NULL DEFAULT (datetime('now'))
+    watch_folder TEXT, owner TEXT, bucket TEXT, folder_id TEXT,
+    discovered_at TEXT NOT NULL DEFAULT (datetime('now'))
   );`);
-  const stmt = db.prepare(`INSERT INTO gdrive_files (id, filename, mime_type, created_at, watch_folder)
-                           VALUES (?, ?, ?, ?, ?)`);
+  const stmt = db.prepare(`INSERT INTO gdrive_files
+    (id, filename, mime_type, created_at, watch_folder, owner, bucket, folder_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const r of rows) {
     stmt.run(r.id as string, r.filename as string, r.mime_type as string,
-             r.created_at as string | null, r.watch_folder as string);
+             r.created_at as string | null, r.watch_folder as string,
+             (r.owner as string | null) ?? null,
+             (r.bucket as string | null) ?? null,
+             (r.folder_id as string | null) ?? null);
   }
   db.close();
 }
@@ -208,5 +215,89 @@ describe("buildInvoiceIntakeInputPayload", () => {
     expect(payload.sender).toBeNull();
     expect(payload.subject).toBeNull();
     expect(payload.received_at).toBeNull();
+  });
+});
+
+describe("buildScanIntakeInputPayload", () => {
+  it("rebuilds a schema-valid job from the gdrive.db audit row (no caller-supplied owner/bucket/folder_id)", () => {
+    const path = tmpPath("gdrive");
+    seedGdriveDb(path, [{
+      id: "1nyDd_personal_scan",
+      filename: "Scanned_20260628-0919.pdf",
+      mime_type: "application/pdf",
+      created_at: "2026-06-28T07:19:30Z",
+      watch_folder: "personal/accounting",
+      owner: "personal",
+      bucket: "accounting",
+      folder_id: "drive-personal-acct-id",
+    }]);
+    const roDb = openGdriveDbReadOnly(path);
+
+    const payload = buildScanIntakeInputPayload(roDb, {
+      file_id: "1nyDd_personal_scan",
+      force: false,
+    });
+
+    expect(payload.source).toBe("gdrive");
+    expect(payload.file_id).toBe("1nyDd_personal_scan");
+    expect(payload.watch_folder).toBe("personal/accounting");
+    expect(payload.owner).toBe("personal");
+    expect(payload.bucket).toBe("accounting");
+    expect(payload.folder_id).toBe("drive-personal-acct-id");
+    expect(payload.filename).toBe("Scanned_20260628-0919.pdf");
+    // month_tag derived from created_at (mirrors the poller's YYYY-MM)
+    expect(payload.month_tag).toBe("2026-06");
+    // the whole point: the rebuilt payload passes the worker's schema gate
+    expect(() => validateScanIntakeInput(payload)).not.toThrow();
+  });
+
+  it("includes force flag only when requested", () => {
+    const path = tmpPath("gdrive");
+    seedGdriveDb(path, [{
+      id: "f-force", filename: "s.pdf", mime_type: "application/pdf",
+      created_at: "2026-06-28T07:19:30Z", watch_folder: "techlab/accounting",
+      owner: "business", bucket: "accounting", folder_id: "fid",
+    }]);
+    const roDb = openGdriveDbReadOnly(path);
+
+    expect(buildScanIntakeInputPayload(roDb, { file_id: "f-force", force: true }).force).toBe(true);
+    expect("force" in buildScanIntakeInputPayload(roDb, { file_id: "f-force", force: false })).toBe(false);
+  });
+
+  it("honours a caller month_tag override", () => {
+    const path = tmpPath("gdrive");
+    seedGdriveDb(path, [{
+      id: "f-ovr", filename: "s.pdf", mime_type: "application/pdf",
+      created_at: "2026-06-28T07:19:30Z", watch_folder: "techlab/accounting",
+      owner: "business", bucket: "accounting", folder_id: "fid",
+    }]);
+    const roDb = openGdriveDbReadOnly(path);
+
+    const payload = buildScanIntakeInputPayload(roDb, {
+      file_id: "f-ovr", force: false, month_tag: "2026-05",
+    });
+    expect(payload.month_tag).toBe("2026-05");
+  });
+
+  it("fails loud when the file is not in the audit DB (file the poller never saw)", () => {
+    const path = tmpPath("gdrive");
+    seedGdriveDb(path, []);
+    const roDb = openGdriveDbReadOnly(path);
+
+    expect(() => buildScanIntakeInputPayload(roDb, { file_id: "ghost", force: false }))
+      .toThrow(/not found|audit/i);
+  });
+
+  it("fails loud on a pre-migration row missing owner/bucket/folder_id", () => {
+    const path = tmpPath("gdrive");
+    seedGdriveDb(path, [{
+      id: "f-legacy", filename: "old.pdf", mime_type: "application/pdf",
+      created_at: "2026-06-01T00:00:00Z", watch_folder: "techlab/accounting",
+      // owner/bucket/folder_id intentionally omitted → NULL (pre-v3 row)
+    }]);
+    const roDb = openGdriveDbReadOnly(path);
+
+    expect(() => buildScanIntakeInputPayload(roDb, { file_id: "f-legacy", force: false }))
+      .toThrow(/owner|bucket|folder_id|re-?drop|predates/i);
   });
 });
