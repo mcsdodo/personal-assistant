@@ -473,40 +473,45 @@ export class PaperlessAdapter {
    * attempts → 60s wall time + 10s grace for OCR/classification).
    */
   async waitForConsumption(taskUuid: string, logger: AdapterLogger): Promise<ConsumedDocument> {
-    let docId: number | undefined;
-    for (let attempt = 0; attempt < 12; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-      const taskRes = await fetch(
-        `${this.cfg.paperlessUrl}/api/tasks/?task_id=${taskUuid}`,
-        { headers: { Authorization: `Token ${this.cfg.paperlessToken}` } },
-      );
-      if (!taskRes.ok) continue;
-      const tasks = (await taskRes.json()) as Array<{
-        status: string;
-        result?: string;
-        related_document?: string;
-      }>;
-      const task = tasks[0];
-      if (!task) continue;
+    return withSpan(tracer, "paperless-adapter.wait_for_consumption", {
+      "task.uuid": taskUuid,
+    }, async (span) => {
+      let docId: number | undefined;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        const taskRes = await fetch(
+          `${this.cfg.paperlessUrl}/api/tasks/?task_id=${taskUuid}`,
+          { headers: { Authorization: `Token ${this.cfg.paperlessToken}` } },
+        );
+        if (!taskRes.ok) continue;
+        const tasks = (await taskRes.json()) as Array<{
+          status: string;
+          result?: string;
+          related_document?: string;
+        }>;
+        const task = tasks[0];
+        if (!task) continue;
 
-      if (task.status === "SUCCESS") {
-        const idMatch = task.result?.match(/document id (\d+)/i);
-        if (idMatch) docId = parseInt(idMatch[1], 10);
-        if (!docId && task.related_document) {
-          docId = parseInt(task.related_document, 10) || undefined;
+        if (task.status === "SUCCESS") {
+          const idMatch = task.result?.match(/document id (\d+)/i);
+          if (idMatch) docId = parseInt(idMatch[1], 10);
+          if (!docId && task.related_document) {
+            docId = parseInt(task.related_document, 10) || undefined;
+          }
+          // Wait for Paperless to finish all post-consumption processing
+          // (OCR, classification) before PATCHing custom fields — otherwise
+          // Paperless may overwrite them.
+          if (docId) span.setAttribute("doc.id", docId);
+          await new Promise((resolve) => setTimeout(resolve, 10000));
+          return { doc_id: docId, status: "SUCCESS", result: task.result };
+        } else if (task.status === "FAILURE") {
+          logger.log(`Warning: Paperless consumption failed: ${task.result?.slice(0, 200)}`);
+          return { doc_id: undefined, status: "FAILURE", result: task.result };
         }
-        // Wait for Paperless to finish all post-consumption processing
-        // (OCR, classification) before PATCHing custom fields — otherwise
-        // Paperless may overwrite them.
-        await new Promise((resolve) => setTimeout(resolve, 10000));
-        return { doc_id: docId, status: "SUCCESS", result: task.result };
-      } else if (task.status === "FAILURE") {
-        logger.log(`Warning: Paperless consumption failed: ${task.result?.slice(0, 200)}`);
-        return { doc_id: undefined, status: "FAILURE", result: task.result };
+        logger.log(`Waiting for Paperless consumption (attempt ${attempt + 1}/12, status: ${task.status})`);
       }
-      logger.log(`Waiting for Paperless consumption (attempt ${attempt + 1}/12, status: ${task.status})`);
-    }
-    return { doc_id: docId, status: "TIMEOUT" };
+      return { doc_id: docId, status: "TIMEOUT" };
+    });
   }
 
   // ── Custom fields ────────────────────────────────────────────────────
