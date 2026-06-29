@@ -391,26 +391,38 @@ export async function downloadFromGdrive(
   // Step 2: Download the actual file binary
   const resolvedFilename = filename ?? `gdrive-${fileId}`;
 
-  const response = await fetch(downloadUrl, { redirect: "follow" });
-  if (!response.ok) throw new Error(`GDrive download failed: ${response.status} ${response.statusText}`);
+  return withSpan(
+    tracer,
+    "invoice-worker.gdrive_download",
+    {
+      "file.id": fileId,
+      "file.name": resolvedFilename,
+    },
+    async (span) => {
+      const response = await fetch(downloadUrl, { redirect: "follow" });
+      if (!response.ok) throw new Error(`GDrive download failed: ${response.status} ${response.statusText}`);
 
-  const arrayBuffer = await response.arrayBuffer();
-  const contentBase64 = Buffer.from(arrayBuffer).toString("base64");
+      const arrayBuffer = await response.arrayBuffer();
+      const contentBase64 = Buffer.from(arrayBuffer).toString("base64");
 
-  // Determine content type from response or filename
-  let contentType = response.headers.get("content-type") ?? "application/pdf";
-  const ext = resolvedFilename.toLowerCase().split(".").pop();
-  if (contentType === "application/octet-stream") {
-    if (ext === "jpg" || ext === "jpeg") contentType = "image/jpeg";
-    else if (ext === "png") contentType = "image/png";
-    else if (ext === "heic") contentType = "image/heic";
-    else contentType = "application/pdf";
-  }
+      // Determine content type from response or filename
+      let contentType = response.headers.get("content-type") ?? "application/pdf";
+      const ext = resolvedFilename.toLowerCase().split(".").pop();
+      if (contentType === "application/octet-stream") {
+        if (ext === "jpg" || ext === "jpeg") contentType = "image/jpeg";
+        else if (ext === "png") contentType = "image/png";
+        else if (ext === "heic") contentType = "image/heic";
+        else contentType = "application/pdf";
+      }
 
-  return {
-    filename: resolvedFilename,
-    content_base64: contentBase64,
-    content_type: contentType,
-    size: arrayBuffer.byteLength,
-  };
+      span.setAttribute("file.content_type", contentType);
+
+      return {
+        filename: resolvedFilename,
+        content_base64: contentBase64,
+        content_type: contentType,
+        size: arrayBuffer.byteLength,
+      };
+    },
+  );
 }
