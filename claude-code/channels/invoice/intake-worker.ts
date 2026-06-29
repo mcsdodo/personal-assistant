@@ -25,6 +25,7 @@ import { extname } from "path";
 
 import { getTracer, getMeter, SpanStatusCode, context, trace } from "../tracing";
 import type { Span, Tracer } from "../tracing";
+import { TraceFlags } from "@opentelemetry/api";
 
 import {
   addJobEvent,
@@ -272,7 +273,7 @@ function emitSentinelSpan(
   const ctx = trace.setSpanContext(context.active(), {
     traceId,
     spanId: parentSpanId,
-    traceFlags: 1,
+    traceFlags: TraceFlags.SAMPLED,
     isRemote: true,
   });
   context.with(ctx, () => {
@@ -280,7 +281,7 @@ function emitSentinelSpan(
       startTime: startMs,
       attributes: { "classification.step": step },
     });
-    s.end();
+    s.end(); // end=now → duration = now − park time (the classification wait)
   });
 }
 
@@ -646,7 +647,7 @@ export async function executeInvoiceIntake(
       // Step 0: Email classification via channel
       const cachedEmailClass = completedSteps.get("classify_email");
       if (!cachedEmailClass?.result) {
-        const _activeCtx = trace.getActiveSpan()?.spanContext();
+        const activeCtx = trace.getActiveSpan()?.spanContext();
         await parkForClassification(db, job.id, {
           step: "classify_email",
           parkedPayload: {
@@ -663,10 +664,10 @@ export async function executeInvoiceIntake(
             // (matches the strict maxTurns: 2 contract: one MCP call + final JSON).
             ...(input.email_source === "gmail" ? { user_google_email: GOOGLE_EMAIL } : {}),
             step: "classify_email",
-            ...(_activeCtx
+            ...(activeCtx
               ? {
-                  sentinel_trace_id: _activeCtx.traceId,
-                  sentinel_parent_span_id: _activeCtx.spanId,
+                  sentinel_trace_id: activeCtx.traceId,
+                  sentinel_parent_span_id: activeCtx.spanId,
                   sentinel_start_ms: Date.now(),
                 }
               : {}),
@@ -832,7 +833,7 @@ export async function executeInvoiceIntake(
       // Step 1.5: Document classification via channel (non-blocking)
       const cachedDocClassification = completedSteps.get("classify_document");
       if (!cachedDocClassification?.result) {
-        const _activeCtx = trace.getActiveSpan()?.spanContext();
+        const activeCtx = trace.getActiveSpan()?.spanContext();
         await parkForClassification(db, job.id, {
           step: "classify_document",
           parkedPayload: { file_path: filePath },
@@ -842,10 +843,10 @@ export async function executeInvoiceIntake(
             file_path: filePath,
             vendor: classification.vendor,
             step: "classify_document",
-            ...(_activeCtx
+            ...(activeCtx
               ? {
-                  sentinel_trace_id: _activeCtx.traceId,
-                  sentinel_parent_span_id: _activeCtx.spanId,
+                  sentinel_trace_id: activeCtx.traceId,
+                  sentinel_parent_span_id: activeCtx.spanId,
                   sentinel_start_ms: Date.now(),
                 }
               : {}),
@@ -1349,7 +1350,7 @@ export async function executeScanIntake(
       // Step 2: Document classification via channel
       const cachedDocClassification = completedSteps.get("classify_document");
       if (!cachedDocClassification?.result) {
-        const _activeCtx = trace.getActiveSpan()?.spanContext();
+        const activeCtx = trace.getActiveSpan()?.spanContext();
         await parkForClassification(db, job.id, {
           step: "classify_document",
           parkedPayload: { file_path: filePath },
@@ -1359,10 +1360,10 @@ export async function executeScanIntake(
             file_path: filePath,
             source: "gdrive",
             step: "classify_document",
-            ...(_activeCtx
+            ...(activeCtx
               ? {
-                  sentinel_trace_id: _activeCtx.traceId,
-                  sentinel_parent_span_id: _activeCtx.spanId,
+                  sentinel_trace_id: activeCtx.traceId,
+                  sentinel_parent_span_id: activeCtx.spanId,
                   sentinel_start_ms: Date.now(),
                 }
               : {}),
