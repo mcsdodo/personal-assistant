@@ -9,6 +9,8 @@ This project was developed as part of a private monorepo. This changelog was gen
 ### Fixed
 - personal-assistant: create_scan_intake_job reads owner/bucket/folder_id from gdrive audit row, fixing manual scan reprocess
 - gdrive-poller: persist owner/bucket/folder_id onto gdrive.db audit row (v3 migration) so the manual-reprocess path can replay them
+- checker-mcp: match_invoices/get_month_status returned empty description/invoice_name/skip_label (wrong engine row keys)
+- personal-assistant: buildScanIntakeInputPayload re-validates the assembled job, failing loud on a corrupt audit row
 
 ## 2026-06-28
 

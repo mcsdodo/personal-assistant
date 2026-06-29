@@ -22,6 +22,7 @@ import {
   setJobState,
   submitClassification,
 } from "./workflow-db";
+import { validateScanIntakeInput } from "./workflow-schemas";
 
 import { initTracing, createLogger, getTracer, remoteParentContext, SpanStatusCode, shutdownTracing } from "./tracing";
 
@@ -413,7 +414,7 @@ export function buildScanIntakeInputPayload(
       `gdrive:${args.file_id} has no created_at to derive month_tag from — pass month_tag explicitly`,
     );
   }
-  return {
+  const payload: ScanIntakeInputPayload = {
     source: "gdrive",
     file_id: args.file_id,
     watch_folder: row.watch_folder ?? "",
@@ -424,6 +425,12 @@ export function buildScanIntakeInputPayload(
     ...(row.filename ? { filename: row.filename } : {}),
     ...(args.force ? { force: true as const } : {}),
   };
+  // Enforce the worker's contract here, at the boundary, instead of trusting the
+  // audit row's invariants. Makes the tool fail loud (no job created) on any
+  // corrupt/out-of-enum row rather than emitting a job the worker will later
+  // reject with schema_validation_failed.
+  validateScanIntakeInput(payload);
+  return payload;
 }
 
 // YYYY-MM from an ISO timestamp, mirroring the gdrive-poller's month_tag rule

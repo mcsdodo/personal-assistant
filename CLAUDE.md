@@ -225,7 +225,7 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 | `claude-code/channels/workflow-schemas.ts` | Runtime validation for InvoiceIntakeInput, ScanIntakeInput, EmailClassificationResult, DocumentClassificationResult |
 | `claude-code/channels/paperless-adapter.ts` | Unified Paperless boundary (MCP + REST). Owns correspondent/tag/doc-type/storage CRUD, dedup search, upload, PATCH, task polling, custom fields. |
 | `claude-code/channels/paperless-fields.ts` | Custom field registry — auto-creates fields on cold-start, resolves field IDs for the PATCH path. **Registered custom fields** (auto-created on cold-start): `total_amount` (float, EUR) — invoice total, set when classifier returned a number; `order_id` (string) — invoice number / order reference; `litres` (float) — fuel volume, set only when `is_fuel: true`; `receipt_datetime` (string) — `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD` fallback, used by external "kniha-jazd" car-expense tracker. |
-| `claude-code/channels/invoice-pipeline.ts` | Pure pipeline functions (mergeClassifications, resolveMonthTag, validMonthTag, parseServicePeriodStart, buildTagNames, generateTitle, getCompletedSteps) |
+| `claude-code/channels/invoice/pipeline.ts` | Pure pipeline functions (mergeClassifications, resolveMonthTag, validMonthTag, parseServicePeriodStart, buildTagNames, buildScanTagNames, generateTitle, getCompletedSteps) |
 | `claude-code/channels/invoice/intake-worker.ts` | Invoice + scan intake orchestrator (executeInvoiceIntake, executeScanIntake) |
 | `claude-code/channels/invoice/download-service.ts` | Download strategies: Outlook/Gmail attachments, link extraction, direct HTTP, GDrive |
 | `claude-code/channels/invoice/dedup-service.ts` | Duplicate detection (order_id + correspondent + amount comparison). Returns `force_refresh` outcome when an exact-amount duplicate is found AND the new email is strictly newer than the existing doc's source email (multi-stage vendor refresh, task 59). Date-aware comparison via `Date.parse` to tolerate the heterogeneous RFC 2822 / ISO 8601 timestamp formats the watchers store. |
@@ -293,7 +293,7 @@ Shared operational scaffolding for both pollers. Three pieces:
 
 Domain logic stays in each poller (Gmail/Outlook polling, Drive folder logic, audit DB schemas, OTel gauges).
 
-### claude-code/channels/invoice/intake-worker.ts (~1110 lines)
+### claude-code/channels/invoice/intake-worker.ts (~1615 lines)
 
 Deterministic job worker and pipeline orchestrator. Owns `executeInvoiceIntake` and `executeScanIntake`. Drives the full pipeline:
 
@@ -310,7 +310,7 @@ Deterministic job worker and pipeline orchestrator. Owns `executeInvoiceIntake` 
 
 Step-level resume via `getCompletedSteps` — on retry, the worker skips already-completed steps. Approval gates for `browser_required` / `manual_review` / `duplicate_likely`. **Force reprocess:** when the job input has `force: true`, dedup hits do NOT short-circuit — the worker re-runs the full pipeline and PATCHes the existing Paperless doc in place (preserves doc id, PDF, OCR), producing the `refreshed` outcome. **Multi-stage vendor refresh (task 59):** the email pipeline also passes a `RefreshDecisionContext` to `dedup-service.checkDuplicate` carrying the new email's `received_at` plus a `getLatestReceivedAtForDoc` lookup against `workflow.db`. When dedup hits AND the new email is strictly newer than the existing doc's source email, dedup returns `outcome: "force_refresh"` and the same PATCH path fires — automatically, no operator interaction. Scan pipeline left unchanged; multi-stage refresh is email-driven only.
 
-### claude-code/channels/paperless-adapter.ts (~485 lines)
+### claude-code/channels/paperless-adapter.ts (~576 lines)
 
 Unified Paperless boundary. Owns every operation that hits Paperless, regardless of transport. MCP for `list_correspondents`, `create_correspondent`, `list_tags`, `create_tag`, `list_document_types`. Direct HTTP for storage paths, dedup search, multipart upload (`/api/documents/post_document/`), task polling, document PATCH, custom field PATCH. The split is hidden from callers — they see one interface (`findCorrespondent`, `createCorrespondent`, `resolveTagIds`, `findDocumentTypeId`, `findStoragePathId`, `searchDocumentsByCustomFieldAndCorrespondent`, `uploadDocument`, `patchDocument`, `waitForConsumption`, `setCustomFields`).
 
@@ -320,7 +320,7 @@ All `list_*` MCP calls go through a private `listAllPages` helper that walks the
 
 Hand-rolled runtime validators (no zod) for the four boundary contracts: `InvoiceIntakeInput`, `ScanIntakeInput`, `EmailClassificationResult`, `DocumentClassificationResult`. Each validator throws `WorkflowSchemaError` with schema name, field, expected type, and actual value. `submitClassification` validates payloads on write (rejects malformed Claude outputs); both watchers validate job input before `createJob`; the worker validates `input_json` on every run.
 
-### claude-code/channels/workflow-mcp.ts (~440 lines)
+### claude-code/channels/workflow-mcp.ts (~894 lines)
 
 Durable job queue backed by SQLite (`workflow.db`). Stdio channel with health endpoint on :8003. Job states: queued → running → awaiting_classification → awaiting_approval → awaiting_user_guidance → completed/failed. Tools: `create_invoice_intake_job(email_source, message_id, force?)` (manual entry point — watchers create jobs automatically; used by hand only to reprocess an already-processed email with `force: true`, or to recover a poller-missed email with `force: false`), `create_scan_intake_job()`, `get_job()`, `list_jobs()`, `approve_job()`, `cancel_job()`, `submit_classification(job_id, step, result)`, `provide_guidance(job_id, guidance)` (resumes a job paused in `awaiting_user_guidance`; `guidance.action` is `skip | retry | fail | patch`, optional `decrypt_password` routed to a separate `guidance_password` event so password material never lands in the normal audit trail — see task 57 / "Guidance routing for paused jobs" in `claude-code/CLAUDE.md`). On boot, runs `sweepOrphanedDownloads()` to delete files > 7d old that aren't tied to an active job (defense-in-depth for download cleanup; per-job cleanup is automatic via `completeJob` / `failJob` / `cancelJob`). A separate 60s `setInterval` runs `sweepStaleGuidance` which nudges operators at 24h (rate-limited per job to one Telegram message per 6h via `last_reminder_at`) and auto-fails `awaiting_user_guidance` jobs at 72h.
 
@@ -639,7 +639,7 @@ bun test
 | `claude-code/channels/workflow-mcp.test.ts` | Read-only debug tools (`get_recent_emails`, `get_email_stats`, `get_gdrive_scan_*`) |
 | `claude-code/channels/download-helper.test.ts` | File reading, PDF decryption |
 | `claude-code/channels/invoice-links.test.ts` | Invoice link extraction from HTML |
-| `claude-code/channels/workflow-db.test.ts` | Job queue SQLite operations (legacy copy; canonical lives in `pollers/lib/`) |
+| `claude-code/channels/workflow-db.test.ts` | Job queue SQLite operations (maintained copy — refactored into `workflow/` submodules by task 79; twin of `pollers/lib/workflow-db.ts`, kept in sync across the two Docker build contexts) |
 | `claude-code/channels/fuzzy-match.test.ts` | Correspondent fuzzy matching |
 | `claude-code/channels/paperless-fields.test.ts` | Paperless custom field registry |
 | `claude-code/channels/workflow-core.test.ts` | Job dispatch logic |
@@ -650,7 +650,7 @@ bun test
 | `pollers/lib/gdrive-db.test.ts` | GDrive SQLite operations |
 | `pollers/lib/email-watcher-utils.test.ts` | Pure parsing functions (Gmail IDs, duration, metrics) |
 | `pollers/lib/watcher-runtime.test.ts` | Health server / managed MCP client / poll loop helpers |
-| `pollers/lib/workflow-db.test.ts` | Job queue schema (canonical) |
+| `pollers/lib/workflow-db.test.ts` | Job queue schema (twin of the channels copy; still a single-file module — keep the shared DDL + input-validators in sync) |
 | `pollers/lib/workflow-schemas.test.ts` | Runtime validators |
 | `pollers/email-poller/src/main.test.ts` | INITIAL_LOOKBACK seeding + fail-loud overflow guard |
 | `pollers/email-poller/src/main.integration.test.ts` | Email polling, dedup, direct job creation |

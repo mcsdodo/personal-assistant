@@ -288,6 +288,22 @@ describe("buildScanIntakeInputPayload", () => {
       .toThrow(/not found|audit/i);
   });
 
+  it("re-validates the assembled payload and fails loud on an out-of-enum owner", () => {
+    // A row whose owner column holds a non-enum value (the poller guards this at
+    // folder-resolution, but a corrupt/hand-edited row must not silently produce
+    // a job the worker will later reject with schema_validation_failed).
+    const path = tmpPath("gdrive");
+    seedGdriveDb(path, [{
+      id: "f-badowner", filename: "s.pdf", mime_type: "application/pdf",
+      created_at: "2026-06-28T07:19:30Z", watch_folder: "weird/accounting",
+      owner: "weird", bucket: "accounting", folder_id: "fid",
+    }]);
+    const roDb = openGdriveDbReadOnly(path);
+
+    expect(() => buildScanIntakeInputPayload(roDb, { file_id: "f-badowner", force: false }))
+      .toThrow(/ScanIntakeInput|owner/i);
+  });
+
   it("fails loud on a pre-migration row missing owner/bucket/folder_id", () => {
     const path = tmpPath("gdrive");
     seedGdriveDb(path, [{

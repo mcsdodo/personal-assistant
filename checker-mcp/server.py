@@ -3,8 +3,9 @@
 import os
 from datetime import date
 
-import uvicorn
 from mcp.server.fastmcp import FastMCP
+
+from result_format import clean_result, missing_invoices
 
 # Configuration constants live in match_invoices (the CLI entry point);
 # all engine logic now lives in the engine/ package.
@@ -81,7 +82,7 @@ def match_invoices(month: str) -> dict:
         global_matched_ids,
         total_amount_alt_field_id=h.total_amount_alt_field_id,
     )
-    return _clean_result(result)
+    return clean_result(result)
 
 
 @mcp.tool()
@@ -118,7 +119,7 @@ def match_invoices_range(month_from: str, month_to: str) -> list[dict]:
         for m in months
     ]
     filter_resolved_unmatched(results)
-    return [_clean_result(r) for r in results]
+    return [clean_result(r) for r in results]
 
 
 @mcp.tool()
@@ -172,49 +173,15 @@ def get_month_status(month: str | None = None) -> dict:
         "month": month,
         "stats": result["stats"],
         "has_statement": bool(result["header_doc_id"]),
-        "missing_invoices": [
-            {"amount": r["amount"], "description": r.get("description", "")}
-            for r in result["rows"]
-            if r["status"] == "missing"
-        ],
-    }
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────
-
-
-def _clean_result(result: dict) -> dict:
-    """Strip ANSI codes and internal fields from collect_month output."""
-    import re
-
-    ansi_re = re.compile(r"\033\[[0-9;]*m")
-
-    def clean_str(s):
-        return ansi_re.sub("", s) if isinstance(s, str) else s
-
-    cleaned_rows = []
-    for row in result.get("rows", []):
-        cleaned_rows.append(
-            {
-                "status": row.get("status", ""),
-                "amount": row.get("amount"),
-                "description": clean_str(row.get("description", "")),
-                "invoice_name": clean_str(row.get("invoice_name", "")),
-                "doc_id": row.get("doc_id"),
-                "skip_label": row.get("skip_label", ""),
-            }
-        )
-    return {
-        "month": result["month"],
-        "header": clean_str(result.get("header", "")),
-        "stats": result["stats"],
-        "rows": cleaned_rows,
+        "missing_invoices": missing_invoices(result),
     }
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import uvicorn
+
     app = mcp.streamable_http_app()
 
     # ASGI wrapper: health endpoint + Host header rewrite for FastMCP DNS rebinding
