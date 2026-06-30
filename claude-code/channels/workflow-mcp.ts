@@ -224,6 +224,22 @@ export function handleProvideGuidance(
 //
 // Wired into main() on the WORKFLOW_POLL_MS push tick (see below).
 // Exported so its tests can drive it directly.
+
+// Coerce every meta value to a string. Channel meta becomes XML attributes on
+// the <channel> tag, and Claude Code's notification handler validates them as
+// strings — a non-string value throws an uncaught ZodError that drops the
+// stdio transport and crash-loops the container. Exported for the regression test.
+export function stringifyMetaValues(
+  meta: Record<string, unknown>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(meta)) {
+    if (v === undefined || v === null) continue;
+    out[k] = typeof v === "string" ? v : String(v);
+  }
+  return out;
+}
+
 export async function pushPendingClassifications(
   dbInstance: Database,
   channel: Server,
@@ -252,9 +268,15 @@ export async function pushPendingClassifications(
   // step_completed before advancing). This loop is robust against future
   // changes that might queue several requests before the push tick fires.
   for (const row of pending) {
-    const meta = JSON.parse(row.payload_json);
-    const eventType = String(meta.event_type ?? "classify_email");
+    const rawMeta = JSON.parse(row.payload_json);
+    const eventType = String(rawMeta.event_type ?? "classify_email");
     const content = `${eventType} job_id=${row.job_id}`;
+    // Channel meta values become XML attributes on the <channel> tag — Claude
+    // Code's notification handler rejects any non-string value with an uncaught
+    // ZodError that tears down the stdio transport (task 98 sent a numeric
+    // sentinel_start_ms and crash-looped the whole pipeline). Coerce every
+    // value to a string so a stray non-string field can never do that again.
+    const meta = stringifyMetaValues(rawMeta);
     try {
       await channel.notification({
         method: "notifications/claude/channel",

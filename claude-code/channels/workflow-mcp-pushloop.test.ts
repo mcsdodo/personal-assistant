@@ -156,4 +156,43 @@ describe("pushPendingClassifications", () => {
     const pushedEvents = events.filter((e) => e.event_type === "classification_pushed");
     expect(pushedEvents.length).toBe(0);
   });
+
+  // Regression: task 98 wrote a numeric sentinel_start_ms into the breadcrumb
+  // meta. Channel meta becomes XML attributes on the <channel> tag, and Claude
+  // Code's notification handler throws an uncaught ZodError on any non-string
+  // value — which dropped the stdio transport and crash-looped the container on
+  // every classification push. The push loop must coerce all meta values to
+  // strings so the notification is never sent a non-string field.
+  test("coerces non-string meta values to strings before pushing", async () => {
+    const job = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify({ email_source: "gmail", message_id: "m3" }),
+      sourceRef: "gmail:m3",
+      idempotencyKey: "pushloop-C",
+      requiresApproval: false,
+    });
+    setJobState(db, job.id, "awaiting_classification");
+    addJobEvent(db, job.id, "classification_request_meta", {
+      event_type: "classify_email",
+      email_source: "gmail",
+      message_id: "m3",
+      job_id: job.id,
+      sentinel_trace_id: "abc123",
+      sentinel_parent_span_id: "def456",
+      sentinel_start_ms: 1782803304949, // numeric on purpose — must be stringified
+    });
+
+    const channel = makeFakeChannel();
+
+    await pushPendingClassifications(db, channel as any);
+
+    expect(channel.pushed.length).toBe(1);
+    const meta = channel.pushed[0].params.meta;
+    // Every value must be a string — no exceptions.
+    for (const [key, value] of Object.entries(meta)) {
+      expect(typeof value).toBe("string");
+      expect(`${key}=${typeof value}`).toBe(`${key}=string`);
+    }
+    expect(meta.sentinel_start_ms).toBe("1782803304949");
+  });
 });

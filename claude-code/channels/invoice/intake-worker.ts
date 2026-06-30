@@ -267,8 +267,11 @@ function emitSentinelSpan(
   const d = JSON.parse(meta.payload_json ?? "{}") as Record<string, unknown>;
   const traceId = d["sentinel_trace_id"] as string | undefined;
   const parentSpanId = d["sentinel_parent_span_id"] as string | undefined;
-  const startMs = d["sentinel_start_ms"] as number | undefined;
-  if (!traceId || !parentSpanId || !startMs) return;
+  // sentinel_start_ms is serialized as a string in the channel meta (Claude
+  // Code's channel protocol rejects non-string meta values — task 98 regression).
+  const rawStartMs = d["sentinel_start_ms"];
+  const startMs = rawStartMs !== undefined ? Number(rawStartMs) : undefined;
+  if (!traceId || !parentSpanId || !startMs || Number.isNaN(startMs)) return;
 
   const ctx = trace.setSpanContext(context.active(), {
     traceId,
@@ -667,7 +670,7 @@ export async function executeInvoiceIntake(
               ? {
                   sentinel_trace_id: activeCtx.traceId,
                   sentinel_parent_span_id: activeCtx.spanId,
-                  sentinel_start_ms: Date.now(),
+                  sentinel_start_ms: String(Date.now()),
                 }
               : {}),
           },
@@ -845,7 +848,7 @@ export async function executeInvoiceIntake(
               ? {
                   sentinel_trace_id: activeCtx.traceId,
                   sentinel_parent_span_id: activeCtx.spanId,
-                  sentinel_start_ms: Date.now(),
+                  sentinel_start_ms: String(Date.now()),
                 }
               : {}),
           },
@@ -1361,7 +1364,7 @@ export async function executeScanIntake(
               ? {
                   sentinel_trace_id: activeCtx.traceId,
                   sentinel_parent_span_id: activeCtx.spanId,
-                  sentinel_start_ms: Date.now(),
+                  sentinel_start_ms: String(Date.now()),
                 }
               : {}),
           },
