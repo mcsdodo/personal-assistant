@@ -56,6 +56,7 @@ INVOICE_TYPE_ID = 99  # document_type for invoices
 DOCUMENT_TYPE_ID = 10  # document_type for Document (statements, worklogs)
 TOTAL_AMOUNT_FIELD_ID = 50
 TOTAL_AMOUNT_ALT_FIELD_ID = 51
+RECEIPT_DATETIME_FIELD_ID = 52
 
 
 def _make_statement(doc_id, month_tag, content):
@@ -153,6 +154,7 @@ def _collect(
     doc_cache=None,
     global_matched_ids=None,
     alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID,
+    rd_field_id=RECEIPT_DATETIME_FIELD_ID,
 ):
     """Shorthand for collect_month with defaults."""
     return collect_month(
@@ -165,6 +167,7 @@ def _collect(
         doc_cache if doc_cache is not None else {},
         global_matched_ids,
         total_amount_alt_field_id=alt_field_id,
+        receipt_datetime_field_id=rd_field_id,
     )
 
 
@@ -826,6 +829,39 @@ class TestCollectMonthPending:
         result = _collect(client, "2026-02")
         assert len(result["rows"]) == 1
         assert result["rows"][0]["doc_id"] == 2
+
+    def test_pending_date_from_receipt_datetime(self):
+        """Pending row date comes from the receipt_datetime custom field."""
+        inv = _make_invoice(1, "inv", "inv.pdf", "2026-01", 50.00)
+        inv["custom_fields"].append(
+            {"field": RECEIPT_DATETIME_FIELD_ID, "value": "2026-01-15T13:45:00"}
+        )
+        inv["created"] = "2026-01-20T00:00:00+01:00"
+        client = _mock_client({TAG_IDS["2026-01"]: [inv]})
+        result = _collect(client, "2026-01")
+        assert result["rows"][0]["date"] == "2026-01-15"
+
+    def test_pending_date_falls_back_to_created(self):
+        """Without receipt_datetime, the row date comes from `created`."""
+        inv = _make_invoice(1, "inv", "inv.pdf", "2026-01", 50.00)
+        inv["created"] = "2026-01-20T00:00:00+01:00"
+        client = _mock_client({TAG_IDS["2026-01"]: [inv]})
+        result = _collect(client, "2026-01")
+        assert result["rows"][0]["date"] == "2026-01-20"
+
+    def test_pending_rows_sorted_oldest_first(self):
+        """Pending rows order ascending by date; blank dates sort last."""
+        inv_a = _make_invoice(1, "inv_a", "a.pdf", "2026-01", 10.00)
+        inv_a["created"] = "2026-01-20T00:00:00+01:00"
+        inv_b = _make_invoice(2, "inv_b", "b.pdf", "2026-01", 20.00)
+        inv_b["custom_fields"].append(
+            {"field": RECEIPT_DATETIME_FIELD_ID, "value": "2026-01-05"}
+        )
+        inv_c = _make_invoice(3, "inv_c", "c.pdf", "2026-01", 30.00)  # no date at all
+        client = _mock_client({TAG_IDS["2026-01"]: [inv_a, inv_b, inv_c]})
+        result = _collect(client, "2026-01")
+        assert [r["doc_id"] for r in result["rows"]] == [2, 1, 3]
+        assert [r["date"] for r in result["rows"]] == ["2026-01-05", "2026-01-20", ""]
 
 
 class TestCollectMonthCancelledMovements:

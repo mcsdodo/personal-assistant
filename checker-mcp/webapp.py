@@ -25,6 +25,7 @@ from match_invoices import (
     FILENAME_NOTE_FIELD_NAME,
     INVOICE_TYPE_NAME,
     PAPERLESS_URL,
+    RECEIPT_DATETIME_FIELD_NAME,
     TOTAL_AMOUNT_ALT_FIELD_NAME,
     TOTAL_AMOUNT_FIELD_NAME,
 )
@@ -193,6 +194,7 @@ def index():
     process_months = sorted(stmt_month_tags | set(display_months))
     doc_cache = {}
     global_matched_ids = set()
+    rd_field = client.get_custom_field_id(RECEIPT_DATETIME_FIELD_NAME)
     all_results = [
         collect_month(
             client,
@@ -204,6 +206,7 @@ def index():
             doc_cache,
             global_matched_ids,
             total_amount_alt_field_id=ta_alt_field,
+            receipt_datetime_field_id=rd_field,
         )
         for m in process_months
     ]

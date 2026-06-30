@@ -42,6 +42,7 @@ INVOICE_TYPE_NAME = "Invoice"  # only Invoice-typed docs are matched as candidat
 TOTAL_AMOUNT_FIELD_NAME = "total_amount"  # Paperless custom field name
 TOTAL_AMOUNT_ALT_FIELD_NAME = "total_amount_alt"  # alt amount for split payments
 FILENAME_NOTE_FIELD_NAME = "filename_note"  # optional label appended to filename in ZIP exports
+RECEIPT_DATETIME_FIELD_NAME = "receipt_datetime"  # receipt date, used to order pending rows
 
 
 def parse_income_prefixes(raw: str | None) -> tuple[str, ...]:

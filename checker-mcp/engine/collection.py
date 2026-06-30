@@ -28,6 +28,21 @@ from .models import PLCategory, SKIP_ACCOUNT_RULES, SKIP_RULES, SkipResult
 from .parsing import extract_invoice_amounts, parse_movements
 
 
+def _invoice_order_date(inv: dict, receipt_datetime_field_id: int | None) -> str:
+    """Derive a YYYY-MM-DD ordering date for a pending invoice row.
+
+    Prefers the `receipt_datetime` custom field (value may be
+    `YYYY-MM-DDTHH:MM:SS` or a bare `YYYY-MM-DD`), falling back to the
+    Paperless `created` timestamp. Returns "" when neither is available.
+    """
+    if receipt_datetime_field_id is not None:
+        for cf in inv.get("custom_fields", []):
+            if cf.get("field") == receipt_datetime_field_id and cf.get("value"):
+                return str(cf["value"])[:10]
+    created = inv.get("created")
+    return str(created)[:10] if created else ""
+
+
 def collect_month(
     client: PaperlessClient,
     yyyy_mm: str,
@@ -38,6 +53,7 @@ def collect_month(
     doc_cache: dict,
     global_matched_ids: set | None = None,
     total_amount_alt_field_id: int | None = None,
+    receipt_datetime_field_id: int | None = None,
 ) -> dict:
     """Process one month, return structured data."""
     result = {
@@ -116,21 +132,30 @@ def collect_month(
     stats = result["stats"]
 
     if not statements:
-        month_invoices = sorted(
-            [inv for inv in invoice_docs if tag_id in inv.get("tags", [])],
-            key=lambda d: d.get("original_file_name", d.get("title", "")),
-        )
+        month_invoices = [inv for inv in invoice_docs if tag_id in inv.get("tags", [])]
         if not month_invoices:
             result["header"] = f"No statement or invoices for {yyyy_mm}."
             return result
         result["header"] = f"=== {yyyy_mm} (no statement yet) ==="
+        # Order pending rows by a date derived from the doc (receipt_datetime
+        # custom field, else Paperless `created`) so the lines sort sensibly
+        # until a real statement arrives. Blank dates sort last.
+        for inv in month_invoices:
+            inv["_order_date"] = _invoice_order_date(inv, receipt_datetime_field_id)
+        month_invoices.sort(
+            key=lambda d: (
+                d["_order_date"] == "",
+                d["_order_date"],
+                d.get("original_file_name", d.get("title", "")),
+            )
+        )
         for inv in month_invoices:
             stats["total"] += 1
             stats["manual"] += 1
             amt = inv["_amounts"][0] if inv.get("_amounts") else 0.0
             result["rows"].append(
                 {
-                    "date": "",
+                    "date": inv["_order_date"],
                     "desc": "no statement".ljust(40),
                     "amount": f"{amt:>10.2f} ",
                     "status": "pending",
