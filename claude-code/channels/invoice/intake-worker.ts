@@ -247,6 +247,34 @@ const accountantSkippedCounter = meter.createCounter("invoice_worker_accountant_
 });
 const ACCOUNTANT_SKIP_REASONS = ["query", "payslip", "payment_order", "close", "other"] as const;
 
+const jobFailedCounter = meter.createCounter("invoice_worker_failed_total", {
+  description: "Terminal job failures by reason (failJob code) and workflow_type. Incremented at every failJob site; retryable outcomes are NOT counted.",
+});
+
+// Zero-seed the known series so the metric exists before the first real
+// failure — otherwise the Grafana alert query returns NoData until the first
+// failJob fires. Labels must be enumerated; OTel counters have no zero state.
+const FAILED_REASONS = ["invalid_input", "schema_validation_failed", "missing_owner", "invoice_intake_error", "scan_intake_error"] as const;
+for (const workflow_type of ["invoice_intake", "scan_intake"] as const) {
+  for (const reason of FAILED_REASONS) {
+    jobFailedCounter.add(0, { reason, workflow_type });
+  }
+}
+
+/**
+ * failJob + failure-metric increment. Use this at every terminal-failure site.
+ * Retryable paths call scheduleRetry (not failJob) and must NOT be metered.
+ */
+function failJobMetered(
+  db: import("bun:sqlite").Database,
+  jobId: string,
+  payload: { code: string; message: string; [k: string]: unknown },
+  workflow_type: "invoice_intake" | "scan_intake",
+): void {
+  failJob(db, jobId, payload);
+  jobFailedCounter.add(1, { reason: payload.code, workflow_type });
+}
+
 // ── Classification-wait sentinel span ─────────────────────────────────
 //
 // The ~60s gap while a job is parked for Claude classification is invisible
@@ -597,7 +625,7 @@ export async function executeInvoiceIntake(
   seedCounterFromDb(db);
   const rawInput = parseJobJson<unknown>(job.input_json);
   if (!rawInput) {
-    failJob(db, job.id, { code: "invalid_input", message: "Missing or invalid input_json" });
+    failJobMetered(db, job.id, { code: "invalid_input", message: "Missing or invalid input_json" }, "invoice_intake");
     return;
   }
   let input: InvoiceIntakeInputSchema;
@@ -608,12 +636,12 @@ export async function executeInvoiceIntake(
     input = validateInvoiceIntakeInput(rawInput);
   } catch (err) {
     if (err instanceof WorkflowSchemaError) {
-      failJob(db, job.id, {
+      failJobMetered(db, job.id, {
         code: "schema_validation_failed",
         message: err.message,
         schema: err.schemaName,
         field: err.field,
-      });
+      }, "invoice_intake");
       return;
     }
     throw err;
@@ -1032,7 +1060,7 @@ export async function executeInvoiceIntake(
       const rawOwner = merged.owner;
       if (!rawOwner) {
         const msg = "Missing owner field — document-classifier did not return owner.";
-        failJob(db, job.id, { code: "missing_owner", message: msg });
+        failJobMetered(db, job.id, { code: "missing_owner", message: msg }, "invoice_intake");
         logger.log(`Job ${job.id} failed: missing owner`);
         outcome = "failed";
         span.setAttribute("invoice.outcome", "failed");
@@ -1170,7 +1198,7 @@ export async function executeInvoiceIntake(
         outcome = "retryable";
         span.setAttribute("invoice.outcome", "retryable");
       } else {
-        failJob(db, job.id, errPayload);
+        failJobMetered(db, job.id, errPayload, "invoice_intake");
         logger.log(`Job ${job.id} failed permanently: ${message}`);
         if (notify) {
           const msg = formatNotification({
@@ -1236,7 +1264,7 @@ export async function executeScanIntake(
   seedCounterFromDb(db);
   const rawInput = parseJobJson<unknown>(job.input_json);
   if (!rawInput) {
-    failJob(db, job.id, { code: "invalid_input", message: "Missing or invalid input_json" });
+    failJobMetered(db, job.id, { code: "invalid_input", message: "Missing or invalid input_json" }, "scan_intake");
     return;
   }
   let input: ScanIntakeInput;
@@ -1244,12 +1272,12 @@ export async function executeScanIntake(
     input = validateScanIntakeInput(rawInput) as ScanIntakeInput;
   } catch (err) {
     if (err instanceof WorkflowSchemaError) {
-      failJob(db, job.id, {
+      failJobMetered(db, job.id, {
         code: "schema_validation_failed",
         message: err.message,
         schema: err.schemaName,
         field: err.field,
-      });
+      }, "scan_intake");
       return;
     }
     throw err;
@@ -1645,7 +1673,7 @@ export async function executeScanIntake(
         outcome = "retryable";
         span.setAttribute("invoice.outcome", "retryable");
       } else {
-        failJob(db, job.id, errPayload);
+        failJobMetered(db, job.id, errPayload, "scan_intake");
         await moveGdriveFileImpl(file_id, "errors", folder_id, GMAIL_MCP_URL, GOOGLE_EMAIL, logger).catch((moveErr) => {
           logger.log(`Failed to move file to errors/: ${moveErr instanceof Error ? moveErr.message : String(moveErr)}`);
         });
