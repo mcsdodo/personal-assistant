@@ -5,6 +5,7 @@ import { validateClassificationByStep, WorkflowSchemaError } from "../workflow-s
 import { nowIso } from "./schema";
 import { addJobEvent, getJobEvents } from "./events";
 import { failJob, getJob } from "./jobs";
+import { recordJobFailure } from "../metrics";
 
 /**
  * Park a running job in awaiting_classification state.
@@ -124,6 +125,7 @@ export function submitClassification(
         field: err.field,
         step,
       });
+      recordJobFailure("schema_validation_failed", job.workflow_type);
       return false;
     }
     throw err;

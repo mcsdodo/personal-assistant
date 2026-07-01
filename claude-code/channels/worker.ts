@@ -18,6 +18,7 @@
 import { Database } from "bun:sqlite";
 
 import { executeNextJob, reclaimStaleJobs } from "./workflow-core";
+import { recordJobFailure } from "./metrics";
 import { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
 import {
@@ -85,6 +86,7 @@ export function sweepStaleGuidance(
       code: "timed_out",
       reason: `paused for >${GUIDANCE_TIMEOUT_HOURS}h with no guidance`,
     });
+    recordJobFailure("timed_out", job.workflow_type);
   }
 
   const needsReminder = dbInstance.prepare(

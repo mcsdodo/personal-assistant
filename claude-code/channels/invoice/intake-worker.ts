@@ -44,7 +44,7 @@ import {
   type JobEventRow,
   type JobRow,
 } from "../workflow-db";
-import { guidanceRequestsTotal } from "../metrics";
+import { guidanceRequestsTotal, recordJobFailure } from "../metrics";
 import type { PaperlessFieldRegistry } from "../paperless-fields";
 import type { PaperlessAdapter } from "../paperless-adapter";
 import {
@@ -247,20 +247,6 @@ const accountantSkippedCounter = meter.createCounter("invoice_worker_accountant_
 });
 const ACCOUNTANT_SKIP_REASONS = ["query", "payslip", "payment_order", "close", "other"] as const;
 
-const jobFailedCounter = meter.createCounter("invoice_worker_failed_total", {
-  description: "Terminal job failures by reason (failJob code) and workflow_type. Incremented at every failJob site; retryable outcomes are NOT counted.",
-});
-
-// Zero-seed the known series so the metric exists before the first real
-// failure — otherwise the Grafana alert query returns NoData until the first
-// failJob fires. Labels must be enumerated; OTel counters have no zero state.
-const FAILED_REASONS = ["invalid_input", "schema_validation_failed", "missing_owner", "invoice_intake_error", "scan_intake_error"] as const;
-for (const workflow_type of ["invoice_intake", "scan_intake"] as const) {
-  for (const reason of FAILED_REASONS) {
-    jobFailedCounter.add(0, { reason, workflow_type });
-  }
-}
-
 /**
  * failJob + failure-metric increment. Use this at every terminal-failure site.
  * Retryable paths call scheduleRetry (not failJob) and must NOT be metered.
@@ -272,7 +258,7 @@ function failJobMetered(
   workflow_type: "invoice_intake" | "scan_intake",
 ): void {
   failJob(db, jobId, payload);
-  jobFailedCounter.add(1, { reason: payload.code, workflow_type });
+  recordJobFailure(payload.code, workflow_type);
 }
 
 // ── Classification-wait sentinel span ─────────────────────────────────

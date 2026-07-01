@@ -14,6 +14,7 @@ import {
   type JobRow,
 } from "./workflow-db";
 import { executeInvoiceIntake, executeScanIntake } from "./invoice/intake-worker";
+import { recordJobFailure } from "./metrics";
 import { createPaperlessAdapter } from "./paperless-adapter";
 import type { PaperlessFieldRegistry } from "./paperless-fields";
 import type { NotifyFn } from "./telegram-notify";
@@ -145,6 +146,7 @@ export async function executeNextJob(
             code: "unsupported_workflow_type",
             message: `Unsupported workflow type: ${job.workflow_type}`,
           });
+          recordJobFailure("unsupported_workflow_type", job.workflow_type);
           logger.log(`Job ${job.id} failed: unsupported workflow type`);
           break;
       }
@@ -160,6 +162,7 @@ export async function executeNextJob(
         logger.log(`Job ${job.id} scheduled for retry (attempt ${updated?.retry_count})`);
       } else {
         failJob(db, job.id, errPayload);
+        recordJobFailure("worker_exception", job.workflow_type);
         logger.log(`Job ${job.id} failed permanently after ${MAX_RETRIES} attempts`);
       }
       span.setStatus({
@@ -192,17 +195,18 @@ export function reclaimStaleJobs(db: Database, logger: WorkflowLogger): void {
   // timestamps ('2026-04-11T...') always sort greater than space-form cutoffs
   // ('2026-04-11 ...') and the query never matches any row code has ever updated.
   const stale = db.prepare(
-    `SELECT id FROM jobs
+    `SELECT id, workflow_type FROM jobs
      WHERE state IN ('running', 'awaiting_classification')
        AND datetime(updated_at) < datetime('now', '-' || ? || ' minutes')`
-  ).all(staleMinutes) as { id: string }[];
+  ).all(staleMinutes) as { id: string; workflow_type: string }[];
 
-  for (const { id } of stale) {
+  for (const { id, workflow_type } of stale) {
     if (shouldRetry(db, id)) {
       scheduleRetry(db, id, { code: "stale_timeout", message: `Job stale for ${staleMinutes}+ minutes` });
       logger.log(`Reclaimed stale job ${id}`);
     } else {
       failJob(db, id, { code: "stale_timeout", message: `Job stale for ${staleMinutes}+ minutes, max retries exhausted` });
+      recordJobFailure("stale_timeout", workflow_type);
       logger.log(`Failed stale job ${id} (max retries)`);
     }
   }
