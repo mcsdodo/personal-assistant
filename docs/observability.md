@@ -32,7 +32,7 @@ All workflow metrics are pushed via OTLP from each container; there is no
 |--------|-------|---------|
 | `email-watcher` | `email-watcher` | `email_watcher.emails`, `email_watcher.attachments`, `email_watcher.recent_discovered`, `email_watcher.jobs`, `email_watcher.backlog` |
 | `gdrive-watcher` | `gdrive-watcher` | `gdrive_watcher.files`, `gdrive_watcher.last_poll_seconds_ago` |
-| `workflow-mcp` (invoice worker) | `invoice-worker` | `invoice_worker_correspondents_total`, `invoice_worker_missing_month_tag_total` |
+| `workflow-mcp` (invoice worker) | `invoice-worker` | `invoice_worker_correspondents_total`, `invoice_worker_missing_month_tag_total`, `invoice_worker_failed_total` |
 
 See [`uc1a-observability.md`](uc1a-observability.md) for the full table with
 attributes, types, and queries.
