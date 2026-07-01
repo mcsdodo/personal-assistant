@@ -17,6 +17,11 @@
 
 import { Database } from "bun:sqlite";
 
+// MUST be the first project import: initializes OTel (registers the MeterProvider)
+// before any counter is constructed at module-load in the modules below. Without
+// this, worker metrics (invoice_worker_*, guidance) never export. See the file.
+import "./tracing-bootstrap";
+
 import { executeNextJob, reclaimStaleJobs } from "./workflow-core";
 import { recordJobFailure } from "./metrics";
 import { PaperlessFieldRegistry } from "./paperless-fields";
