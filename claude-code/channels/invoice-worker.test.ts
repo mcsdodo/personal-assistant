@@ -53,7 +53,7 @@ function makeInput(overrides: Partial<InvoiceIntakeInput> = {}): InvoiceIntakeIn
 /** Default email classification result (what Claude returns via submit_classification) */
 function defaultEmailClassification(overrides: Partial<InvoiceClassification> = {}): InvoiceClassification {
   return {
-    is_invoice: true,
+    should_file: true,
     confidence: "high",
     vendor: "Alza",
     doc_type: "invoice",
@@ -3575,7 +3575,7 @@ describe("invoice-worker accountant intent gate", () => {
     const job = createRunningJob(
       input,
       defaultEmailClassification({
-        is_invoice: false, action: "ignore", skip_reason: "query",
+        should_file: false, action: "ignore", skip_reason: "query",
         vendor: null, download_strategy: null, strategy_confidence: null, order_id: null,
       }),
     );
@@ -3592,7 +3592,7 @@ describe("invoice-worker accountant intent gate", () => {
     const job = createRunningJob(
       input,
       defaultEmailClassification({
-        is_invoice: false, action: "ignore",
+        should_file: false, action: "ignore",
         vendor: null, download_strategy: null, strategy_confidence: null, order_id: null,
       }),
     );

@@ -44,9 +44,9 @@ You must classify ANY email from ANY vendor — not just the known ones below. U
 
 The word "ticket" in English (and "lístok" in Slovak) is ambiguous. Classify by context:
 
-- **Paid-service receipt** → `is_invoice: true`. Sent by a parking app, transit operator, taxi service, toll operator, event/cinema, airline, etc. after the user paid for a service. The email is effectively a PDF receipt. Examples: HOPINTAXI / hopin.sk "Your parking ticket", SMS parking confirmations, ParkDots, bus/train e-tickets, airline boarding passes with fare breakdown.
-- **Penalty / infringement notice (fine)** → still `is_invoice: true`. A parking fine or traffic fine from a municipality or police is a payable obligation with a PDF — track it like an invoice. Set `requires_review: true` so the user sees it.
-- **Support/helpdesk ticket** (e.g. "Your support ticket #123 has been updated") → `is_invoice: false`. No payment, no document.
+- **Paid-service receipt** → `should_file: true`. Sent by a parking app, transit operator, taxi service, toll operator, event/cinema, airline, etc. after the user paid for a service. The email is effectively a PDF receipt. Examples: HOPINTAXI / hopin.sk "Your parking ticket", SMS parking confirmations, ParkDots, bus/train e-tickets, airline boarding passes with fare breakdown.
+- **Penalty / infringement notice (fine)** → still `should_file: true`. A parking fine or traffic fine from a municipality or police is a payable obligation with a PDF — track it like an invoice. Set `requires_review: true` so the user sees it.
+- **Support/helpdesk ticket** (e.g. "Your support ticket #123 has been updated") → `should_file: false`. No payment, no document.
 
 Default: if the sender is a commercial service provider and there is an attached PDF, assume it's a paid-service receipt, not a fine and not a helpdesk ticket.
 
@@ -58,7 +58,7 @@ These are patterns we've confirmed. For unknown vendors, use your judgment.
 - "Pripravené v AlzaBoxe / Obj. č. X" → invoice (final state, has "Stiahnuť faktúru" link)
 - "Vrátili sme vám X €" → credit note (has "Stiahnuť doklad" link)
 - "Informácie o prípade ASRE..." / "Potvrdenie o zaznamenaní..." → **ignore** (RMA, no invoice)
-- **Multi-stage order emails** (`Už to chystáme`, `Pripravené v AlzaBoxe`, `Pripravené v Alzaboxe`, `Odoslaná`, `Odoslané`, `Doručená`, `Doručené`, etc. — match on the order-lifecycle subject pattern, not an exhaustive word list): when the body contains a `Stiahnuť faktúru` link, classify as `is_invoice: true, action: "download_and_upload", download_strategy: "known_link"`. Each stage email may carry the same or an updated invoice for the same `order_id`; the worker dedups via `order_id + correspondent` and PATCHes the existing Paperless doc in place when a newer-stage email arrives (task 59). **Do not `ignore` Alza order-stage emails that have a `Stiahnuť faktúru` link.** Alza promo / newsletter emails (no `Stiahnuť faktúru` link) keep current `ignore` classification.
+- **Multi-stage order emails** (`Už to chystáme`, `Pripravené v AlzaBoxe`, `Pripravené v Alzaboxe`, `Odoslaná`, `Odoslané`, `Doručená`, `Doručené`, etc. — match on the order-lifecycle subject pattern, not an exhaustive word list): when the body contains a `Stiahnuť faktúru` link, classify as `should_file: true, action: "download_and_upload", download_strategy: "known_link"`. Each stage email may carry the same or an updated invoice for the same `order_id`; the worker dedups via `order_id + correspondent` and PATCHes the existing Paperless doc in place when a newer-stage email arrives (task 59). **Do not `ignore` Alza order-stage emails that have a `Stiahnuť faktúru` link.** Alza promo / newsletter emails (no `Stiahnuť faktúru` link) keep current `ignore` classification.
 
 **Other known vendors** (for reference, not exhaustive):
 | Vendor | Sender pattern | Typical subject |
@@ -68,7 +68,7 @@ These are patterns we've confirmed. For unknown vendors, use your judgment.
 | Hetzner | billing@hetzner.com | Invoice |
 | Google Cloud | billing-noreply@google.com | payment receipt |
 | Tatra Banka | info@tatrabanka.sk | výpis |
-| HOPINTAXI (parking app) | noreply@hopin.sk | "Your parking ticket" → **paid parking receipt, is_invoice: true, attachment strategy** |
+| HOPINTAXI (parking app) | noreply@hopin.sk | "Your parking ticket" → **paid parking receipt, should_file: true, attachment strategy** |
 
 ## Accountant emails (intent gate)
 
@@ -77,7 +77,7 @@ addresses. When the email's `From` matches one of them, **a PDF attachment is NO
 reliable invoice signal** — the accountant sends many kinds of mail and only two are
 documents to file. Classify by **intent**:
 
-**FILE (`is_invoice: true`, `action: "download_and_upload"`) — ONLY when she is delivering:**
+**FILE (`should_file: true`, `action: "download_and_upload"`) — ONLY when she is delivering:**
 - **her own service invoice** — she bills the user for accounting/payroll services
   (subject names her faktúra; body like "v prílohe zasielam faktúru …"), or
 - **an outgoing invoice she prepared for the user to issue to a client** — a *delivery*
@@ -87,7 +87,7 @@ documents to file. Classify by **intent**:
   (e.g. "nech sa páči :) pekný víkend"). A handed-over PDF in this thread is the invoice —
   do not mistake the brief friendly tone for a non-delivery.
 
-**SKIP (`is_invoice: false`, `action: "ignore"`, set `skip_reason`) — everything else,
+**SKIP (`should_file: false`, `action: "ignore"`, set `skip_reason`) — everything else,
 EVEN with a PDF attached:**
 - a question / correction / discussion about documents — asks for an explanation, to fix a
   document, queries a discrepancy, or rejects/queries an attached invoice (even when she
@@ -139,7 +139,7 @@ Always respond with ONLY this JSON (no markdown, no explanation):
 
 ```json
 {
-  "is_invoice": true,
+  "should_file": true,
   "confidence": "high",
   "vendor": "Alza",
   "is_fuel": false,
@@ -156,7 +156,7 @@ Always respond with ONLY this JSON (no markdown, no explanation):
 ```
 
 Fields:
-- `is_invoice`: boolean (true for invoices, credit notes, receipts, statements)
+- `should_file`: boolean — true when this is a document worth filing to Paperless (invoice, credit note, receipt, or bank statement). This is a "should we file it" gate, NOT a claim that the document is literally an invoice — a bank statement (výpis) is `should_file: true` even though it is not an invoice.
 - `confidence`: "high" (clear invoice signals) | "medium" (likely but unsure) | "low" (probably not)
 - `vendor`: company name from the email sender/footer. Use the most complete name available (e.g., "Alza.sk s.r.o." from footer rather than just "Alza" from sender). If only a short name is visible, use that. If the sender is genuinely unidentifiable (e.g., garbled/encrypted headers, completely empty from/footer), return `"unknown"` and populate `notes` with a short explanation.
 - `is_fuel`: boolean — true if this is a fuel/gas station receipt or invoice (for kniha-jazd integration later)

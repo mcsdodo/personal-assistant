@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-07-01
+
+### Changed
+- **Renamed email-classifier field `is_invoice` → `should_file`** — the flag never meant "this is an invoice"; it is the file-to-Paperless gate that is `true` for invoices, credit notes, receipts, AND bank statements. The old name caused confusion when a monthly Tatra banka statement (`vypisy@tatrabanka.sk`, "Výpis z účtu") was discussed as if a misfiled invoice. The field is purely descriptive — the worker gates control flow on `action` ([`intake-worker.ts`](claude-code/channels/invoice/intake-worker.ts) `action === "ignore"`), not on this flag. Renamed across the haiku prompt ([`email-classifier.md`](claude-code/agents/email-classifier.md)), both `EmailClassificationResult` validators ([channels](claude-code/channels/workflow-schemas.ts) + [pollers](pollers/lib/workflow-schemas.ts) twins), the `InvoiceClassification` interface, docs, and tests. No data migration — historical `workflow.db` rows keep their `is_invoice` JSON; the validator only runs on new classifications.
+
 ## 2026-06-29
 
 ### Added

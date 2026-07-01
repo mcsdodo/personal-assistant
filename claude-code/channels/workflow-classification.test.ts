@@ -23,7 +23,7 @@ let db: Database;
 // Minimum-valid email classification — schemas reject anything narrower.
 // See workflow-schemas.ts validateEmailClassificationResult for the contract.
 const VALID_EMAIL_RESULT = {
-  is_invoice: true,
+  should_file: true,
   confidence: "high" as const,
   vendor: "Alza.sk",
   is_fuel: false,
@@ -41,7 +41,7 @@ const VALID_EMAIL_RESULT = {
 
 const VALID_EMAIL_RESULT_FALSE = {
   ...VALID_EMAIL_RESULT,
-  is_invoice: false,
+  should_file: false,
   action: "ignore" as const,
   download_strategy: null,
 };
@@ -111,7 +111,7 @@ describe("awaiting_classification state", () => {
     expect(completed).toBeTruthy();
     const stored = JSON.parse(completed!.payload_json!).result;
     expect(stored.vendor).toBe("Alza.sk");
-    expect(stored.is_invoice).toBe(true);
+    expect(stored.should_file).toBe(true);
   });
 
   test("submitClassification is idempotent — second call is no-op", () => {
@@ -131,7 +131,7 @@ describe("awaiting_classification state", () => {
         JSON.parse(e.payload_json!).step === "classify_email",
     );
     expect(completeds).toHaveLength(1);
-    expect(JSON.parse(completeds[0].payload_json!).result.is_invoice).toBe(true);
+    expect(JSON.parse(completeds[0].payload_json!).result.should_file).toBe(true);
   });
 
   test("submitClassification rejects wrong step", () => {
@@ -164,7 +164,7 @@ describe("awaiting_classification state", () => {
     requestClassification(db, job.id, "classify_email", {});
 
     // Missing required fields (vendor, action, etc.)
-    const malformed = { is_invoice: true };
+    const malformed = { should_file: true };
     const ok = submitClassification(db, job.id, "classify_email", malformed);
     expect(ok).toBe(false);
 

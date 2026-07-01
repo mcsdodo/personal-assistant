@@ -107,7 +107,7 @@ export type DownloadStrategy =
 /** Classification fields produced by the email-classifier + document-classifier channel roundtrips.
  *  Stored in step_completed events, read back via getCompletedSteps. */
 export interface InvoiceClassification {
-  is_invoice: boolean;
+  should_file: boolean;
   confidence: "high" | "medium" | "low";
   /** Null when action=ignore — the classifier has no counterparty for non-invoices. */
   vendor: string | null;

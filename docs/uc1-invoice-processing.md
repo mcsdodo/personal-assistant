@@ -164,7 +164,7 @@ Polls Outlook via custom MCP server using Microsoft Graph API.
 
 Haiku subagent fetches the email body itself via the gmail/outlook MCP and classifies it. The parent Claude session never reads the body — it just dispatches the subagent with `{email_source, message_id, user_google_email?}` from the workflow channel meta. Keeping the body inside the throwaway subagent context prevents the parent session from accumulating email bodies across classifications.
 
-**Output fields:** `is_invoice`, `confidence` (high/medium/low), `vendor`, `is_fuel`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/claude_download/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`, `skip_reason` (null normally; one of `query|payslip|payment_order|close|other` when the sender is an accountant and `action` is `ignore` — see accountant intent gate below). Note: `doc_type` and `owner` are not returned by the email-classifier — these come exclusively from the document-classifier after PDF download.
+**Output fields:** `should_file`, `confidence` (high/medium/low), `vendor`, `is_fuel`, `action` (download_and_upload/notify_user/ignore), `download_strategy` (attachment/claude_download/known_link/direct_url/browser_required/manual_review), `strategy_confidence`, `requires_review`, `order_id`, `total_amount`, `currency`, `skip_reason` (null normally; one of `query|payslip|payment_order|close|other` when the sender is an accountant and `action` is `ignore` — see accountant intent gate below). Note: `doc_type` and `owner` are not returned by the email-classifier — these come exclusively from the document-classifier after PDF download.
 
 **Download strategy rules:**
 - `has_attachments` + single invoice expected → `attachment` (worker downloads automatically, picks first PDF — works for both Gmail and Outlook)
@@ -515,7 +515,7 @@ When Claude calls `submit_classification(job_id, "classify_email", result)`, the
 
 | Field | Type | Source |
 |-------|------|--------|
-| `is_invoice` | boolean | email-classifier |
+| `should_file` | boolean | email-classifier |
 | `confidence` | "high" / "medium" / "low" | email-classifier |
 | `vendor` | string | email-classifier |
 | `doc_type` | string | email-classifier |

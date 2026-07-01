@@ -262,7 +262,7 @@ export const OWNERS = ["business", "personal"] as const;
 export const DOC_OWNERS = ["business", "personal", "unknown"] as const;
 
 export interface EmailClassificationResultSchema {
-  is_invoice: boolean;
+  should_file: boolean;
   confidence: "high" | "medium" | "low";
   /** Null when action=ignore (non-invoice) — the classifier has no counterparty. */
   vendor: string | null;
@@ -348,7 +348,7 @@ export function validateEmailClassificationResult(input: unknown): EmailClassifi
   }
 
   return {
-    is_invoice: reqBool("EmailClassificationResult", obj, "is_invoice"),
+    should_file: reqBool("EmailClassificationResult", obj, "should_file"),
     confidence: reqEnum("EmailClassificationResult", obj, "confidence", CONFIDENCE_LEVELS),
     vendor,
     doc_type: optString("EmailClassificationResult", obj, "doc_type"),

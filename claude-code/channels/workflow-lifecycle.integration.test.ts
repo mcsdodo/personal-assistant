@@ -48,7 +48,7 @@ function makeInput(overrides: Partial<InvoiceIntakeInput> = {}): InvoiceIntakeIn
 /** Default email classification result */
 function defaultEmailClassification(overrides: Partial<InvoiceClassification> = {}): InvoiceClassification {
   return {
-    is_invoice: true,
+    should_file: true,
     confidence: "high",
     vendor: "Alza",
     doc_type: "invoice",
