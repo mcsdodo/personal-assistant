@@ -4,6 +4,18 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-07-03
+
+### Changed
+- **Single-sourced `workflow-schemas.ts`, `owner-config.ts`, and the workflow-DB core into a new [`shared/`](shared/) directory at the stack root (task 102)** — previously `claude-code/channels/` and `pollers/lib/` each carried their own hand-synced copy of these files, kept aligned by convention and code review rather than by the compiler. `shared/` is dependency-free by design (`bun:sqlite` / node builtins only, no `@opentelemetry/*`), which is what lets it be shared across both Docker build contexts unmodified. The old channel/poller paths (`claude-code/channels/workflow-schemas.ts`, `claude-code/channels/workflow/{schema,events,downloads,jobs}.ts`, `pollers/lib/workflow-schemas.ts`, `pollers/lib/owner-config.ts`, `pollers/lib/workflow-db.ts`) are now 1–2 line barrels re-exporting from `shared/`. This killed the 745-line pre-task-79 pollers `workflow-db.ts` monolith and its ~600-line `workflow-schemas.ts` twin outright — their standalone test files were deleted, since coverage now lives entirely in the `claude-code/channels` suite that already exercised the same code.
+- **Locked the one remaining twin** — `claude-code/channels/tracing.ts` can't move into dependency-free `shared/` because it imports `@opentelemetry/*`. Synced `pollers/lib/tracing.ts` to be byte-identical to the channels version (plus a one-line header comment) and added [`pollers/lib/tracing-twin.test.ts`](pollers/lib/tracing-twin.test.ts), which fails the pollers suite the moment the two drift.
+- **4 image builds (`claude-code`, `pa-worker`, `email-poller`, `gdrive-poller`) now use the stack root as their Docker build context**, `COPY shared /shared` into the image; in-image layout is otherwise unchanged. Added a stack-root [`.dockerignore`](.dockerignore) and widened Komodo's `build_paths` to match.
+- **CI gained pollers test + build jobs and `shared/**` path filters** — there was previously zero pollers CI coverage.
+
+### Fixed
+- **Pollers' `openWorkflowDb` now sets `PRAGMA busy_timeout = 5000`** (intentional functional delta from the refactor), adopted from the channels version during the shared-DB-core merge. Pollers share `workflow.db` with the worker over SQLite WAL; without a busy timeout a concurrent writer could hit `SQLITE_BUSY` immediately instead of waiting briefly for the lock to clear.
+- **Poller SIGTERM/SIGINT handling is now unconditional.** It used to live inside `initTracing()` and was only installed when `OTEL_EXPORTER_OTLP_ENDPOINT` was set; it now lives directly in both poller `main.ts` files regardless of whether OTel is configured, so pollers shut down cleanly even with tracing disabled.
+
 ## 2026-07-01
 
 ### Added

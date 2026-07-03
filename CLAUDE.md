@@ -214,15 +214,16 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 | `pollers/lib/email-db.ts` | emails + source_state SQLite schema (was `claude-code/channels/db.ts`) |
 | `pollers/lib/gdrive-db.ts` | gdrive_files SQLite schema |
 | `pollers/lib/watcher-runtime.ts` | Shared health server / managed MCP client / poll loop helpers |
-| `pollers/lib/workflow-db.ts` | Shared duplicate of the workflow.db schema (Komodo pins the same git commit across builds) |
+| [`shared/`](shared/) (stack root) | Single source of truth for [`workflow-schemas.ts`](shared/workflow-schemas.ts), [`owner-config.ts`](shared/owner-config.ts), and [`workflow/{schema,events,downloads,jobs}.ts`](shared/workflow/) — consumed by both `claude-code/channels/` and `pollers/lib/` via barrel re-exports (task 102). Dependency-free by design (`bun:sqlite` / node builtins only — no `@opentelemetry/*`), so it can be `COPY`'d unmodified into all four image build contexts. |
+| [`pollers/lib/workflow-db.ts`](pollers/lib/workflow-db.ts) | Barrel re-exporting the poller-facing slice (`schema` + `jobs`) of `shared/workflow/` — the 745-line pre-task-79 hand-synced monolith is gone |
 | `claude-code/channels/download-helper.ts` | File utility functions (readFileAsDownload, tryDecrypt) used by file-ops + invoice/intake-worker |
 | `claude-code/channels/invoice-links.ts` | Shared invoice link extraction from HTML (vendor rules, used by email-poller + invoice/download-service) |
 | `claude-code/channels/mcp-client.ts` | HTTP MCP client with retry logic (exponential backoff for transient network errors) + `McpToolError` thrown on `isError: true` tool responses so error payloads don't silently leak into callers as if they were valid output (task 48) |
 | `claude-code/channels/workflow-mcp.ts` | Durable job queue channel (stdio) — MCP tool surface (create/get/list/approve/cancel jobs, submit_classification, provide_guidance) + 2s classification push loop that drains `classification_request_meta` breadcrumbs into Claude channel notifications. |
 | `claude-code/channels/worker.ts` | Standalone executor module (task 64): workerTick, sweepStaleGuidance, sweepOrphanedDownloads (boot), notifyTelegram, /health on :8003. Runs in pa-worker container. |
-| `worker/Dockerfile` | Bun-based image for the pa-worker container. Build context is ./claude-code so it shares the channels/ source tree with workflow-mcp. |
-| `claude-code/channels/workflow-db.ts` | jobs + job_events SQLite schema, lifecycle helpers, schema validation gateway, file-cleanup helpers, indexed `paperless_doc_id` column for multi-stage refresh lookups |
-| `claude-code/channels/workflow-schemas.ts` | Runtime validation for InvoiceIntakeInput, ScanIntakeInput, EmailClassificationResult, DocumentClassificationResult |
+| `worker/Dockerfile` | Bun-based image for the pa-worker container. Build context is the stack root (task 102, widened from `./claude-code`) so it can `COPY shared /shared`; still shares the `channels/` source tree with workflow-mcp. |
+| `claude-code/channels/workflow-db.ts` | Back-compat barrel re-exporting `./workflow/{schema,events,downloads,jobs,queries,classification,guidance}.ts`; of those, the core four (`schema`/`events`/`downloads`/`jobs`) are themselves barrels onto [`shared/workflow/`](shared/workflow/) (task 102) — `queries`/`classification`/`guidance` stay channels-local |
+| `claude-code/channels/workflow-schemas.ts` | Barrel — single source of truth is [`shared/workflow-schemas.ts`](shared/workflow-schemas.ts) (~730 lines): runtime validation for InvoiceIntakeInput, ScanIntakeInput, EmailClassificationResult, DocumentClassificationResult |
 | `claude-code/channels/paperless-adapter.ts` | Unified Paperless boundary (MCP + REST). Owns correspondent/tag/doc-type/storage CRUD, dedup search, upload, PATCH, task polling, custom fields. |
 | `claude-code/channels/paperless-fields.ts` | Custom field registry — auto-creates fields on cold-start, resolves field IDs for the PATCH path. **Registered custom fields** (auto-created on cold-start): `total_amount` (float, EUR) — invoice total, set when classifier returned a number; `order_id` (string) — invoice number / order reference; `litres` (float) — fuel volume, set only when `is_fuel: true`; `receipt_datetime` (string) — `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD` fallback, used by external "kniha-jazd" car-expense tracker. |
 | `claude-code/channels/invoice/pipeline.ts` | Pure pipeline functions (mergeClassifications, resolveMonthTag, validMonthTag, parseServicePeriodStart, buildTagNames, buildScanTagNames, generateTitle, getCompletedSteps) |
@@ -245,6 +246,10 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 ## Source Code Guide
 
 Navigational guide to the largest source files. Line numbers are approximate.
+
+**`shared/` is the single source of truth** for code needed by both `claude-code/channels/` and `pollers/lib/` — [`workflow-schemas.ts`](shared/workflow-schemas.ts), [`owner-config.ts`](shared/owner-config.ts), and [`workflow/{schema,events,downloads,jobs}.ts`](shared/workflow/) (task 102). It is dependency-free by design (`bun:sqlite` / node builtins only), which is what lets all four image builds `COPY shared /shared` from a stack-root build context. The old channel/poller paths are now 1–2 line barrels re-exporting from `shared/`.
+
+**`claude-code/channels/tracing.ts` is the one remaining locked twin** — it imports `@opentelemetry/*`, so it can't move into dependency-free `shared/`. Edit it there, then copy it verbatim into [`pollers/lib/tracing.ts`](pollers/lib/tracing.ts) under that file's one-line header comment; [`pollers/lib/tracing-twin.test.ts`](pollers/lib/tracing-twin.test.ts) asserts byte-identity (header + channels source) and fails the pollers suite otherwise.
 
 ### checker-mcp/engine/ (~1240 lines split across 5 modules)
 
@@ -316,9 +321,9 @@ Unified Paperless boundary. Owns every operation that hits Paperless, regardless
 
 All `list_*` MCP calls go through a private `listAllPages` helper that walks the `next` link until exhausted (page_size=100, max 50 pages). Before task 48 the adapter only ever saw page 1 of Paperless's paginated responses — which silently corrupted 17 production documents with `correspondent: null` because the fuzzy matcher couldn't see the correspondent past entry 25. `createCorrespondent` / `createTag` also runtime-validate the parsed response shape instead of relying on `as` type assertions, so an unexpected MCP response is a clear thrown error instead of silently producing `{id: undefined}`.
 
-### claude-code/channels/workflow-schemas.ts (~430 lines)
+### [shared/workflow-schemas.ts](shared/workflow-schemas.ts) (~730 lines)
 
-Hand-rolled runtime validators (no zod) for the four boundary contracts: `InvoiceIntakeInput`, `ScanIntakeInput`, `EmailClassificationResult`, `DocumentClassificationResult`. Each validator throws `WorkflowSchemaError` with schema name, field, expected type, and actual value. `submitClassification` validates payloads on write (rejects malformed Claude outputs); both watchers validate job input before `createJob`; the worker validates `input_json` on every run.
+Hand-rolled runtime validators (no zod) for the four boundary contracts: `InvoiceIntakeInput`, `ScanIntakeInput`, `EmailClassificationResult`, `DocumentClassificationResult`. Each validator throws `WorkflowSchemaError` with schema name, field, expected type, and actual value. `submitClassification` validates payloads on write (rejects malformed Claude outputs); both watchers validate job input before `createJob`; the worker validates `input_json` on every run. Single source of truth since task 102 — `claude-code/channels/workflow-schemas.ts` and `pollers/lib/workflow-schemas.ts` are now 3-line barrels re-exporting this file; the ~600-line hand-synced pollers copy is gone.
 
 ### claude-code/channels/workflow-mcp.ts (~894 lines)
 
@@ -639,7 +644,7 @@ bun test
 | `claude-code/channels/workflow-mcp.test.ts` | Read-only debug tools (`get_recent_emails`, `get_email_stats`, `get_gdrive_scan_*`) |
 | `claude-code/channels/download-helper.test.ts` | File reading, PDF decryption |
 | `claude-code/channels/invoice-links.test.ts` | Invoice link extraction from HTML |
-| `claude-code/channels/workflow-db.test.ts` | Job queue SQLite operations (maintained copy — refactored into `workflow/` submodules by task 79; twin of `pollers/lib/workflow-db.ts`, kept in sync across the two Docker build contexts) |
+| `claude-code/channels/workflow-db.test.ts` | Job queue SQLite operations against the `workflow/` submodules (task 79 split), which are now barrels onto [`shared/workflow/`](shared/workflow/) (task 102) — this suite is the only coverage for that shared code; the pollers-side twin test file was deleted, no longer needed |
 | `claude-code/channels/fuzzy-match.test.ts` | Correspondent fuzzy matching |
 | `claude-code/channels/paperless-fields.test.ts` | Paperless custom field registry |
 | `claude-code/channels/workflow-core.test.ts` | Job dispatch logic |
@@ -650,8 +655,7 @@ bun test
 | `pollers/lib/gdrive-db.test.ts` | GDrive SQLite operations |
 | `pollers/lib/email-watcher-utils.test.ts` | Pure parsing functions (Gmail IDs, duration, metrics) |
 | `pollers/lib/watcher-runtime.test.ts` | Health server / managed MCP client / poll loop helpers |
-| `pollers/lib/workflow-db.test.ts` | Job queue schema (twin of the channels copy; still a single-file module — keep the shared DDL + input-validators in sync) |
-| `pollers/lib/workflow-schemas.test.ts` | Runtime validators |
+| [`pollers/lib/tracing-twin.test.ts`](pollers/lib/tracing-twin.test.ts) | Byte-identical drift guard for the one remaining twin — [`pollers/lib/tracing.ts`](pollers/lib/tracing.ts) must equal [`claude-code/channels/tracing.ts`](claude-code/channels/tracing.ts) plus a one-line header |
 | `pollers/email-poller/src/main.test.ts` | INITIAL_LOOKBACK seeding + fail-loud overflow guard |
 | `pollers/email-poller/src/main.integration.test.ts` | Email polling, dedup, direct job creation |
 | `pollers/email-poller/cli/skip-catchup.test.ts` | Operator escape hatch CLI |

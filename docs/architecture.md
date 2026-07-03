@@ -152,7 +152,7 @@ Failed jobs use exponential backoff: `attempt⁴ × (0.9 + random × 0.2)` secon
 
 ### Pollers create jobs directly
 
-Email-poller (`pollers/email-poller/src/main.ts`) and gdrive-poller (`pollers/gdrive-poller/src/main.ts`) import `createJob` from `pollers/lib/workflow-db.ts` and insert jobs into SQLite directly — Claude is not in the job creation path. MCP tools (`create_invoice_intake_job`, `create_scan_intake_job`) remain available for manual reprocessing and `force=true` retry.
+Email-poller (`pollers/email-poller/src/main.ts`) and gdrive-poller (`pollers/gdrive-poller/src/main.ts`) import `createJob` from `pollers/lib/workflow-db.ts` and insert jobs into SQLite directly — Claude is not in the job creation path. MCP tools (`create_invoice_intake_job`, `create_scan_intake_job`) remain available for manual reprocessing and `force=true` retry. `pollers/lib/workflow-db.ts` is a barrel onto the dependency-free [`shared/workflow/`](../shared/workflow/) module (task 102) — the schema and job-lifecycle code the pollers and `claude-code/channels/` both rely on is single-sourced there, not hand-synced copies. See [CLAUDE.md § Source Code Guide](../CLAUDE.md#source-code-guide) for the full `shared/` layout and the one remaining locked twin (`tracing.ts`).
 
 ## Deep dives
 
