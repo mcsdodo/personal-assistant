@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM node:20-slim
 
 ARG CLAUDE_CODE_VERSION=2.1.117
@@ -25,7 +26,10 @@ WORKDIR /workspace
 
 # Copy channel scripts and install deps as node
 USER node
-COPY --chown=node:node channels/ /app/channels/
+# Single-source-of-truth modules shared with the pollers (task 102) —
+# dependency-free, resolved via ../../shared relative imports from /app/channels.
+COPY --chown=node:node shared/ /shared/
+COPY --chown=node:node claude-code/channels/ /app/channels/
 RUN cd /app/channels && bun install --no-summary
 
 # Clone official Telegram channel plugin and install its deps
@@ -36,12 +40,12 @@ RUN git clone --depth 1 https://github.com/anthropics/claude-plugins-official.gi
 
 # Copy MCP and project config
 USER root
-COPY --chown=node:node .mcp.json /workspace/.mcp.json
-COPY --chown=node:node CLAUDE.md /workspace/CLAUDE.md
-COPY --chown=node:node agents/ /workspace/.claude/agents/
-COPY --chown=node:node .claude/settings.json /app/settings.json
-COPY --chown=node:node .claude.json /home/node/.claude.json
-COPY --chown=node:node entrypoint.sh /entrypoint.sh
+COPY --chown=node:node claude-code/.mcp.json /workspace/.mcp.json
+COPY --chown=node:node claude-code/CLAUDE.md /workspace/CLAUDE.md
+COPY --chown=node:node claude-code/agents/ /workspace/.claude/agents/
+COPY --chown=node:node claude-code/.claude/settings.json /app/settings.json
+COPY --chown=node:node claude-code/.claude.json /home/node/.claude.json
+COPY --chown=node:node claude-code/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 USER node

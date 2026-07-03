@@ -1,0 +1,22 @@
+# Root-context builds (claude-code, pa-worker, email-poller, gdrive-poller)
+# send the stack dir as context — keep it lean. checker-mcp/outlook-mcp build
+# from their own subdirs and are unaffected by this file.
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/.pytest_cache
+.git/
+.github/
+.env
+.env.*
+config/
+data/
+docs/
+tests/
+checker-mcp/
+outlook-mcp/
+_tasks/

@@ -1,8 +1,10 @@
 # syntax=docker/dockerfile:1.7
 FROM oven/bun:1-alpine
 
-# Build context: compose.stacks/infra/personal-assistant/claude-code
-# (so /channels lives at the root of the build context, matching workflow-mcp).
+# Build context: compose.stacks/infra/personal-assistant/ (stack root — task
+# 102, so shared/ is reachable). Channels still live at /app/channels; the
+# dependency-free shared/ modules land at /shared, matching the ../../shared
+# relative imports from /app/channels/*.ts.
 WORKDIR /app
 
 # qpdf is required by download-helper.tryDecrypt / isPdfEncrypted for the
@@ -12,10 +14,11 @@ WORKDIR /app
 # Claude would receive an unreadable encrypted PDF for classification.
 RUN apk add --no-cache qpdf libjpeg-turbo poppler-utils
 
-COPY channels/package.json channels/bunfig.toml channels/tsconfig.json ./channels/
+COPY claude-code/channels/package.json claude-code/channels/bunfig.toml claude-code/channels/tsconfig.json ./channels/
 RUN cd channels && bun install --no-summary
 
-COPY channels ./channels
+COPY shared /shared
+COPY claude-code/channels ./channels
 
 RUN mkdir -p /data/email-watcher /workspace/downloads
 

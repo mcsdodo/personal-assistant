@@ -2,7 +2,8 @@ services:
   claude-code:
     image: personal-assistant-claude-code:latest
     build:
-      context: ./claude-code
+      context: .
+      dockerfile: claude-code/Dockerfile
       args:
         CLAUDE_CODE_VERSION: 2.1.117
     container_name: personal-assistant-claude
@@ -81,8 +82,8 @@ services:
   email-poller:
     image: personal-assistant-email-poller:latest
     build:
-      context: ./pollers
-      dockerfile: email-poller/Dockerfile
+      context: .
+      dockerfile: pollers/email-poller/Dockerfile
     container_name: personal-assistant-email-poller
     user: "1000:1000"
     restart: unless-stopped
@@ -127,8 +128,8 @@ services:
   gdrive-poller:
     image: personal-assistant-gdrive-poller:latest
     build:
-      context: ./pollers
-      dockerfile: gdrive-poller/Dockerfile
+      context: .
+      dockerfile: pollers/gdrive-poller/Dockerfile
     container_name: personal-assistant-gdrive-poller
     user: "1000:1000"
     restart: unless-stopped
@@ -169,8 +170,8 @@ services:
   pa-worker:
     image: personal-assistant-worker:latest
     build:
-      context: ./claude-code
-      dockerfile: ../worker/Dockerfile
+      context: .
+      dockerfile: worker/Dockerfile
     container_name: personal-assistant-worker
     user: "1000:1000"
     restart: unless-stopped
