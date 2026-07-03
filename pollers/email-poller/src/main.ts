@@ -30,7 +30,7 @@ import {
 } from "../../lib/email-watcher-utils";
 import {
   initTracing, getTracer, getMeter, withSpan, createLogger,
-  getActiveTraceId, SpanStatusCode,
+  getActiveTraceId, SpanStatusCode, shutdownTracing,
 } from "../../lib/tracing";
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -90,6 +90,19 @@ const gmailEnabled = GMAIL_EMAIL.length > 0;
 
 // ── Tracing + logging ────────────────────────────────────────────────
 initTracing("email-poller");
+// Graceful shutdown — the shared tracing twin no longer installs signal
+// handlers inside initTracing (synced to the channels version, task 102);
+// flush OTel exporters then exit, exactly what the old built-in handlers did.
+let shuttingDown = false;
+const shutdown = async (signal: string) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Received ${signal}, shutting down...`);
+  await shutdownTracing();
+  process.exit(0);
+};
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 const tracer = getTracer("email-poller");
 const meter = getMeter("email-poller");
 const log = createLogger("email-poller");

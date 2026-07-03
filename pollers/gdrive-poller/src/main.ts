@@ -21,7 +21,7 @@ import { validateScanIntakeInput, WorkflowSchemaError, SCAN_BUCKETS } from "../.
 import { requireBusinessLabel } from "../../lib/owner-config";
 import {
   initTracing, getTracer, getMeter, withSpan, createLogger,
-  getActiveTraceId, SpanStatusCode,
+  getActiveTraceId, SpanStatusCode, shutdownTracing,
 } from "../../lib/tracing";
 
 // ── Config ────────────────────────────────────────────────────────────
@@ -76,6 +76,19 @@ export function ownerFolderToRole(folderName: string): "business" | "personal" |
 
 // ── Tracing + logging ────────────────────────────────────────────────
 initTracing("gdrive-poller");
+// Graceful shutdown — the shared tracing twin no longer installs signal
+// handlers inside initTracing (synced to the channels version, task 102);
+// flush OTel exporters then exit, exactly what the old built-in handlers did.
+let shuttingDown = false;
+const shutdown = async (signal: string) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Received ${signal}, shutting down...`);
+  await shutdownTracing();
+  process.exit(0);
+};
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 const tracer = getTracer("gdrive-poller");
 const meter = getMeter("gdrive-poller");
 const log = createLogger("gdrive-poller");
