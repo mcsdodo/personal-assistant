@@ -235,21 +235,9 @@ export function resolveMonthTag(inputs: MonthTagInputs): string | null {
 
 // ── buildTagNames ───────────────────────────────────────────────────────
 
-/**
- * Read OWNER_BUSINESS_LABEL from env, throwing a clear error if it is unset
- * or empty. Call sites in the claude-code workspace use this so a misconfigured
- * deployment fails loud at use-time rather than silently falling back to a
- * hard-coded company name.
- *
- * Twin: pollers/lib/owner-config.ts exports an identical copy (separate
- * workspace, no shared module path — same pattern as the schema twin).
- */
-export function requireBusinessLabel(): string {
-  const v = process.env.OWNER_BUSINESS_LABEL?.trim();
-  if (!v) throw new Error(
-    "OWNER_BUSINESS_LABEL must be set (configure it in komodo.toml / .env)");
-  return v;
-}
+// requireBusinessLabel moved to shared/owner-config.ts (single source of
+// truth, task 102) — re-exported here so existing call sites keep working.
+export { requireBusinessLabel } from "../../../shared/owner-config";
 
 /**
  * Build the list of tag NAMES from classification metadata.
