@@ -23,14 +23,12 @@ import type { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { extname } from "path";
 
-import { getTracer, getMeter, SpanStatusCode, context, trace } from "../tracing";
-import type { Span, Tracer } from "../tracing";
-import { TraceFlags } from "@opentelemetry/api";
+import { SpanStatusCode, context, trace } from "../tracing";
+import type { Span } from "../tracing";
 
 import {
   addJobEvent,
   completeJob,
-  failJob,
   getJobEvents,
   getLatestReceivedAtForDoc,
   getPaperlessDocIdForSource,
@@ -44,13 +42,12 @@ import {
   type JobEventRow,
   type JobRow,
 } from "../workflow-db";
-import { guidanceRequestsTotal, recordJobFailure } from "../metrics";
+import { guidanceRequestsTotal } from "../metrics";
 import type { PaperlessFieldRegistry } from "../paperless-fields";
 import type { PaperlessAdapter } from "../paperless-adapter";
 import {
   downloadInvoice as downloadInvoiceImpl,
   downloadFromGdrive as downloadFromGdriveImpl,
-  type DownloadedFile as ServiceDownloadedFile,
 } from "./download-service";
 import {
   checkDuplicate as checkDuplicateImpl,
@@ -92,137 +89,41 @@ import {
   type InvoiceIntakeInputSchema,
 } from "../workflow-schemas";
 import { extractPdfText, isSampleInvoice } from "./sample-detection";
+import {
+  type DownloadStrategy,
+  type InvoiceClassification,
+  type ScanIntakeInput,
+  type ScanClassification,
+  type InvoiceIntakeResult,
+  type DownloadedFile,
+  type WorkerLogger,
+} from "./intake-steps/types";
+import {
+  OUTLOOK_MCP_URL,
+  GMAIL_MCP_URL,
+  GOOGLE_EMAIL,
+} from "./intake-steps/config";
+import {
+  tracer,
+  meter,
+  correspondentsCounter,
+  missingMonthTagCounter,
+  sampleSkippedCounter,
+  accountantSkippedCounter,
+  ACCOUNTANT_SKIP_REASONS,
+  failJobMetered,
+  emitSentinelSpan,
+  seedCounterFromDb,
+} from "./intake-steps/observability";
 
-// ── Types ──────────────────────────────────────────────────────────────
-
-export type DownloadStrategy =
-  | "attachment"
-  | "known_link"
-  | "direct_url"
-  | "browser_required"
-  | "manual_review"
-  | "claude_download";
-
-
-/** Classification fields produced by the email-classifier + document-classifier channel roundtrips.
- *  Stored in step_completed events, read back via getCompletedSteps. */
-export interface InvoiceClassification {
-  should_file: boolean;
-  confidence: "high" | "medium" | "low";
-  /** Null when action=ignore — the classifier has no counterparty for non-invoices. */
-  vendor: string | null;
-  doc_type: string;
-  is_fuel: boolean;
-  owner?: "business" | "personal";
-  action: string;
-  download_strategy: DownloadStrategy | null;
-  /** Null when action=ignore — no strategy to have confidence in. */
-  strategy_confidence: "high" | "medium" | "low" | null;
-  requires_review: boolean;
-  order_id: string | null;
-  subtitle: string | null;
-  total_amount: number | null;
-  currency: string | null;
-  /**
-   * Email subject — worker-injected from input_json by submitClassification
-   * before validation. Null for manual jobs that lacked the metadata.
-   * Used for month_tag inference and title generation; downstream null-safe.
-   */
-  subject: string | null;
-  /**
-   * Email received timestamp ISO — worker-injected from input_json. Null
-   * for manual jobs. Used as a month_tag fallback; downstream null-safe.
-   */
-  received_at: string | null;
-  /**
-   * Email sender — worker-injected from input_json. Null for manual jobs.
-   * Used for vendor-specific link extraction rules; extractInvoiceLinks
-   * gracefully degrades when null.
-   */
-  sender: string | null;
-  /** Accountant intent-skip marker, set by the email-classifier for accountant
-   *  senders only (action="ignore"). query | payslip | payment_order | close | other.
-   *  Null/absent for every other email. */
-  skip_reason?: string | null;
-}
-
-export interface ScanIntakeInput {
-  source: "gdrive";
-  file_id: string;
-  /** Human-readable label only (e.g. "techlab/accounting"). Owner/bucket are
-   *  carried explicitly below; this is for audit/display, no longer parsed. */
-  watch_folder: string;
-  /** YYYY-MM tag from scan date — fallback if document classifier has no doc_date */
-  month_tag: string;
-  /** Owner ROLE resolved by the poller (task 96). Drives tags + storage path. */
-  owner: "business" | "personal";
-  /** Bucket resolved by the poller — drives accounting tag + content override. */
-  bucket: "accounting" | "documents";
-  /** Resolved Drive folder ID of the bucket folder — the move parent (B2 fix). */
-  folder_id: string;
-  /** Original filename from GDrive (for title fallback) */
-  filename?: string;
-  /** Path to pre-downloaded file on disk (worker reads instead of downloading from GDrive) */
-  file_path?: string;
-  /** Force reprocess: if dedup finds an existing Paperless doc, PATCH it in place
-   *  instead of short-circuiting. Set by `create_scan_intake_job(force=true)`. */
-  force?: boolean;
-}
-
-/** Classification fields produced by the document-classifier for scan intake.
- *  Stored in step_completed event, read back via getCompletedSteps. */
-export interface ScanClassification {
-  doc_type: string;
-  vendor: string;
-  total_amount: number | null;
-  currency: string | null;
-  is_fuel: boolean;
-  owner?: "business" | "personal";
-  confidence: string;
-  order_id: string | null;
-  subtitle: string | null;
-  doc_date: string | null;
-  /** Slovak "deň dodania" — legal tax point per § 19 Zákon 222/2004. Optional. */
-  supply_date?: string | null;
-  /** ISO 8601 interval for subscriptions/billing periods, "YYYY-MM-DD/YYYY-MM-DD". Optional. */
-  service_period?: string | null;
-  /** LLM's reasoned accounting-period decision, "YYYY-MM". Preferred over date inference. Optional. */
-  accounting_period?: string | null;
-  /** Short reasoning string explaining the accounting_period choice. Optional. */
-  accounting_period_reasoning?: string | null;
-  /** Free-form classifier notes; required when any UNKNOWN_CAPABLE field is "unknown". */
-  notes?: string | null;
-  /** Fuel volume in litres; only set when is_fuel: true. */
-  litres?: number | null;
-  /** Receipt timestamp ("YYYY-MM-DDTHH:MM:SS"); null/missing when not extractable. */
-  receipt_datetime?: string | null;
-}
-
-export interface InvoiceIntakeResult {
-  outcome: "uploaded" | "refreshed" | "duplicate" | "duplicate_likely" | "paused" | "failed";
-  title?: string;
-  paperless_document_id?: number;
-  correspondent?: string;
-  tags?: string[];
-  total_amount?: number | null;
-  duplicate_of?: number;
-  duplicate_message?: string;
-  error?: string;
-}
-
-// `DownloadedFile` is owned by the download service so the worker, the
-// service, and any future caller share one shape.
-type DownloadedFile = ServiceDownloadedFile;
-
-interface WorkerLogger {
-  log(message: string): void;
-}
-
-// ── MCP Server URLs ────────────────────────────────────────────────────
-
-const OUTLOOK_MCP_URL = process.env.OUTLOOK_MCP_URL ?? "http://outlook-mcp:8002/mcp";
-const GMAIL_MCP_URL = process.env.GMAIL_MCP_URL ?? "http://gmail-mcp:8000/mcp";
-const GOOGLE_EMAIL = process.env.GMAIL_EMAIL ?? "";
+// Re-export public types for backward compatibility
+export type {
+  DownloadStrategy,
+  InvoiceClassification,
+  ScanIntakeInput,
+  ScanClassification,
+  InvoiceIntakeResult,
+} from "./intake-steps/types";
 
 // The Paperless adapter is built once per dispatch in workflow-core.executeNextJob
 // and threaded into both executors as an explicit parameter. The executors pass
@@ -230,77 +131,6 @@ const GOOGLE_EMAIL = process.env.GMAIL_EMAIL ?? "";
 // (Before this refactor, intake-worker carried a lazy module-level singleton
 // rebuilt-on-registry-change to bridge the registry-per-call API to a stateless
 // adapter — that singleton and ~9 one-liner wrappers around it are gone now.)
-
-const tracer = getTracer("invoice-worker");
-const meter = getMeter("invoice-worker");
-const correspondentsCounter = meter.createCounter("invoice_worker_correspondents_total", {
-  description: "Completed invoices by normalized Paperless correspondent",
-});
-const missingMonthTagCounter = meter.createCounter("invoice_worker_missing_month_tag_total", {
-  description: "Documents uploaded without a valid YYYY-MM accounting period (operator must tag manually)",
-});
-const sampleSkippedCounter = meter.createCounter("invoice_worker_sample_skipped_total", {
-  description: "Sample/preview (non-tax-document) invoices detected and skipped before Paperless upload, by vendor",
-});
-const accountantSkippedCounter = meter.createCounter("invoice_worker_accountant_skipped_total", {
-  description: "Accountant non-invoice emails (questions, payslips, payment orders, close) skipped before upload, by reason",
-});
-const ACCOUNTANT_SKIP_REASONS = ["query", "payslip", "payment_order", "close", "other"] as const;
-
-/**
- * failJob + failure-metric increment. Use this at every terminal-failure site.
- * Retryable paths call scheduleRetry (not failJob) and must NOT be metered.
- */
-function failJobMetered(
-  db: import("bun:sqlite").Database,
-  jobId: string,
-  payload: { code: string; message: string; [k: string]: unknown },
-  workflow_type: "invoice_intake" | "scan_intake",
-): void {
-  failJob(db, jobId, payload);
-  recordJobFailure(payload.code, workflow_type);
-}
-
-// ── Classification-wait sentinel span ─────────────────────────────────
-//
-// The ~60s gap while a job is parked for Claude classification is invisible
-// in traces. emitSentinelSpan closes that gap retroactively at resume time
-// by reading the stored traceId/spanId/startMs from the classification_request_meta
-// event and emitting a child span with the stored start time.
-function emitSentinelSpan(
-  tracer: Tracer,
-  events: ReturnType<typeof getJobEvents>,
-  step: "classify_email" | "classify_document",
-): void {
-  const meta = events.find(
-    (e) =>
-      e.event_type === "classification_request_meta" &&
-      (JSON.parse(e.payload_json ?? "{}")?.step as string) === step,
-  );
-  if (!meta) return;
-  const d = JSON.parse(meta.payload_json ?? "{}") as Record<string, unknown>;
-  const traceId = d["sentinel_trace_id"] as string | undefined;
-  const parentSpanId = d["sentinel_parent_span_id"] as string | undefined;
-  // sentinel_start_ms is serialized as a string in the channel meta (Claude
-  // Code's channel protocol rejects non-string meta values — task 98 regression).
-  const rawStartMs = d["sentinel_start_ms"];
-  const startMs = rawStartMs !== undefined ? Number(rawStartMs) : undefined;
-  if (!traceId || !parentSpanId || !startMs || Number.isNaN(startMs)) return;
-
-  const ctx = trace.setSpanContext(context.active(), {
-    traceId,
-    spanId: parentSpanId,
-    traceFlags: TraceFlags.SAMPLED,
-    isRemote: true,
-  });
-  context.with(ctx, () => {
-    const s = tracer.startSpan("classification-wait", {
-      startTime: startMs,
-      attributes: { "classification.step": step },
-    });
-    s.end(); // end=now → duration = now − park time (the classification wait)
-  });
-}
 
 // ── Guidance resume helpers ────────────────────────────────────────────
 //
@@ -461,24 +291,6 @@ async function pauseAndNotify(
     // `awaiting_user_guidance` and the `guidance_request` event carries
     // the full payload for observability.
   });
-}
-
-let counterSeeded = false;
-function seedCounterFromDb(db: import("bun:sqlite").Database): void {
-  if (counterSeeded) return;
-  counterSeeded = true;
-  try {
-    const rows = db.query(
-      `SELECT json_extract(output_json, '$.correspondent') AS correspondent, COUNT(*) AS count
-       FROM jobs
-       WHERE state = 'completed'
-         AND json_extract(output_json, '$.correspondent') IS NOT NULL
-       GROUP BY correspondent`
-    ).all() as Array<{ correspondent: string; count: number }>;
-    for (const row of rows) {
-      correspondentsCounter.add(row.count, { correspondent: row.correspondent });
-    }
-  } catch {}
 }
 
 // ── Shared decrypt + guidance phase ────────────────────────────────────
