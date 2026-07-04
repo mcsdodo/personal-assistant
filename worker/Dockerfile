@@ -14,7 +14,7 @@ WORKDIR /app
 # Claude would receive an unreadable encrypted PDF for classification.
 RUN apk add --no-cache qpdf libjpeg-turbo poppler-utils
 
-COPY claude-code/channels/package.json claude-code/channels/bunfig.toml claude-code/channels/tsconfig.json ./channels/
+COPY claude-code/channels/package.json claude-code/channels/bunfig.toml claude-code/channels/tsconfig.json claude-code/channels/bun.lock ./channels/
 RUN cd channels && bun install --no-summary
 
 COPY shared /shared
