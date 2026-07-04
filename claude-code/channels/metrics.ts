@@ -5,7 +5,7 @@ const workflowMeter = getMeter("workflow");
 /**
  * Counter for jobs paused in `awaiting_user_guidance`, labelled by trigger reason
  * (classifier_unknown, encrypted_pdf, ...). Incremented by pauseAndNotify in
- * invoice/intake-worker.ts. The Grafana panel reads this as a stacked bar (panel id 41).
+ * invoice/intake-steps/observability.ts. The Grafana panel reads this as a stacked bar (panel id 41).
  *
  * Metric name is stable — changing it would break existing Grafana dashboards.
  */
@@ -16,7 +16,7 @@ export const guidanceRequestsTotal = workflowMeter.createCounter(
 
 /**
  * Terminal job failures by `reason` (the failJob code) and `workflow_type`.
- * Incremented at every terminal failJob site across the worker — intake-worker
+ * Incremented at every terminal failJob site across the worker — invoice-intake.ts/scan-intake.ts
  * (invalid_input/schema_validation_failed/missing_owner/invoice_intake_error/
  * scan_intake_error) AND the dispatcher/classification/timeout paths
  * (unsupported_workflow_type/worker_exception/stale_timeout/timed_out). NOT

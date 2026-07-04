@@ -280,7 +280,7 @@ function actionToButtonLabel(action: string): string | null {
  * NOTE (Task 3.4): v1 ships this as a pure function only. The outbound
  * `notifyTelegram` path in `workflow-mcp.ts` accepts a plain string body;
  * wiring `reply_markup` into `NotifyFn` requires signature changes in
- * the notify call sites (including `intake-worker.ts`). Plan allows
+ * the notify call sites (including `invoice-intake.ts`/`scan-intake.ts`). Plan allows
  * deferral — Task 3.2's `pauseAndNotify` helper can opt-in later by
  * passing the result of this function to an extended notify signature.
  * Until then the text prompt still carries `/slash` command hints, so

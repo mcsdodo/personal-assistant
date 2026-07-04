@@ -1,5 +1,5 @@
 // Side-effect bootstrap: initialize OpenTelemetry BEFORE any metric instrument
-// is constructed. Worker-side counters (metrics.ts, invoice/intake-worker.ts)
+// is constructed. Worker-side counters (metrics.ts, invoice/intake-steps/observability.ts)
 // are created at module-load via `meter.createCounter(...)`. OTel JS's
 // ProxyMeter does NOT upgrade instruments created before
 // `metrics.setGlobalMeterProvider(...)` runs, so any counter constructed before
