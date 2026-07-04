@@ -666,7 +666,7 @@ bun test
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on push to main when relevant paths change:
 - **channels (Bun)** — runs `bun test` for all 15 test files
-- **checker-mcp (Python)** — runs `pytest test_matching.py` (116 tests)
+- **checker-mcp (Python)** — runs `pytest` (bare discovery across [checker-mcp/test_parsing.py](checker-mcp/test_parsing.py), [checker-mcp/test_matching.py](checker-mcp/test_matching.py), [checker-mcp/test_collection.py](checker-mcp/test_collection.py), [checker-mcp/test_cache.py](checker-mcp/test_cache.py), [checker-mcp/test_result_format.py](checker-mcp/test_result_format.py) — 173 tests)
 
 ### What's Mocked vs Real
 

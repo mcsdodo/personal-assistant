@@ -63,7 +63,7 @@ jobs:
           cache: pip
           cache-dependency-path: checker-mcp/requirements.txt
       - run: pip install -r requirements.txt pytest
-      - run: python -m pytest test_matching.py -v
+      - run: python -m pytest -v
 
   test-channels:
     name: test channels

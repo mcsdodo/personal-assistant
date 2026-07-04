@@ -23,7 +23,7 @@ bun test
 
 ```bash
 cd checker-mcp
-python -m pytest test_matching.py -v
+python -m pytest -v
 ```
 
 ### End-to-end pipeline
