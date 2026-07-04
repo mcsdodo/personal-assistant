@@ -227,7 +227,10 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 | `claude-code/channels/paperless-adapter.ts` | Unified Paperless boundary (MCP + REST). Owns correspondent/tag/doc-type/storage CRUD, dedup search, upload, PATCH, task polling, custom fields. |
 | `claude-code/channels/paperless-fields.ts` | Custom field registry — auto-creates fields on cold-start, resolves field IDs for the PATCH path. **Registered custom fields** (auto-created on cold-start): `total_amount` (float, EUR) — invoice total, set when classifier returned a number; `order_id` (string) — invoice number / order reference; `litres` (float) — fuel volume, set only when `is_fuel: true`; `receipt_datetime` (string) — `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD` fallback, used by external "kniha-jazd" car-expense tracker. |
 | `claude-code/channels/invoice/pipeline.ts` | Pure pipeline functions (mergeClassifications, resolveMonthTag, validMonthTag, parseServicePeriodStart, buildTagNames, buildScanTagNames, generateTitle, getCompletedSteps) |
-| `claude-code/channels/invoice/intake-worker.ts` | Invoice + scan intake orchestrator (executeInvoiceIntake, executeScanIntake) |
+| [`claude-code/channels/invoice/intake-worker.ts`](claude-code/channels/invoice/intake-worker.ts) | ~33-line public barrel re-exporting `executeInvoiceIntake` (from [`invoice-intake.ts`](claude-code/channels/invoice/invoice-intake.ts)), `executeScanIntake` (from [`scan-intake.ts`](claude-code/channels/invoice/scan-intake.ts)), and the shared intake types (task 102, phase 2) |
+| [`claude-code/channels/invoice/invoice-intake.ts`](claude-code/channels/invoice/invoice-intake.ts) | `executeInvoiceIntake` + `downloadInvoice` — the email intake executor, moved verbatim out of `intake-worker.ts` |
+| [`claude-code/channels/invoice/scan-intake.ts`](claude-code/channels/invoice/scan-intake.ts) | `executeScanIntake` + `downloadFromGdrive` — the GDrive scan intake executor, moved verbatim out of `intake-worker.ts` |
+| [`claude-code/channels/invoice/intake-steps/`](claude-code/channels/invoice/intake-steps/) | Leaf modules shared by both executors: `types.ts` (public types + `WorkerLogger`/`DownloadedFile`), `config.ts` (env consts), `observability.ts` (tracer/meter/counters/`emitSentinelSpan`/`seedCounterFromDb`), `guidance.ts` (decrypt + guidance-password resume phase, `runDecryptAndGuidancePhase`) |
 | `claude-code/channels/invoice/download-service.ts` | Download strategies: Outlook/Gmail attachments, link extraction, direct HTTP, GDrive |
 | `claude-code/channels/invoice/dedup-service.ts` | Duplicate detection (order_id + correspondent + amount comparison). Returns `force_refresh` outcome when an exact-amount duplicate is found AND the new email is strictly newer than the existing doc's source email (multi-stage vendor refresh, task 59). Date-aware comparison via `Date.parse` to tolerate the heterogeneous RFC 2822 / ISO 8601 timestamp formats the watchers store. |
 | [`claude-code/channels/invoice/sample-detection.ts`](claude-code/channels/invoice/sample-detection.ts) | Pure `isSampleInvoice(text)` fuzzy matcher (diacritic-fold + Levenshtein at 0.85) + `extractPdfText(filePath)` thin wrapper around `pdftotext -raw`. Used by `intake-worker.ts` to detect and skip Alza watermarked sample/preview invoices before the Haiku classification call. |
@@ -298,17 +301,17 @@ Shared operational scaffolding for both pollers. Three pieces:
 
 Domain logic stays in each poller (Gmail/Outlook polling, Drive folder logic, audit DB schemas, OTel gauges).
 
-### claude-code/channels/invoice/intake-worker.ts (~1615 lines)
+### claude-code/channels/invoice/ intake pipeline (task 102, phase 2 decomposition)
 
-Deterministic job worker and pipeline orchestrator. Owns `executeInvoiceIntake` and `executeScanIntake`. Drives the full pipeline:
+[`intake-worker.ts`](claude-code/channels/invoice/intake-worker.ts) is now a ~33-line public barrel — the deterministic job worker / pipeline orchestrator logic moved verbatim into two executor modules plus a shared `intake-steps/` folder. Owns `executeInvoiceIntake` (in [`invoice-intake.ts`](claude-code/channels/invoice/invoice-intake.ts), ~745 lines) and `executeScanIntake` (in [`scan-intake.ts`](claude-code/channels/invoice/scan-intake.ts), ~544 lines). Shared leaf modules live in [`intake-steps/`](claude-code/channels/invoice/intake-steps/): `types.ts` (public types), `config.ts` (env consts), `observability.ts` (tracer/meter/counters), `guidance.ts` (decrypt + guidance-password resume phase). Drives the full pipeline:
 
-1. validate `input_json` via `workflow-schemas.ts` (fails fast with `schema_validation_failed` on bad rows)
-2. request email classification via channel (`invoice/classification-state.ts:parkForClassification`)
-3. download via `invoice/download-service.ts` (Outlook attachment, Gmail attachment, link extraction, GDrive)
+1. validate `input_json` via [`workflow-schemas.ts`](claude-code/channels/workflow-schemas.ts) (fails fast with `schema_validation_failed` on bad rows)
+2. request email classification via channel ([`invoice/classification-state.ts`](claude-code/channels/invoice/classification-state.ts):parkForClassification)
+3. download via [`invoice/download-service.ts`](claude-code/channels/invoice/download-service.ts) (Outlook attachment, Gmail attachment, link extraction, GDrive)
 4. record file path with `recordDownloadedFile()` so cleanup runs at terminal state
 5. request document classification via channel
 6. merge classifications, resolve month_tag (LLM `accounting_period` first, deterministic chain as safety net)
-7. resolve correspondent, dedup, tags, doc type, storage path — all via `invoice/postprocess-service.ts` which delegates to `paperless-adapter.ts`
+7. resolve correspondent, dedup, tags, doc type, storage path — all via [`invoice/postprocess-service.ts`](claude-code/channels/invoice/postprocess-service.ts) which delegates to [`paperless-adapter.ts`](claude-code/channels/paperless-adapter.ts)
 8. upload to Paperless directly OR PATCH the existing doc in place (force-refresh path)
 9. set custom fields after consumption (poll task → PATCH → verify)
 10. send Telegram notification
