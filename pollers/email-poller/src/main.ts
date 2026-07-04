@@ -278,6 +278,16 @@ export async function processNewEmails(
 }
 
 // ── Metrics registration ─────────────────────────────────────────────
+// The two workflow types and the full JobState set (mirrors shared/workflow/schema.ts),
+// used to zero-fill the jobs/backlog observable gauges so emptied series report 0
+// instead of going stale.
+const WORKFLOW_TYPES = ["invoice_intake", "scan_intake"] as const;
+const JOB_STATES = [
+  "queued", "running", "retryable", "awaiting_approval",
+  "awaiting_classification", "awaiting_user_guidance",
+  "completed", "failed", "cancelled",
+] as const;
+
 function registerMetrics(emailDb: Database, wfDb: Database): void {
   meter.createObservableGauge("email_watcher.emails", {
     description: "Total emails tracked by source",
@@ -318,20 +328,31 @@ function registerMetrics(emailDb: Database, wfDb: Database): void {
     const rows = wfDb
       .query("SELECT workflow_type, state, COUNT(*) AS count FROM jobs GROUP BY workflow_type, state")
       .all() as Array<{ workflow_type: string; state: string; count: number }>;
-    for (const row of rows) {
-      gauge.observe(row.count, { type: row.workflow_type, state: row.state });
+    // Zero-fill every (type × state) combo so a state that empties out (e.g. the
+    // last awaiting_approval job is actioned) actively reports 0 instead of the
+    // observable gauge dropping the series — which would leave Prometheus serving
+    // the last non-zero value and the dashboard's lastNotNull reducer showing a
+    // phantom count. Real counts overlay the zeros below.
+    const counts: Record<string, number> = {};
+    for (const type of WORKFLOW_TYPES) {
+      for (const state of JOB_STATES) counts[`${type} ${state}`] = 0;
+    }
+    for (const row of rows) counts[`${row.workflow_type} ${row.state}`] = row.count;
+    for (const [key, count] of Object.entries(counts)) {
+      const [type, state] = key.split(" ");
+      gauge.observe(count, { type, state });
     }
   });
 
   meter.createObservableGauge("email_watcher.backlog", {
-    description: "Jobs not yet in a terminal state",
+    description: "Jobs not yet in a terminal state (excludes completed/failed/cancelled)",
   }).addCallback((gauge) => {
     const rows = wfDb
-      .query("SELECT workflow_type, COUNT(*) AS count FROM jobs WHERE state NOT IN ('completed', 'failed') GROUP BY workflow_type")
+      .query("SELECT workflow_type, COUNT(*) AS count FROM jobs WHERE state NOT IN ('completed', 'failed', 'cancelled') GROUP BY workflow_type")
       .all() as Array<{ workflow_type: string; count: number }>;
     // Always observe both workflow types (including zero) so Prometheus sees
     // fresh samples instead of keeping stale values from earlier exports.
-    const counts: Record<string, number> = { invoice_intake: 0, scan_intake: 0 };
+    const counts: Record<string, number> = Object.fromEntries(WORKFLOW_TYPES.map((t) => [t, 0]));
     for (const row of rows) {
       counts[row.workflow_type] = row.count;
     }
