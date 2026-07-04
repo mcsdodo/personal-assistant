@@ -6,6 +6,9 @@ This project was developed as part of a private monorepo. This changelog was gen
 
 ## 2026-07-04
 
+### Added
+- workflow: failJob emits a per-incident `job.failed job_id=… reason=…` Loki line, covering pre-span failures that leave no trace
+
 ### Changed
 - **Decomposed the 1701-line [`invoice/intake-worker.ts`](claude-code/channels/invoice/intake-worker.ts) into a barrel + focused modules (task 102, phase 2)** — pure move, zero behavior change. [`intake-worker.ts`](claude-code/channels/invoice/intake-worker.ts) is now a ~33-line public barrel re-exporting `executeInvoiceIntake` and `executeScanIntake`; the public import path is unchanged so no callers needed updating. `executeInvoiceIntake` + its `downloadInvoice` wrapper moved verbatim into new [`invoice/invoice-intake.ts`](claude-code/channels/invoice/invoice-intake.ts) (~745 lines); `executeScanIntake` + `downloadFromGdrive` into [`invoice/scan-intake.ts`](claude-code/channels/invoice/scan-intake.ts) (~544 lines); and the shared leaf modules — types, env config, OTel observability instruments, and the guidance/decrypt resume phase — into [`invoice/intake-steps/{types,config,observability,guidance}.ts`](claude-code/channels/invoice/intake-steps/).
 - **checker-mcp test suite reorganized across separate modules** — test invocation changes from `pytest test_matching.py` to bare `pytest` (173 tests total across `test_parsing.py`, `test_matching.py`, `test_collection.py`, and `conftest.py`).

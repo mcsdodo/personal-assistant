@@ -157,6 +157,19 @@ export function failJob(db: Database, jobId: string, error: unknown): boolean {
 
   if (result.changes === 0) return false;
   addJobEvent(db, jobId, "failed", error);
+  // Per-incident Loki signal, mirroring the `guidance.requested` line. Every
+  // failure path funnels through failJob, including the two pre-span guards
+  // (invalid_input / schema_validation_failed) that abort before any trace
+  // span is emitted — so this stdout line (→ Alloy → Loki) is the only
+  // per-job record those failures leave beyond error_json. The dashboard
+  // "Recent Failures" table reads it, keeping the failed count and its
+  // drill-down on the same (all-reasons) scope.
+  const reason =
+    error && typeof error === "object" && "code" in error &&
+    typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code
+      : "unknown";
+  console.log(`job.failed job_id=${jobId} reason=${reason}`);
   cleanupJobFiles(db, jobId);
   return true;
 }

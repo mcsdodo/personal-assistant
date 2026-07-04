@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -112,6 +112,34 @@ describe("workflow-db", () => {
 
     expect(getJob(db, completed.id)?.state).toBe("completed");
     expect(getJob(db, failed.id)?.state).toBe("failed");
+  });
+
+  test("failJob emits a per-incident Loki line with job_id and reason", () => {
+    const spy = spyOn(console, "log");
+    try {
+      const job = createJob(db, { workflowType: "synthetic" });
+      failJob(db, job.id, { code: "schema_validation_failed", message: "bad field" });
+      const line = spy.mock.calls
+        .map((args) => String(args[0]))
+        .find((l) => l.startsWith("job.failed"));
+      expect(line).toBe(`job.failed job_id=${job.id} reason=schema_validation_failed`);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("failJob line reason falls back to 'unknown' for non-coded errors", () => {
+    const spy = spyOn(console, "log");
+    try {
+      const job = createJob(db, { workflowType: "synthetic" });
+      failJob(db, job.id, "plain string error");
+      const line = spy.mock.calls
+        .map((args) => String(args[0]))
+        .find((l) => l.startsWith("job.failed"));
+      expect(line).toBe(`job.failed job_id=${job.id} reason=unknown`);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("handles approval and cancellation", () => {
