@@ -37,10 +37,10 @@ Keep examples concrete enough that contributors and coding agents can still map 
 ### Unit + integration tests (always run first)
 
 ```bash
-# pollers workspace (200 tests)
+# pollers workspace (171 tests)
 cd compose.stacks/infra/personal-assistant/pollers && bun test
 
-# claude-code channels (390 tests)
+# claude-code channels (533 tests)
 cd compose.stacks/infra/personal-assistant/claude-code && bun test
 ```
 
@@ -241,7 +241,7 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 | `checker-mcp/server.py` | FastMCP wrapping the engine (4 tools), imports from `engine.*` |
 | `checker-mcp/webapp.py` | Flask web UI (matching view + P&L view), imports from `engine.*` |
 | `checker-mcp/entrypoint.sh` | Two-process entrypoint (MCP background + Flask PID 1) |
-| `checker-mcp/match_invoices.py` | CLI entry point + shared configuration constants (~235 lines after Phase 5 split) |
+| `checker-mcp/match_invoices.py` | CLI entry point + shared configuration constants (~258 lines after Phase 5 split) |
 | `checker-mcp/engine/` | Layered matching engine: `models.py`, `parsing.py`, `matching.py`, `client.py`, `collection.py` |
 | `outlook-mcp/server.py` | Outlook MCP (MSAL device code auth) |
 | `observability/` | Local dev Alloy, Prometheus, Loki, Grafana configs |
@@ -254,7 +254,7 @@ Navigational guide to the largest source files. Line numbers are approximate.
 
 **`claude-code/channels/tracing.ts` is the one remaining locked twin** — it imports `@opentelemetry/*`, so it can't move into dependency-free `shared/`. Edit it there, then copy it verbatim into [`pollers/lib/tracing.ts`](pollers/lib/tracing.ts) under that file's one-line header comment; [`pollers/lib/tracing-twin.test.ts`](pollers/lib/tracing-twin.test.ts) asserts byte-identity (header + channels source) and fails the pollers suite otherwise.
 
-### checker-mcp/engine/ (~1240 lines split across 5 modules)
+### checker-mcp/engine/ (~1475 lines split across 5 modules)
 
 The matching engine is a layered package. Strict layering: `models` has no dependencies; `parsing`, `matching`, `client` depend only on `models`; `collection` depends on all four.
 
@@ -263,18 +263,18 @@ The matching engine is a layered package. Strict layering: `models` has no depen
 | `engine/models.py` | ~85 | `PLCategory`, `SkipReason`, `SkipRule`, `SkipResult`, `SKIP_RULES`, `SKIP_ACCOUNT_RULES` (loaded from `SKIP_PAYROLL_ACCOUNTS` env var) |
 | `engine/parsing.py` | ~220 | Statement parsing regexes (`RE_STATEMENT_AMOUNT`, `RE_PAGE_BREAK`, `RE_OPENING_BALANCE`, `RE_ORIG_AMOUNT`, `RE_COUNTERPARTY_ACCOUNT`), `parse_statement_amount()`, `parse_movements()` (Tatra Banka format; each movement dict includes `"account"` key — counterparty account token like `"1111/000000-1372371018"`, or `None` for POS/ATM/fee rows), invoice amount extraction (`RE_AMOUNT`, `RE_TOTAL_AMOUNT`, `RE_CURRENCY_AMOUNT`), `normalize_amount()`, `extract_invoice_amounts()` |
 | `engine/matching.py` | ~295 | `MONTH_WINDOW`, `month_offset()`, `get_month_window()`, `skip_reason()`, `_movement_date_key()`, `detect_returned_payments()` (returns set of movement indices that are legs of a returned-payment pair — keyed on abs amount + counterparty account, outgoing dated on/before incoming; `account=None` movements skipped), `extract_prefix()`, `_pair_keys()`, `build_pair_index()` (filename prefix + title prefix + cross-sign pairing), `find_matching_invoice()` (4-pass: primary+sign, primary, secondary+sign, secondary) |
-| `engine/client.py` | ~70 | `PaperlessClient` — paginated REST wrapper for documents, tags, custom fields, document types |
-| `engine/collection.py` | ~640 | `collect_month()`: flattens all movements of the month, calls `detect_returned_payments()` once before matching, marks both legs of a returned-payment pair `status="cancelled"` / `label="RETURNED"` so neither consumes an invoice. Remaining pipeline: skip rules, `find_matching_invoice()`, alt-amount matching, amount-only cancelled-pair fallback (for POS reversals with no account), pair enrichment. **Known limitation:** cross-month returns (payment in one statement, return in the next) are not detected — the existing amount-only post-matching detector still applies for those when both legs are `MISSING`. `filter_resolved_unmatched()`, `collect_pl()` (full-year orchestration with VAT deduction + cross-sign cancellation + env-driven income-prefix matching (PL_INCOME_PREFIXES → collect_pl's income_prefixes arg); already skips `cancelled` rows, so RETURNED legs are excluded from P&L), `_detail_to_pl_category()` |
+| `engine/client.py` | ~170 | `PaperlessClient` — paginated REST wrapper for documents, tags, custom fields, document types |
+| `engine/collection.py` | ~700 | `collect_month()`: flattens all movements of the month, calls `detect_returned_payments()` once before matching, marks both legs of a returned-payment pair `status="cancelled"` / `label="RETURNED"` so neither consumes an invoice. Remaining pipeline: skip rules, `find_matching_invoice()`, alt-amount matching, amount-only cancelled-pair fallback (for POS reversals with no account), pair enrichment. **Known limitation:** cross-month returns (payment in one statement, return in the next) are not detected — the existing amount-only post-matching detector still applies for those when both legs are `MISSING`. `filter_resolved_unmatched()`, `collect_pl()` (full-year orchestration with VAT deduction + cross-sign cancellation + env-driven income-prefix matching (PL_INCOME_PREFIXES → collect_pl's income_prefixes arg); already skips `cancelled` rows, so RETURNED legs are excluded from P&L), `_detail_to_pl_category()` |
 
-### checker-mcp/match_invoices.py (~235 lines)
+### checker-mcp/match_invoices.py (~258 lines)
 
 CLI entry point only. Owns argparse, terminal-color rendering (`print_results`), the high-level command flow (`main`), and the configuration constants (`PAPERLESS_URL`, `ACCOUNTING_TAG_NAME`, `ACCOUNT_STATEMENT_TAG_NAME`, `INVOICE_TYPE_NAME`, `TOTAL_AMOUNT_FIELD_NAME`, `TOTAL_AMOUNT_ALT_FIELD_NAME`) which are also imported by `server.py` and `webapp.py` so they don't need their own copy.
 
-### checker-mcp/webapp.py (~520 lines)
+### checker-mcp/webapp.py (~854 lines)
 
 Flask app on `:5000`. Matching view (terminal-style, status codes: ok/missing/manual/info) and P&L view (annual summary, income/expense). Query params: `?month=2026-03`, `?all`, `?year=2026`. Paperless links for drill-down.
 
-### checker-mcp/server.py (~235 lines)
+### checker-mcp/server.py (~207 lines)
 
 FastMCP wrapping `match_invoices.py`. 4 tools via HTTP. Lazy-init `PaperlessClient` singleton + field ID resolution. Host header rewrite for DNS rebinding protection (Docker networking).
 
@@ -620,7 +620,7 @@ Unit test rules for bun tests live in `claude-code/channels/CLAUDE.md`. E2E pyte
 ```bash
 cd compose.stacks/infra/personal-assistant
 
-# All tests (11 tests, ~5-10 min total)
+# All tests (13 tests, ~5-10 min total)
 python -m pytest tests/ -v --timeout=300
 
 # Single module
@@ -634,7 +634,7 @@ python -m pytest tests/ -v -m gmail --timeout=300
 
 ### Unit & Integration Tests
 
-~370 tests across 20 test files covering all channels, workers, and DB modules. Run with Bun:
+704 tests across 34 test files (533 in `claude-code/channels`, 171 in `pollers`) covering all channels, workers, and DB modules. Run with Bun:
 ```bash
 cd claude-code/channels
 bun test
@@ -668,7 +668,7 @@ bun test
 ### CI
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on push to main when relevant paths change:
-- **channels (Bun)** — runs `bun test` for all 15 test files
+- **channels (Bun)** — separate `test-channels` ([claude-code/channels/](claude-code/channels/)) and `test-pollers` ([pollers/](pollers/)) jobs, each running `bun test`
 - **checker-mcp (Python)** — runs `pytest` (bare discovery across [checker-mcp/test_parsing.py](checker-mcp/test_parsing.py), [checker-mcp/test_matching.py](checker-mcp/test_matching.py), [checker-mcp/test_collection.py](checker-mcp/test_collection.py), [checker-mcp/test_cache.py](checker-mcp/test_cache.py), [checker-mcp/test_result_format.py](checker-mcp/test_result_format.py) — 173 tests)
 
 ### What's Mocked vs Real
