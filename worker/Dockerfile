@@ -15,7 +15,7 @@ WORKDIR /app
 RUN apk add --no-cache qpdf libjpeg-turbo poppler-utils
 
 COPY claude-code/channels/package.json claude-code/channels/bunfig.toml claude-code/channels/tsconfig.json claude-code/channels/bun.lock ./channels/
-RUN cd channels && bun install --no-summary
+RUN cd channels && (bun install --no-summary --frozen-lockfile || bun install --no-summary)
 
 COPY shared /shared
 COPY claude-code/channels ./channels
