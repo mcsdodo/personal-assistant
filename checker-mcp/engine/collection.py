@@ -43,6 +43,46 @@ def _invoice_order_date(inv: dict, receipt_datetime_field_id: int | None) -> str
     return str(created)[:10] if created else ""
 
 
+def resolve_bundle_primaries(invoice_docs, tx_group_field_id, receipt_datetime_field_id):
+    """Collapse tx_group bundles to one primary each.
+
+    Groups invoice_docs by the tx_group custom-field value. For each group with
+    more than one member, keeps the primary (latest _invoice_order_date;
+    tie-break: highest id) and drops the siblings from invoice_docs in place.
+
+    Returns bundle_map: {primary_doc_id: [{"title", "doc_id"}, ...siblings]}.
+    No-op (returns {}) when tx_group_field_id is None.
+    """
+    if tx_group_field_id is None:
+        return {}
+
+    groups: dict[str, list[dict]] = {}
+    for inv in invoice_docs:
+        for cf in inv.get("custom_fields", []):
+            if cf.get("field") == tx_group_field_id and cf.get("value") not in (None, ""):
+                groups.setdefault(str(cf["value"]), []).append(inv)
+                break
+
+    bundle_map: dict[int, list[dict]] = {}
+    suppressed_ids: set[int] = set()
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        primary = max(
+            members,
+            key=lambda d: (_invoice_order_date(d, receipt_datetime_field_id), d["id"]),
+        )
+        siblings = [m for m in members if m["id"] != primary["id"]]
+        bundle_map[primary["id"]] = [
+            {"title": m.get("title", ""), "doc_id": m["id"]} for m in siblings
+        ]
+        suppressed_ids.update(m["id"] for m in siblings)
+
+    if suppressed_ids:
+        invoice_docs[:] = [d for d in invoice_docs if d["id"] not in suppressed_ids]
+    return bundle_map
+
+
 def collect_month(
     client: PaperlessClient,
     yyyy_mm: str,
@@ -54,6 +94,7 @@ def collect_month(
     global_matched_ids: set | None = None,
     total_amount_alt_field_id: int | None = None,
     receipt_datetime_field_id: int | None = None,
+    tx_group_field_id: int | None = None,
 ) -> dict:
     """Process one month, return structured data."""
     result = {
@@ -101,6 +142,12 @@ def collect_month(
             ):
                 seen_ids.add(doc["id"])
                 invoice_docs.append(doc)
+
+    # Collapse operator-declared transaction bundles (proforma + payment + final
+    # invoice sharing a tx_group value) to their single primary before matching.
+    bundle_map = resolve_bundle_primaries(
+        invoice_docs, tx_group_field_id, receipt_datetime_field_id
+    )
 
     # Extract amounts (priority: total_amount custom field > regex)
     for inv in invoice_docs:

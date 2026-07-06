@@ -32,6 +32,7 @@ DOCUMENT_TYPE_ID = 10  # document_type for Document (statements, worklogs)
 TOTAL_AMOUNT_FIELD_ID = 50
 TOTAL_AMOUNT_ALT_FIELD_ID = 51
 RECEIPT_DATETIME_FIELD_ID = 52
+TX_GROUP_FIELD_ID = 53
 
 
 def _make_statement(doc_id, month_tag, content):
@@ -59,6 +60,18 @@ def _make_invoice(doc_id, title, filename, month_tag, amount):
             {"field": TOTAL_AMOUNT_FIELD_ID, "value": str(amount)},
         ],
     }
+
+
+def _make_bundle_invoice(doc_id, title, filename, month_tag, amount, tx_group, created):
+    """Invoice carrying a tx_group custom field + a `created` date.
+
+    `created` (YYYY-MM-DD) feeds _invoice_order_date's fallback so the
+    latest-date primary selection is deterministic in tests.
+    """
+    inv = _make_invoice(doc_id, title, filename, month_tag, amount)
+    inv["custom_fields"].append({"field": TX_GROUP_FIELD_ID, "value": tx_group})
+    inv["created"] = created
+    return inv
 
 
 def _make_invoice_alt(doc_id, title, filename, month_tag, amount, alt_amount):
@@ -130,6 +143,7 @@ def _collect(
     global_matched_ids=None,
     alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID,
     rd_field_id=RECEIPT_DATETIME_FIELD_ID,
+    tx_group_field_id=TX_GROUP_FIELD_ID,
 ):
     """Shorthand for collect_month with defaults."""
     return collect_month(
@@ -143,6 +157,7 @@ def _collect(
         global_matched_ids,
         total_amount_alt_field_id=alt_field_id,
         receipt_datetime_field_id=rd_field_id,
+        tx_group_field_id=tx_group_field_id,
     )
 
 

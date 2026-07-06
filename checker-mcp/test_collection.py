@@ -25,8 +25,10 @@ from conftest import (
     RECEIPT_DATETIME_FIELD_ID,
     TAG_IDS,
     TOTAL_AMOUNT_FIELD_ID,
+    TX_GROUP_FIELD_ID,
     _collect,
     _collect_pl,
+    _make_bundle_invoice,
     _make_invoice,
     _make_invoice_alt,
     _make_invoice_no_field,
@@ -1697,3 +1699,51 @@ class TestCollectPLIncomePrefixesParam:
         pl = _collect_pl(client, 2026, income_prefixes=("sygic",))
         assert pl["income"] == 0.0
         assert len(pl["income_items"]) == 0
+
+
+class TestTxGroupBundling:
+    """tx_group collapses a proforma+payment+final bundle to one line."""
+
+    def _bundle_client(self):
+        # One payment movement; three docs share tx_group "VS42", same amount.
+        stmt = _make_statement(
+            900, "2026-03", _stmt(("10.03.2026", "Vendor payment", -120.00))
+        )
+        proforma = _make_bundle_invoice(1, "proforma_vendor", "proforma.pdf", "2026-03", 120.00, "VS42", "2026-03-01")
+        payment = _make_bundle_invoice(2, "payment_conf", "payment.pdf", "2026-03", 120.00, "VS42", "2026-03-05")
+        final = _make_bundle_invoice(3, "final_invoice", "final.pdf", "2026-03", 120.00, "VS42", "2026-03-09")
+        return _mock_client({
+            TAG_IDS["2026-02"]: [],
+            TAG_IDS["2026-03"]: [stmt, proforma, payment, final],
+            TAG_IDS["2026-04"]: [],
+        })
+
+    def test_bundle_collapses_to_single_matched_line(self):
+        result = _collect(self._bundle_client(), "2026-03")
+        # Exactly one row references the bundle; no info/pending/missing siblings.
+        doc_rows = [r for r in result["rows"] if r.get("doc_id") in {1, 2, 3}]
+        assert len(doc_rows) == 1
+        assert doc_rows[0]["status"] == "ok"
+        assert result["stats"]["info"] == 0
+        assert result["stats"]["missing"] == 0
+
+    def test_primary_is_latest_dated_doc(self):
+        result = _collect(self._bundle_client(), "2026-03")
+        doc_rows = [r for r in result["rows"] if r.get("doc_id") in {1, 2, 3}]
+        assert doc_rows[0]["doc_id"] == 3  # final invoice, latest created
+
+    def test_single_member_group_is_noop(self):
+        stmt = _make_statement(900, "2026-03", _stmt(("10.03.2026", "x", -50.00)))
+        lone = _make_bundle_invoice(7, "lone", "lone.pdf", "2026-03", 50.00, "VSlone", "2026-03-02")
+        client = _mock_client({
+            TAG_IDS["2026-02"]: [], TAG_IDS["2026-03"]: [stmt, lone], TAG_IDS["2026-04"]: [],
+        })
+        result = _collect(client, "2026-03")
+        assert result["stats"]["ok"] == 1
+        assert {r["doc_id"] for r in result["rows"] if r.get("doc_id")} == {7}
+
+    def test_tx_group_field_none_is_inert(self):
+        # With tx_group_field_id=None all three docs are independent -> the two
+        # unmatched siblings surface as info rows (pre-feature behaviour).
+        result = _collect(self._bundle_client(), "2026-03", tx_group_field_id=None)
+        assert result["stats"]["info"] == 2
