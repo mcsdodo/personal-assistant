@@ -248,6 +248,7 @@ def _mock_client_for_pl(documents_by_tag):
 def _collect_pl(
     client, year, alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID, income_prefixes=("techlab",),
     tx_group_field_id=TX_GROUP_FIELD_ID,
+    receipt_datetime_field_id=RECEIPT_DATETIME_FIELD_ID,
 ):
     """Shorthand for collect_pl with test defaults.
 
@@ -265,6 +266,7 @@ def _collect_pl(
         total_amount_alt_field_id=alt_field_id,
         income_prefixes=income_prefixes,
         tx_group_field_id=tx_group_field_id,
+        receipt_datetime_field_id=receipt_datetime_field_id,
     )
 
 

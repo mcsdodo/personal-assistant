@@ -165,6 +165,7 @@ def main():
     total_amount_field_id = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     total_amount_alt_field_id = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
     tx_group_field_id = client.get_custom_field_id(TX_GROUP_FIELD_NAME)
+    receipt_datetime_field_id = client.get_custom_field_id(RECEIPT_DATETIME_FIELD_NAME)
 
     if args.month:
         months = [args.month]
@@ -219,6 +220,7 @@ def main():
                 global_matched_ids,
                 total_amount_alt_field_id=total_amount_alt_field_id,
                 tx_group_field_id=tx_group_field_id,
+                receipt_datetime_field_id=receipt_datetime_field_id,
             )
     # Process oldest-first: same-month invoices are preferred, so older months
     # claim their own invoices before newer months can steal them via window.
@@ -234,6 +236,7 @@ def main():
             global_matched_ids,
             total_amount_alt_field_id=total_amount_alt_field_id,
             tx_group_field_id=tx_group_field_id,
+            receipt_datetime_field_id=receipt_datetime_field_id,
         )
         for m in months
     ]

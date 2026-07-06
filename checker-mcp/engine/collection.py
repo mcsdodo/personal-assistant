@@ -145,6 +145,10 @@ def collect_month(
 
     # Collapse operator-declared transaction bundles (proforma + payment + final
     # invoice sharing a tx_group value) to their single primary before matching.
+    # Assumption: a bundle represents ONE economic payment plus non-payment
+    # supporting docs (proforma/delivery note/etc). Sharing a tx_group across
+    # two distinct bank movements suppresses the earlier one, surfacing it as
+    # MISSING instead of matched.
     bundle_map = resolve_bundle_primaries(
         invoice_docs, tx_group_field_id, receipt_datetime_field_id
     )
@@ -499,6 +503,7 @@ def collect_pl(
     total_amount_alt_field_id: int | None = None,
     income_prefixes: tuple[str, ...] = (),
     tx_group_field_id: int | None = None,
+    receipt_datetime_field_id: int | None = None,
 ) -> dict:
     """Collect P&L data for a given year.
 
@@ -530,6 +535,7 @@ def collect_pl(
             global_matched_ids,
             total_amount_alt_field_id=total_amount_alt_field_id,
             tx_group_field_id=tx_group_field_id,
+            receipt_datetime_field_id=receipt_datetime_field_id,
         )
         for m in months
     ]

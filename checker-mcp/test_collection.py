@@ -1769,3 +1769,46 @@ class TestTxGroupBundling:
         })
         pl = _collect_pl(client, 2026, income_prefixes=())
         assert round(pl["expenses"].get("invoiced", 0.0), 2) == -120.00
+
+    def test_collect_pl_orders_primary_by_receipt_datetime_not_created(self):
+        # created-latest doc (id=1) and receipt_datetime-latest doc (id=2) are
+        # DIFFERENT docs with DIFFERENT amounts. The bank movement only matches
+        # the receipt_datetime-latest doc's amount (150.00). If collect_pl still
+        # fell back to `created` for primary selection, it would keep doc 1
+        # (amount 100.00), the movement would go unmatched, and the booked
+        # expense would not equal -150.00.
+        created_latest = _make_bundle_invoice(
+            1, "created_latest", "a.pdf", "2026-03", 100.00, "VS99", "2026-03-09"
+        )
+        # No receipt_datetime -> order date falls back to `created` (2026-03-09).
+
+        receipt_latest = _make_bundle_invoice(
+            2, "receipt_latest", "b.pdf", "2026-03", 150.00, "VS99", "2026-03-01"
+        )
+        receipt_latest["custom_fields"].append(
+            {"field": RECEIPT_DATETIME_FIELD_ID, "value": "2026-03-20"}
+        )
+        # receipt_datetime (2026-03-20) is later than created_latest's created
+        # date (2026-03-09), so this doc should win primary selection.
+
+        middle = _make_bundle_invoice(
+            3, "middle", "c.pdf", "2026-03", 130.00, "VS99", "2026-03-05"
+        )
+        middle["custom_fields"].append(
+            {"field": RECEIPT_DATETIME_FIELD_ID, "value": "2026-03-10"}
+        )
+
+        client = _mock_client_for_pl({
+            TAG_IDS["2026-02"]: [],
+            TAG_IDS["2026-03"]: [
+                _make_statement(
+                    900, "2026-03", _stmt(("10.03.2026", "Vendor payment", -150.00))
+                ),
+                created_latest,
+                receipt_latest,
+                middle,
+            ],
+            TAG_IDS["2026-04"]: [],
+        })
+        pl = _collect_pl(client, 2026, income_prefixes=())
+        assert round(pl["expenses"].get("invoiced", 0.0), 2) == -150.00
