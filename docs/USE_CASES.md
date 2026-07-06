@@ -72,6 +72,7 @@ Detailed documentation: [`uc2-invoice-matching.md`](./uc2-invoice-matching.md)
 | 2.5 | Send email after user approval | -- |
 | 2.6 | Month-end auto-check (cron) | -- |
 | 2.7 | [P&L annual summary](./uc2-invoice-matching.md#uc-27-pl-summary) | DONE |
+| 2.8 | [Bundle grouping (proforma + payment + final = one line)](./uc2-invoice-matching.md#uc-28-bundle-grouping) | DONE |
 
 ## Planned but not implemented
 

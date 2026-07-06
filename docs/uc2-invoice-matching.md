@@ -65,11 +65,23 @@ Annual profit & loss summary on accrual basis.
 
 **Code:** [`checker-mcp/server.py:106-120`](../checker-mcp/server.py#L106) — `get_pl_summary()`: calls `collect_pl()` from engine. Engine implementation at [`match_invoices.py:841-1051`](../checker-mcp/match_invoices.py#L841).
 
+## UC-2.8: Bundle Grouping
+
+A single expense sometimes arrives as three separate Paperless documents - a pro-forma invoice (zálohová faktúra), a payment confirmation (faktúra k prijatej platbe), and the final tax invoice (daňový doklad) - but there is only one row in the bank statement. Without grouping, the matcher renders the bundle as three lines (one matched movement plus two unmatched extras that later escalate to MISSING).
+
+The operator sets a shared string custom field `tx_group` on every document of one bundle (any shared token; the final invoice number / variabilný symbol is the natural choice). The checker groups fetched invoices by that value and, for each group of 2+, keeps one primary and drops the siblings before matching, so the siblings never consume a movement, never emit an unmatched row, and never reach the P&L fallback. The surviving primary row carries `bundle_docs` listing the suppressed siblings, rendered under the primary line in the web UI.
+
+**Primary = latest issue date.** Selection uses [`_invoice_order_date`](../checker-mcp/engine/collection.py), which prefers the `receipt_datetime` custom field (the LLM-extracted issue date) and falls back to Paperless `created`; tie-break is highest document id. `receipt_datetime_field_id` is threaded through every surface (matching view, P&L, MCP tools, CLI) so all of them pick the same primary - the final invoice, which is issued last.
+
+**Operator-owned.** The intake pipeline never writes `tx_group`; field registration ([`paperless-fields.ts`](../claude-code/channels/paperless-fields.ts)) only guarantees the field exists so the operator can set it in the Paperless UI. The feature is inert when the field is unset (`tx_group_field_id is None`) - output is identical to pre-feature.
+
+**Code:** [`resolve_bundle_primaries`](../checker-mcp/engine/collection.py) in `engine/collection.py`, called from `collect_month` before the movement-matching loop. Design: [_tasks/106-invoice-bundle-grouping](../../../../_tasks/106-invoice-bundle-grouping/).
+
 ## Lazy Client
 
 The Paperless API client is initialized lazily on first tool call, resolving document type IDs, custom field IDs, and tag IDs once.
 
-**Code:** [`checker-mcp/server.py:27-49`](../checker-mcp/server.py#L27) — `_ClientHolder` singleton: resolves `statement_type_id`, `total_amount_field_id`, `total_amount_alt_field_id`, `invoicing_tag_id`.
+**Code:** [`checker-mcp/server.py`](../checker-mcp/server.py) - `_ClientHolder` singleton: resolves the statement/invoice type ids, the accounting tag id, and the custom-field ids (`total_amount`, `total_amount_alt`, `tx_group`, `receipt_datetime`).
 
 ## Not Yet Implemented
 
