@@ -35,6 +35,7 @@ def clean_result(result: dict) -> dict:
                 "invoice_name": _clean_str(row.get("detail", "")),
                 "doc_id": row.get("doc_id"),
                 "skip_label": row.get("label", ""),
+                "bundle_docs": row.get("bundle_docs", []),
             }
         )
     return {

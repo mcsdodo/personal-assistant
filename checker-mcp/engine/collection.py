@@ -149,6 +149,12 @@ def collect_month(
         invoice_docs, tx_group_field_id, receipt_datetime_field_id
     )
 
+    def _attach_bundle_docs(rows):
+        for row in rows:
+            pid = row.get("doc_id")
+            if pid in bundle_map:
+                row["bundle_docs"] = bundle_map[pid]
+
     # Extract amounts (priority: total_amount custom field > regex)
     for inv in invoice_docs:
         if "_amounts" not in inv:
@@ -211,6 +217,7 @@ def collect_month(
                     "doc_id": inv["id"],
                 }
             )
+        _attach_bundle_docs(result["rows"])
         return result
 
     matched_ids = set(global_matched_ids) if global_matched_ids is not None else set()
@@ -429,6 +436,7 @@ def collect_month(
                     {"title": paired["title"], "doc_id": paired["id"]},
                 ]
 
+    _attach_bundle_docs(result["rows"])
     return result
 
 

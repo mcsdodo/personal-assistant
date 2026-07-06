@@ -353,6 +353,15 @@ def render_page(results, totals, months_display):
                 f'<span class="l">{_esc(r["label"])}</span>'
                 f"{detail_part}</div>"
             )
+            bundle_docs = r.get("bundle_docs")
+            if bundle_docs:
+                blinks = [
+                    f'<a href="{PAPERLESS_URL}/documents/{d["doc_id"]}/details" target="_blank">{_esc(d["title"])}</a> #{d["doc_id"]}'
+                    for d in bundle_docs
+                ]
+                sections.append(
+                    f'<div class="bundle-sub">+{len(bundle_docs)} grouped: {", ".join(blinks)}</div>'
+                )
 
     body = "\n".join(sections)
     months_str = ", ".join(months_display)
@@ -386,6 +395,9 @@ h1{{color:#58a6ff;font-size:15px;font-weight:600}}
 .r.skipped{{color:#484f58}}
 .r a{{color:inherit;text-decoration:none}}
 .r a:hover{{text-decoration:underline}}
+.bundle-sub{{color:#484f58;padding-left:2em;font-size:12px}}
+.bundle-sub a{{color:inherit;text-decoration:none}}
+.bundle-sub a:hover{{text-decoration:underline}}
 .sum{{
   margin-top:1.4em;padding-top:.8em;border-top:1px solid #21262d;
   font-weight:bold;color:#e2e4e8;font-size:13px;

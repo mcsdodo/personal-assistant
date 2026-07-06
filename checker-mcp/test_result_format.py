@@ -55,3 +55,14 @@ def test_strips_ansi_codes():
     cleaned = clean_result(_engine_row())
     assert "\033[" not in cleaned["header"]
     assert "\033[" not in cleaned["rows"][0]["description"]
+
+
+def test_clean_result_forwards_bundle_docs():
+    result = {
+        "month": "2026-03", "header": "", "stats": {},
+        "rows": [{"status": "ok", "amount": "120.00-", "desc": "x", "detail": "final",
+                  "doc_id": 3, "label": "OK",
+                  "bundle_docs": [{"title": "proforma", "doc_id": 1}]}],
+    }
+    out = clean_result(result)
+    assert out["rows"][0]["bundle_docs"] == [{"title": "proforma", "doc_id": 1}]

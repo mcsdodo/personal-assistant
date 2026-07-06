@@ -1732,6 +1732,12 @@ class TestTxGroupBundling:
         doc_rows = [r for r in result["rows"] if r.get("doc_id") in {1, 2, 3}]
         assert doc_rows[0]["doc_id"] == 3  # final invoice, latest created
 
+    def test_primary_row_lists_bundle_siblings(self):
+        result = _collect(self._bundle_client(), "2026-03")
+        row = next(r for r in result["rows"] if r.get("doc_id") == 3)
+        sib_ids = {b["doc_id"] for b in row["bundle_docs"]}
+        assert sib_ids == {1, 2}
+
     def test_single_member_group_is_noop(self):
         stmt = _make_statement(900, "2026-03", _stmt(("10.03.2026", "x", -50.00)))
         lone = _make_bundle_invoice(7, "lone", "lone.pdf", "2026-03", 50.00, "VSlone", "2026-03-02")
