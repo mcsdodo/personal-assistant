@@ -10,6 +10,7 @@ const FIELD_DEFS: Record<string, { data_type: string }> = {
   order_id: { data_type: "string" },
   litres: { data_type: "float" },
   receipt_datetime: { data_type: "string" },
+  tx_group: { data_type: "string" },
 };
 
 interface CustomFieldResponse {

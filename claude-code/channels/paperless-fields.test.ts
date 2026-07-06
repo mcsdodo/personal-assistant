@@ -174,4 +174,32 @@ describe("PaperlessFieldRegistry", () => {
     expect(registry.getFieldId("total_amount")).toBe(1);
     expect(registry.getFieldId("order_id")).toBe(4);
   });
+
+  test("registers tx_group as a string field on cold start", async () => {
+    const created: Array<{ name: string; data_type: string }> = [];
+    globalThis.fetch = mock(async (_url: string, init?: RequestInit) => {
+      const isPost = init?.method === "POST";
+      if (!isPost) {
+        // GET — empty list
+        return {
+          ok: true,
+          json: async () => ({ count: 0, next: null, results: [] }),
+        } as Response;
+      }
+      // POST — record and return synthetic created field
+      const body = JSON.parse(init!.body as string);
+      created.push(body);
+      return {
+        ok: true,
+        json: async () => ({ id: created.length, name: body.name, data_type: body.data_type }),
+      } as Response;
+    }) as any;
+
+    const registry = new PaperlessFieldRegistry("https://paperless.test", "tok");
+    await registry.init();
+
+    const tx = created.find((f) => f.name === "tx_group");
+    expect(tx).toBeDefined();
+    expect(tx!.data_type).toBe("string");
+  });
 });
