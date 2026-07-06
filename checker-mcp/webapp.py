@@ -28,6 +28,7 @@ from match_invoices import (
     RECEIPT_DATETIME_FIELD_NAME,
     TOTAL_AMOUNT_ALT_FIELD_NAME,
     TOTAL_AMOUNT_FIELD_NAME,
+    TX_GROUP_FIELD_NAME,
 )
 
 app = Flask(__name__)
@@ -160,6 +161,7 @@ def index():
         return _err(f"Document type '{INVOICE_TYPE_NAME}' not found")
     ta_field = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     ta_alt_field = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
+    tx_group_field_id = client.get_custom_field_id(TX_GROUP_FIELD_NAME)
 
     # Discover all months that have account-statement docs — these are the
     # months whose movements claim invoices in global_matched_ids. Matching
@@ -207,6 +209,7 @@ def index():
             global_matched_ids,
             total_amount_alt_field_id=ta_alt_field,
             receipt_datetime_field_id=rd_field,
+            tx_group_field_id=tx_group_field_id,
         )
         for m in process_months
     ]
@@ -427,6 +430,7 @@ def profit_loss():
         return _err(f"Document type '{INVOICE_TYPE_NAME}' not found")
     ta_field = client.get_custom_field_id(TOTAL_AMOUNT_FIELD_NAME)
     ta_alt_field = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
+    tx_group_field_id = client.get_custom_field_id(TX_GROUP_FIELD_NAME)
 
     # Find years with statement data
     tag_map = client.get_all_tags()
@@ -450,6 +454,7 @@ def profit_loss():
         ta_field,
         total_amount_alt_field_id=ta_alt_field,
         income_prefixes=INCOME_PREFIXES,
+        tx_group_field_id=tx_group_field_id,
     )
     return render_pl(pl, available_years, hourly_rates=_load_rates())
 

@@ -1747,3 +1747,19 @@ class TestTxGroupBundling:
         # unmatched siblings surface as info rows (pre-feature behaviour).
         result = _collect(self._bundle_client(), "2026-03", tx_group_field_id=None)
         assert result["stats"]["info"] == 2
+
+    def test_bundle_counts_once_in_pl(self):
+        # Statement-matched expense bundle contributes one movement -> one booking;
+        # the two unmatched siblings must NOT appear anywhere in P&L.
+        client = _mock_client_for_pl({
+            TAG_IDS["2026-02"]: [],
+            TAG_IDS["2026-03"]: [
+                _make_statement(900, "2026-03", _stmt(("10.03.2026", "Vendor payment", -120.00))),
+                _make_bundle_invoice(1, "proforma", "p.pdf", "2026-03", 120.00, "VS42", "2026-03-01"),
+                _make_bundle_invoice(2, "payment", "pay.pdf", "2026-03", 120.00, "VS42", "2026-03-05"),
+                _make_bundle_invoice(3, "final", "f.pdf", "2026-03", 120.00, "VS42", "2026-03-09"),
+            ],
+            TAG_IDS["2026-04"]: [],
+        })
+        pl = _collect_pl(client, 2026, income_prefixes=())
+        assert round(pl["expenses"].get("invoiced", 0.0), 2) == -120.00

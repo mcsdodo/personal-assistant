@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-07-06
+
+### Added
+- checker-mcp: tx_group bundling is now live - proforma/payment/final invoice bundles collapse to one line in matching and P&L
+
 ## 2026-07-04
 
 ### Added

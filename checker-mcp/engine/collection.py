@@ -490,6 +490,7 @@ def collect_pl(
     total_amount_field_id: int | None,
     total_amount_alt_field_id: int | None = None,
     income_prefixes: tuple[str, ...] = (),
+    tx_group_field_id: int | None = None,
 ) -> dict:
     """Collect P&L data for a given year.
 
@@ -520,6 +521,7 @@ def collect_pl(
             doc_cache,
             global_matched_ids,
             total_amount_alt_field_id=total_amount_alt_field_id,
+            tx_group_field_id=tx_group_field_id,
         )
         for m in months
     ]

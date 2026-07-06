@@ -19,6 +19,7 @@ from match_invoices import (
     INVOICE_TYPE_NAME,
     TOTAL_AMOUNT_ALT_FIELD_NAME,
     TOTAL_AMOUNT_FIELD_NAME,
+    TX_GROUP_FIELD_NAME,
 )
 
 mcp = FastMCP("checker")
@@ -44,6 +45,7 @@ class _ClientHolder:
         self.total_amount_alt_field_id = self.client.get_custom_field_id(
             TOTAL_AMOUNT_ALT_FIELD_NAME
         )
+        self.tx_group_field_id = self.client.get_custom_field_id(TX_GROUP_FIELD_NAME)
 
     @classmethod
     def get(cls):
@@ -81,6 +83,7 @@ def match_invoices(month: str) -> dict:
         doc_cache,
         global_matched_ids,
         total_amount_alt_field_id=h.total_amount_alt_field_id,
+        tx_group_field_id=h.tx_group_field_id,
     )
     return clean_result(result)
 
@@ -115,6 +118,7 @@ def match_invoices_range(month_from: str, month_to: str) -> list[dict]:
             doc_cache,
             global_matched_ids,
             total_amount_alt_field_id=h.total_amount_alt_field_id,
+            tx_group_field_id=h.tx_group_field_id,
         )
         for m in months
     ]
@@ -141,6 +145,7 @@ def get_pl_summary(year: int) -> dict:
         h.total_amount_field_id,
         total_amount_alt_field_id=h.total_amount_alt_field_id,
         income_prefixes=INCOME_PREFIXES,
+        tx_group_field_id=h.tx_group_field_id,
     )
 
 
@@ -168,6 +173,7 @@ def get_month_status(month: str | None = None) -> dict:
         doc_cache,
         global_matched_ids,
         total_amount_alt_field_id=h.total_amount_alt_field_id,
+        tx_group_field_id=h.tx_group_field_id,
     )
     return {
         "month": month,
