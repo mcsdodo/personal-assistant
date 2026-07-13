@@ -2851,6 +2851,49 @@ describe("scan-worker trigger A (classifier unknown)", () => {
   });
 });
 
+describe("scan-worker document-classification park path", () => {
+  // Regression guard: scan-intake.ts once used parkForClassification without
+  // importing it. Bun doesn't type-check, and every other scan test either
+  // seeds classify_document (short-circuiting the park) or pauses earlier at
+  // the decrypt phase — so nothing executed the park call and the missing
+  // import shipped green. This test drives a non-encrypted scan with NO seeded
+  // classify_document, so the worker must reach parkForClassification. Before
+  // the import fix it threw "parkForClassification is not defined" here.
+  test("no seeded classify_document → parks in awaiting_classification and emits classify_document step", async () => {
+    const filePath = join(tmpDir, "scan_needs_classify.pdf");
+    writeFileSync(filePath, Buffer.from("JVBER-fake-pdf"));
+    const input = makeScanInput({ file_path: filePath });
+    // Create job WITHOUT seeding classify_document — worker must park for it.
+    const job = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: JSON.stringify(input),
+      sourceRef: `gdrive:${input.file_id}`,
+      idempotencyKey: `gdrive:${input.file_id}`,
+    });
+    db.prepare("UPDATE jobs SET state = 'running', started_at = ? WHERE id = ?").run(
+      new Date().toISOString(),
+      job.id,
+    );
+    const runningJob = getJob(db, job.id)!;
+
+    mockFetch();
+
+    await executeScanIntake(db, runningJob, logger, registry, createPaperlessAdapter(registry), notify);
+
+    expect(getJob(db, job.id)!.state).toBe("awaiting_classification");
+    const events = getJobEvents(db, job.id);
+    const docStarted = events.find(
+      (e) =>
+        e.event_type === "step_started" &&
+        JSON.parse(e.payload_json ?? "{}").step === "classify_document",
+    );
+    expect(docStarted).toBeDefined();
+    const breadcrumb = events.find((e) => e.event_type === "classification_request_meta");
+    expect(breadcrumb).toBeDefined();
+    expect(JSON.parse(breadcrumb!.payload_json!).event_type).toBe("classify_document");
+  });
+});
+
 describe("scan-worker trigger B (encrypted PDF)", () => {
   test("encrypted PDF after tryDecrypt → scan job pauses, classifier never called", async () => {
     const decryptSpy = spyOn(downloadHelper, "tryDecrypt").mockImplementation(() => {});

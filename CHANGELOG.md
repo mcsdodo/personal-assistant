@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-07-13
+
+### Fixed
+- scan-intake: restore missing `parkForClassification` import (dropped in task 102 split) - scan jobs no longer crash to retryable at doc-classification
+
 ## 2026-07-06
 
 ### Added
