@@ -18,6 +18,23 @@ Examples:
 
 Keep examples concrete enough that contributors and coding agents can still map them back to a real deployment.
 
+### This applies to [CHANGELOG.md](CHANGELOG.md) too
+
+This project is developed in a private monorepo and published here, so
+[CHANGELOG.md](CHANGELOG.md) is written upstream and shipped verbatim. Anything put
+in an entry is public the moment it syncs -- there is no separate review pass between
+writing an entry and publishing it.
+
+So when adding an entry, describe the change in terms a reader of *this* repo can
+follow, with no upstream-only context:
+
+- Name the change, not its internal tracking id -- "dropped in an earlier refactor
+  split", not "dropped in task NNN split".
+- No internal hostnames, host IPs, deploy tooling, or production data counts. Use the
+  placeholders above.
+- Entries should read as release notes for this project, not as notes to the team that
+  wrote it.
+
 ## Use-Case Index
 
 [docs/USE_CASES.md](docs/USE_CASES.md) is the single source of truth for what this project delivers.
