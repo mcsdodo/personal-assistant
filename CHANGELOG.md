@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-07-23
+
+### Fixed
+- email-poller: Gmail poll query now excludes drafts/sent/chats - self-composed mail no longer ingested as invoices
+
 ## 2026-07-13
 
 ### Fixed
