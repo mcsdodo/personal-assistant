@@ -50,11 +50,20 @@ export function buildNotifyTelegram(
   return async (message: string) => {
     if (!token || !chatId) return;
     try {
-      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: chatId, text: message }),
       });
+      // fetch() only rejects on a network-level failure. A rejected chat_id, a
+      // revoked bot token, or a bot blocked by the user all come back as an
+      // ordinary response with HTTP 400/401/403 -- so without this check the
+      // most likely misconfigurations fail completely silently. Same message
+      // prefix as the catch below, so one log matcher covers both.
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        logFn(`Telegram notification failed: HTTP ${res.status} ${body.slice(0, 200)}`);
+      }
     } catch (err) {
       logFn(`Telegram notification failed: ${err instanceof Error ? err.message : String(err)}`);
     }
