@@ -2,7 +2,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN pip install --no-cache-dir \
-    mcp[cli] uvicorn \
+    "mcp[cli]<2.0.0" uvicorn \
     requests msal
 
 COPY server.py ./
