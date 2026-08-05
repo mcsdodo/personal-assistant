@@ -65,6 +65,8 @@ Annual profit & loss summary on accrual basis.
 
 **Code:** [`checker-mcp/server.py:106-120`](../checker-mcp/server.py#L106) — `get_pl_summary()`: calls `collect_pl()` from engine. Engine implementation at [`match_invoices.py:841-1051`](../checker-mcp/match_invoices.py#L841).
 
+**Projected income (web UI only).** The `/pl` page estimates income for the current month and any later month in the requested year that has no invoice yet: `working_days * 8h * hourly_rate`, using the same `sk_working_days()` and `PL_RATES`-driven rate lookup as the "Days worked" column. Rendered as `(projected)` per-month rows plus a "Projected total" = actual net income + sum of projected months. Inert when neither rate source in [`webapp.py`](../checker-mcp/webapp.py)'s `_load_rates()` (env var `PL_RATES`, or a gitignored local-dev `pl-rates.json`) is configured (no rate → no projection) and never touches historical months, so it can't paper over a genuinely missing invoice from the past. `collect_pl()` and `get_pl_summary()` are unaffected — this is display-only logic in `render_pl`, same file.
+
 ## UC-2.8: Bundle Grouping
 
 A single expense sometimes arrives as three separate Paperless documents - a pro-forma invoice (zálohová faktúra), a payment confirmation (faktúra k prijatej platbe), and the final tax invoice (daňový doklad) - but there is only one row in the bank statement. Without grouping, the matcher renders the bundle as three lines (one matched movement plus two unmatched extras that later escalate to MISSING).

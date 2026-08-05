@@ -519,9 +519,23 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
         if m.startswith(year_prefix)
     )
 
+    # Projected months: current month or later in the requested year with no
+    # actual income recorded yet. Estimate = working_days * 8h * hourly rate.
+    today = date.today()
+    cur_ym = f"{today.year:04d}-{today.month:02d}"
+    projected_months = set()
+    if show_days:
+        for mm in range(1, 13):
+            m = f"{year:04d}-{mm:02d}"
+            if m >= cur_ym and m not in income_by_month:
+                projected_months.add(m)
+        all_months = sorted(set(all_months) | projected_months)
+
     # Working-days totals for the summary row
     total_worked = 0
     total_wd = 0
+    total_projected = 0.0
+    projected_count = 0
 
     # Build month rows
     month_rows_html = []
@@ -539,9 +553,11 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
             for cat, amt in sorted(m_expenses.items(), key=lambda x: x[1])
         )
 
+        is_projected = m in projected_months
+
         # Working days for this month
         days_html = ""
-        if show_days:
+        if show_days and not is_projected:
             m_year, m_mon = int(m[:4]), int(m[5:7])
             wd_total = sk_working_days(m_year, m_mon)
             m_rate = _rate_for_month(hourly_rates, m)
@@ -550,6 +566,17 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
             total_worked += wd_worked
             total_wd += wd_total
             days_html = f'<span class="pl-days">{wd_worked:.2f}/{wd_total}</span>'
+
+        # Projected income for a current/future month with no invoice yet
+        proj_amount = 0.0
+        if is_projected:
+            m_year, m_mon = int(m[:4]), int(m[5:7])
+            wd_total = sk_working_days(m_year, m_mon)
+            m_rate = _rate_for_month(hourly_rates, m)
+            if m_rate:
+                proj_amount = round(wd_total * 8 * m_rate, 2)
+                total_projected += proj_amount
+                projected_count += 1
 
         if m_income:
             # First income item goes in the summary row
@@ -609,14 +636,30 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
                 f"{exp_detail_rows}"
                 f"</details>"
             )
-        elif m_expenses:
-            # Expense-only month (no income)
+        elif m_expenses or is_projected:
+            # Expense-only month (no income) and/or projected current/future month
+            if is_projected:
+                label_text = "(projected)" if proj_amount else "(no income, no rate)"
+                amount_html = (
+                    f'<span class="pl-amount warn">{proj_amount:>12,.2f}</span>'
+                    if proj_amount
+                    else ""
+                )
+            else:
+                label_text = "(no income)"
+                amount_html = ""
+            exp_html = (
+                f'<span class="pl-exp neg">{m_exp_total:>10,.2f}</span>'
+                if m_exp_total
+                else ""
+            )
             month_rows_html.append(
                 f'<details class="month-accordion">'
                 f'<summary class="pl-row month-row no-income">'
                 f'<span class="pl-month">{_esc(m)}</span>'
-                f'<span class="pl-label dim">(no income)</span>'
-                f'<span class="pl-exp neg">{m_exp_total:>10,.2f}</span>'
+                f'<span class="pl-label dim">{label_text}</span>'
+                f"{amount_html}"
+                f"{exp_html}"
                 f"{days_html}"
                 f"</summary>"
                 f"{exp_detail_rows}"
@@ -660,6 +703,23 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
             f'<div class="pl-row">'
             f'<span class="pl-label" style="color:#8b949e">Days worked</span>'
             f'<span class="pl-days-summary {pct_class}">{total_worked:.2f}/{total_wd} &mdash; {pct}%</span>'
+            f'</div>'
+        )
+
+    # Projected total: actual net + estimated income for missing (current/future) months
+    projected_block = ""
+    if total_projected:
+        months_word = "month" if projected_count == 1 else "months"
+        projected_total = net_total + total_projected
+        projected_total_class = "pos" if projected_total >= 0 else "neg"
+        projected_block = (
+            f'<div class="pl-row">'
+            f'<span class="pl-label" style="color:#8b949e">+ Projected income ({projected_count} {months_word})</span>'
+            f'<span class="pl-amount warn">{total_projected:>12,.2f}</span>'
+            f'</div>'
+            f'<div class="pl-row net">'
+            f'<span class="pl-label">Projected total</span>'
+            f'<span class="pl-amount {projected_total_class}">{projected_total:>12,.2f}</span>'
             f'</div>'
         )
 
@@ -764,6 +824,7 @@ h1{{color:#58a6ff;font-size:16px;font-weight:600}}
   </details>
 {net_block}
 {days_summary_html}
+{projected_block}
 </div>
 <div class="pl-section">
   <details class="totals-accordion">
