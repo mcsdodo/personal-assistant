@@ -706,20 +706,26 @@ def render_pl(pl: dict, available_years: list[int] | None = None, hourly_rates: 
             f'</div>'
         )
 
-    # Projected total: actual net + estimated income for missing (current/future) months
+    # Projected totals: actual income/net + estimated income for missing (current/future) months
     projected_block = ""
     if total_projected:
         months_word = "month" if projected_count == 1 else "months"
-        projected_total = net_total + total_projected
-        projected_total_class = "pos" if projected_total >= 0 else "neg"
+        projected_income_total = income + total_projected
+        projected_income_class = "pos" if projected_income_total >= 0 else "neg"
+        projected_net_total = net_total + total_projected
+        projected_net_class = "pos" if projected_net_total >= 0 else "neg"
         projected_block = (
             f'<div class="pl-row">'
             f'<span class="pl-label" style="color:#8b949e">+ Projected income ({projected_count} {months_word})</span>'
             f'<span class="pl-amount warn">{total_projected:>12,.2f}</span>'
             f'</div>'
+            f'<div class="pl-row">'
+            f'<span class="pl-label" style="color:#8b949e">Projected income total</span>'
+            f'<span class="pl-amount {projected_income_class}">{projected_income_total:>12,.2f}</span>'
+            f'</div>'
             f'<div class="pl-row net">'
-            f'<span class="pl-label">Projected total</span>'
-            f'<span class="pl-amount {projected_total_class}">{projected_total:>12,.2f}</span>'
+            f'<span class="pl-label">Projected net total</span>'
+            f'<span class="pl-amount {projected_net_class}">{projected_net_total:>12,.2f}</span>'
             f'</div>'
         )
 
