@@ -162,6 +162,21 @@ The email-poller and gdrive-poller `/health` endpoints also track poll staleness
 
 When the tmux session dies, the entrypoint exits with code 1, triggering Docker's `restart: unless-stopped` policy.
 
+> **Do not start a second `claude` process inside `claude-code` to try something out.**
+> Starting an extra interactive session in its own tmux session (to test a CLI flag, for
+> example) coincided with the channel watchdog reporting `telegram/server.ts not running`
+> and restarting the container ~180s later:
+>
+> ```
+> [watchdog] WARN: best-effort channel telegram/server.ts not running (Claude Code v2.1.x MCP race)
+> [watchdog] FATAL: ... missing for 18 checks (~180s) -- recovery restart attempt 1/3
+> ```
+>
+> It recovered on its own with no job loss, but the container that runs the whole email
+> pipeline is the wrong place to experiment. **Test CLI behaviour on a scratch host with
+> the same Claude Code version instead** -- version matters, since flags change between
+> releases and this image is version-pinned (see Version Pinning below).
+
 ### Stateless MCP Sessions
 
 Custom MCP servers (`checker-mcp`, `outlook-mcp`) run with `FASTMCP_STATELESS_HTTP=true`. This means:
