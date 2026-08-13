@@ -81,7 +81,7 @@ The `.env` file is present locally and has valid credentials. `gmail-mcp` and `o
 
 ```
 claude-code container (node:20-slim, user: node, --model sonnet)
-├── Claude Code interactive session in tmux (--remote-control)
+├── Claude Code interactive session in tmux
 ├── telegram channel (official plugin, cloned at build, two-way)
 ├── file-ops tool server (stdio, scoped file downloads/deletes/decrypt/base64/env)
 ├── workflow-mcp channel+tools (stdio, durable job queue MCP surface + 2s classification push loop)
@@ -405,7 +405,15 @@ claude \
 - `--dangerously-load-development-channels`: has unskippable TUI prompt — entrypoint polls for it and sends Enter (replaces old blind `sleep 5`)
 - `--channels plugin:name@marketplace`: loads approved channel plugins without prompt
 - `--mcp-config`: needed because `-p` mode doesn't auto-discover workspace `.mcp.json`
-- `--remote-control`: flag (not subcommand) for remote access, composable with `--channels`
+- `--remote-control`: **removed from both assistant entrypoints** -- on current clients it
+  registered a new Remote Control session on the account on *every* container start, with
+  nothing reusing or retiring the previous one. `--name` does not prevent this (display
+  name, not a dedupe key), and channels are **verified to work without the flag** (voice
+  answered `/v1/assist` end-to-end with it absent). An earlier belief that the flag was
+  required for channels came from a confounded outage (expired OAuth token) and is wrong.
+  If re-adding it, note the signature changed: current clients take the name directly
+  (`--remote-control [name]`); copying the old line would produce sessions auto-named by
+  container id.
 - `claude remote-control`: subcommand, does NOT accept `--channels`
 
 ### MCP Config Format
