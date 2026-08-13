@@ -81,7 +81,7 @@ The `.env` file is present locally and has valid credentials. `gmail-mcp` and `o
 
 ```
 claude-code container (node:20-slim, user: node, --model sonnet)
-├── Claude Code interactive session in tmux (--remote-control)
+├── Claude Code interactive session in tmux
 ├── telegram channel (official plugin, cloned at build, two-way)
 ├── file-ops tool server (stdio, scoped file downloads/deletes/decrypt/base64/env)
 ├── workflow-mcp channel+tools (stdio, durable job queue MCP surface + 2s classification push loop)
@@ -405,7 +405,16 @@ claude \
 - `--dangerously-load-development-channels`: has unskippable TUI prompt — entrypoint polls for it and sends Enter (replaces old blind `sleep 5`)
 - `--channels plugin:name@marketplace`: loads approved channel plugins without prompt
 - `--mcp-config`: needed because `-p` mode doesn't auto-discover workspace `.mcp.json`
-- `--remote-control`: flag (not subcommand) for remote access, composable with `--channels`
+- `--remote-control`: **removed from the entrypoint** -- it registered a new Remote Control
+  session on the account on *every* container start, with nothing reusing or retiring the
+  previous one, so they accumulated. `--name` does not prevent this: it is a **display**
+  name, not a dedupe key. Reuse is possible in principle (Remote Control identity follows
+  conversation continuity, so `--resume` on a pinned session id keeps one entry) but it
+  forces an ever-growing transcript reloaded on every start, which is a bad trade on the
+  container that runs the whole pipeline. Note the flag is composable with `--channels`,
+  and that its signature changed in later releases: it now takes the name directly,
+  `--remote-control [name]`, so re-adding it by copying the old line would produce
+  sessions auto-named by container id.
 - `claude remote-control`: subcommand, does NOT accept `--channels`
 
 ### MCP Config Format
