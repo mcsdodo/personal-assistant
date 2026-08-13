@@ -10,7 +10,7 @@ Everything that makes the stack run but isn't a user-facing use case: build, dep
 flowchart TB
     subgraph stack["Docker Compose Stack"]
         subgraph cc["claude-code (node:20-slim)"]
-            tmux["tmux session → Claude CLI<br/>(Sonnet)"]
+            tmux["tmux session → Claude CLI<br/>(Sonnet, --remote-control)"]
             ew["email-watcher (channel, stdio)"]
             gw["gdrive-watcher (channel, stdio)"]
             tg["telegram (channel, stdio)"]
