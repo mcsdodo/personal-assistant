@@ -63,7 +63,7 @@ Four independent auth flows, each persisting tokens on mounted storage.
 
 ### Claude Login
 ```bash
-docker exec -it personal-assistant-claude claude login
+docker exec -it personal-assistant-claude claude auth login
 ```
 One-time browser login. Credentials persist in `/mnt/shared_configs/<stack>/claude-config/` or your configured persistent volume.
 

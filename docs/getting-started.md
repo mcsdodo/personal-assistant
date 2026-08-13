@@ -65,7 +65,7 @@ docker compose exec paperless python3 manage.py createsuperuser
 ## 4. Authenticate Claude Code
 
 ```bash
-docker exec -it personal-assistant-claude claude login
+docker exec -it personal-assistant-claude claude auth login
 docker restart personal-assistant-claude
 ```
 

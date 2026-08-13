@@ -310,7 +310,7 @@ docker compose --profile local --env-file .env up -d
 The Claude session inside the container needs a one-time login:
 
 ```bash
-docker exec -it personal-assistant-claude claude login
+docker exec -it personal-assistant-claude claude auth login
 ```
 
 This opens a browser-based OAuth flow. After logging in, restart the container so the Claude session picks up the credentials:

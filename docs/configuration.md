@@ -32,7 +32,7 @@ Map them to your own environment when deploying.
 ### Claude Code
 
 ```bash
-docker exec -it personal-assistant-claude claude login
+docker exec -it personal-assistant-claude claude auth login
 ```
 
 ### Gmail OAuth

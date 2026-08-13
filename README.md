@@ -49,7 +49,7 @@ This project is probably not the right fit if you want a single-binary desktop a
 ```bash
 cp .env.example .env
 docker compose --profile local --env-file .env up --build
-docker exec -it personal-assistant-claude claude login
+docker exec -it personal-assistant-claude claude auth login
 ```
 
 Then follow the **[Complete Setup Guide](docs/SETUP.md)** — it walks through Google/Microsoft OAuth app creation, Paperless configuration, all authentication flows, and first-run verification.

@@ -7,7 +7,7 @@ cp /app/settings.json /home/node/.claude/settings.json
 # First-run: check for Claude credentials
 if [ ! -f /home/node/.claude/.credentials.json ]; then
   echo "WARNING: No Claude credentials found."
-  echo "Run: docker exec -it personal-assistant-claude claude login"
+  echo "Run: docker exec -it personal-assistant-claude claude auth login"
 fi
 
 # Strip stale mcpOAuth state from .credentials.json. Claude Code's MCP SDK

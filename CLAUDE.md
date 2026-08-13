@@ -375,7 +375,7 @@ Two Haiku subagents:
 ## Claude Code in Docker — Reference
 
 ### Authentication
-- **Claude**: `docker exec -it personal-assistant-claude claude login` (one-time)
+- **Claude**: `docker exec -it personal-assistant-claude claude auth login` (one-time)
 - **Gmail**: trigger `start_google_auth` from Claude session -> `gmail-mcp-auth` sidecar passes callback through, protects `/mcp*` with bearer token
 - **Outlook**: restart container, get device code from `docker logs personal-assistant-outlook-mcp 2>&1 | grep -A3 "OUTLOOK AUTH"`
 - **Telegram**: DM the bot, access.json in volume handles pairing
