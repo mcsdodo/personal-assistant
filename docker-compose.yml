@@ -5,7 +5,7 @@ services:
       context: .
       dockerfile: claude-code/Dockerfile
       args:
-        CLAUDE_CODE_VERSION: 2.1.117
+        CLAUDE_CODE_VERSION: 2.1.229
     container_name: personal-assistant-claude
     restart: unless-stopped
     labels:

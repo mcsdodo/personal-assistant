@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 FROM node:20-slim
 
-ARG CLAUDE_CODE_VERSION=2.1.117
+ARG CLAUDE_CODE_VERSION=2.1.229
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   git curl unzip jq procps ca-certificates tmux qpdf \
