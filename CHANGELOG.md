@@ -4,6 +4,26 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-08-13
+
+### Removed
+- claude-code: `--remote-control` dropped from the entrypoint - on current clients every container start registered a new Remote Control session on the account, with nothing reusing or retiring the previous one. `--name` does not prevent this: it is a display name, not a dedupe key. The channels are verified to work without the flag.
+
+### Changed
+- claude-code: pinned Claude Code version bumped 2.1.117 -> 2.1.229
+
+### Fixed
+- docs: the one-time login command is `claude auth login` - `claude login` is not a subcommand
+- docs: added a warning against starting a second `claude` process inside the `claude-code` container - doing so coincided with the channel watchdog reporting a missing channel and restarting the container
+
+## 2026-08-05
+
+### Added
+- checker-mcp: the `/pl` page now projects income for the current month and any later month of the requested year that has no invoice yet (working days x 8h x rate), rendered as per-month `(projected)` rows plus "Projected income total" and "Projected net total" summary lines. Display-only - the underlying P&L collection is unchanged, and historical months are never touched.
+
+### Fixed
+- checker-mcp, outlook-mcp: pinned `mcp[cli]<2.0.0` - an unpinned build picked up mcp 2.0.0, which dropped `mcp.server.fastmcp`
+
 ## 2026-07-30
 
 ### Fixed
