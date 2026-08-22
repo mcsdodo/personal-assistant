@@ -28,11 +28,24 @@ All workflow metrics are pushed via OTLP from each container; there is no
 `/metrics` scrape endpoint. The `:9465` port on `email-watcher` exposes
 `/health` only.
 
-| Source | Meter | Metrics |
+| Service | Meter | Metrics |
 |--------|-------|---------|
-| `email-watcher` | `email-watcher` | `email_watcher.emails`, `email_watcher.attachments`, `email_watcher.recent_discovered`, `email_watcher.jobs`, `email_watcher.backlog` |
-| `gdrive-watcher` | `gdrive-watcher` | `gdrive_watcher.files`, `gdrive_watcher.last_poll_seconds_ago` |
-| `workflow-mcp` (invoice worker) | `invoice-worker` | `invoice_worker_correspondents_total`, `invoice_worker_missing_month_tag_total`, `invoice_worker_failed_total` |
+| `email-poller` | `email-poller` | `email_watcher.emails`, `email_watcher.attachments`, `email_watcher.recent_discovered`, `email_watcher.jobs`, `email_watcher.backlog`, plus the three loud guards `email_watcher.catchup_overflow`, `email_watcher.new_cap_exceeded`, `email_watcher.search_page_full` |
+| `gdrive-poller` | `gdrive-poller` | `gdrive_watcher.files`, `gdrive_watcher.last_poll_seconds_ago` |
+| `pa-worker` | `invoice-worker` | `invoice_worker_*` counters |
+
+> **The service and meter names moved; the metric names deliberately did not.** The pollers
+> were split out of `claude-code` into their own containers and the meters renamed
+> `email-watcher` -> `email-poller` and `gdrive-watcher` -> `gdrive-poller`, but the emitted
+> series still start `email_watcher.` / `gdrive_watcher.`. That is on purpose -- dashboards
+> and alert rules query the series, so renaming them would silently break both. Do not
+> "tidy" the prefixes to match the service names.
+
+> `pollers/email-poller/src/main.ts` **contains literal NUL bytes** (a composite-key
+> separator written as a raw character rather than `\0`), so `file` calls it binary and
+> `grep -I`, ripgrep and most editors' search skip it silently -- returning "no matches"
+> rather than an error. Search it with `command grep -a`, `git grep -a`, or Python. This is
+> how the meter names above were verified.
 
 See [`uc1a-observability.md`](uc1a-observability.md) for the full table with
 attributes, types, and queries.

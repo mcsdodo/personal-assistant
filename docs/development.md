@@ -66,3 +66,19 @@ curl http://localhost:9465/metrics
 - `docs/getting-started.md`
 - `docs/troubleshooting.md`
 - `tests/README.md`
+
+## What's Mocked vs Real
+
+The distinction that matters: the unit suites mock every boundary, so a green unit run says
+nothing about whether Paperless, Gmail or the classifier actually work. Only E2E exercises
+those.
+
+| Component | E2E tests | Unit / integration tests |
+|-----------|-----------|--------------------------|
+| Email send | Real (Gmail API) | Mocked |
+| Poller polling | Real (Docker container) | Mocked |
+| Claude classification | Real (Claude API, Haiku) | Mocked |
+| PDF download | Real (Google Drive / email) | Mocked |
+| Paperless upload | Real (Paperless API) | Mocked (mock client) |
+| Invoice matching | Real (checker-mcp service) | Real (parse + match logic) |
+| Database (SQLite) | Real (container volume) | Real (in-memory / temp files) |

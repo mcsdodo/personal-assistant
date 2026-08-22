@@ -4,7 +4,8 @@ Everything that makes the stack run but isn't a user-facing use case: build, dep
 
 ## Stack Overview
 
-5 services, all in one Docker Compose stack:
+One Docker Compose stack. `docker compose config --services` is the list -- there is no
+count here, because the last one said five and drifted.
 
 ```mermaid
 flowchart TB
@@ -82,19 +83,29 @@ DM the bot. `access.json` in the mounted data volume handles chat allowlisting. 
 
 ## Health Checks
 
-All 5 services have Docker health checks. `claude-code` depends on all MCPs via `depends_on: service_healthy` — won't start until all MCPs are ready.
+Every service has a Docker health check, and `claude-code` depends on all MCPs via
+`depends_on: service_healthy` -- it will not start until they are ready.
 
 | Service | Check | Interval | Start period |
 |---------|-------|----------|--------------|
-| `claude-code` | tmux alive + `curl :9465/health` | 30s | 90s |
+| `claude-code` | tmux session alive + `pgrep workflow-mcp` | 30s | 90s |
+| `pa-worker` | HTTP `/health` (:8003) | 30s | 30s |
+| `email-poller` | HTTP `/health` (:9465) -- staleness check on `lastSuccessfulPollAt` | 30s | 30s |
+| `gdrive-poller` | HTTP `/health` (:9466) -- staleness check on `lastSuccessfulPollAt` | 30s | 30s |
 | `checker-mcp` | TCP :8001 + :5000 | 30s | 15s |
 | `outlook-mcp` | TCP :8002 | 30s | 30s |
 | `paperless-mcp` | TCP :3000 (Node) | 30s | 15s |
 | `gmail-mcp` | TCP :8000 (Python) | 30s | 15s |
 
-**Staleness detection:** email-watcher `/health` returns 503 if no successful poll in `POLL_INTERVAL_MS * 5` (default 2.5 min). Catches MCP connectivity loss and email-watcher hangs.
+**Staleness detection is the part that earns its keep.** Both poller `/health` endpoints
+return 503 when no successful poll has happened inside the staleness window, which catches
+two failures a liveness check cannot: **MCP connectivity loss** and **a hung poll loop**. A
+poller process can be perfectly alive and fetching nothing.
 
-**Code:** [`email-watcher.ts:322-340`](../claude-code/channels/email-watcher.ts#L322) — health endpoint with staleness check.
+**Code:** [`pollers/lib/watcher-runtime.ts`](../pollers/lib/watcher-runtime.ts) --
+`startHealthServer` owns the staleness check for both pollers. (It used to live in
+`claude-code/channels/email-watcher.ts`, which no longer exists; the pollers were split out
+into their own containers.)
 
 ## Restart Resilience
 

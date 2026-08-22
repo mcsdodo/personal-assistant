@@ -78,11 +78,16 @@ When the worker parks a job for classification (`awaiting_classification`), the 
 
 The wait time is captured retroactively as a `classification-wait` sentinel span, emitted at resume time. At park time, the worker stores the active OTel span context and timestamp in the `classification_request_meta` job event (`sentinel_trace_id`, `sentinel_parent_span_id`, `sentinel_start_ms`). On resume, [`emitSentinelSpan`](./../../claude-code/channels/invoice/intake-worker.ts) reads these fields back and emits a child span with the stored start time — duration equals the actual classification wait. The sentinel appears as a child of `invoice-worker.execute` in the same trace.
 
-## Email-watcher metrics (OTLP push from `email-watcher`, meter: `email-watcher`)
+## Email poller metrics (OTLP push from `email-poller`, meter: `email-poller`)
 
-All email-watcher metrics are observable gauges pushed via OTLP from
-`email-watcher.ts`. They reflect the *current state* of the
-audit DB and the workflow ledger — there are no per-event counters.
+Pushed via OTLP from [`pollers/email-poller/src/main.ts`](../pollers/email-poller/src/main.ts).
+The gauges below reflect the *current state* of the audit DB and the workflow ledger; the
+three guard counters at the end are per-event.
+
+> **The meter was renamed, the series were not.** The pollers moved out of `claude-code`
+> into their own containers and the meters became `email-poller` / `gdrive-poller`, but the
+> emitted series still start `email_watcher.` / `gdrive_watcher.` -- dashboards and alert
+> rules query those names, so renaming them would break both silently.
 
 | Metric | Type | Attributes | Source |
 |--------|------|------------|--------|
@@ -92,27 +97,51 @@ audit DB and the workflow ledger — there are no per-event counters.
 | `email_watcher.jobs` | Observable gauge | `type` (workflow_type), `state` | `SELECT workflow_type, state, COUNT(*) FROM jobs GROUP BY workflow_type, state` |
 | `email_watcher.backlog` | Observable gauge | `type` (workflow_type) | `SELECT workflow_type, COUNT(*) FROM jobs WHERE state NOT IN ('completed', 'failed') GROUP BY workflow_type` (always observes both `invoice_intake` and `scan_intake`, including zero, so Prometheus sees fresh samples) |
 
-**Code:** [`email-watcher.ts:registerMetrics()`](../claude-code/channels/email-watcher.ts) — defines all five gauges via `meter.createObservableGauge(...).addCallback(...)`.
+Three counters guard against silently losing email, and any of them being non-zero is a
+signal, not noise:
 
-## Invoice worker metrics (OTLP push from `workflow-mcp`, meter: `invoice-worker`)
+| Metric | Fires when |
+|--------|-----------|
+| `email_watcher.catchup_overflow` | one cycle saw more than `MAX_CATCHUP_EMAILS` new emails for a source; the cursor is **held**, not advanced |
+| `email_watcher.new_cap_exceeded` | an over-cap cycle processed the oldest N and held the cursor so the rest drains next poll |
+| `email_watcher.search_page_full` | a provider page came back full (200) -- true pagination is deferred, and this counter is the cue to build it |
 
-| Metric | Type | Attributes | Source |
-|--------|------|------------|--------|
-| `invoice_worker_correspondents_total` | Counter | `correspondent` | Seeded from completed jobs at startup via `seedCounterFromDb()`; incremented after each successful upload |
-| `invoice_worker_missing_month_tag_total` | Counter | `workflow_type` (`invoice_intake` / `scan_intake`) | Incremented when the worker uploads a doc without a valid YYYY-MM tag (LLM-driven `accounting_period` chain fully fell through; operator must tag manually) |
+**Code:** [`pollers/email-poller/src/main.ts`](../pollers/email-poller/src/main.ts) --
+gauges via `meter.createObservableGauge(...).addCallback(...)`. Note that file contains
+literal NUL bytes, so `grep -I` and ripgrep skip it silently; search it with
+`command grep -a` or Python.
 
-**Dashboard panel:** "Top Correspondents" (bar gauge, queries `invoice_worker_correspondents_total`).
+## Invoice worker metrics (OTLP push from `pa-worker`, meter: `invoice-worker`)
 
-**Code:** [`invoice/intake-worker.ts`](../claude-code/channels/invoice/intake-worker.ts) — counters defined near the top via `meter.createCounter(...)`, seeded by `seedCounterFromDb()`, `correspondentsCounter.add()` after `completeJob()` on success, `missingMonthTagCounter.add()` when month tag resolution fails.
+| Metric | Meaning |
+|--------|---------|
+| `invoice_worker_correspondents_total` | Completed invoices by normalised Paperless correspondent. Seeded from the DB at startup, incremented on each upload. Drives the "Top Correspondents" panel. |
+| `invoice_worker_missing_month_tag_total` | Documents uploaded without a valid `YYYY-MM` accounting period, labelled by `workflow_type`. Non-zero means the `accounting_period` resolution chain fell all the way through and the document needs manual tagging. |
+| `personal_assistant_guidance_requests_total` | Jobs paused in `awaiting_user_guidance`, labelled by `reason` (`classifier_unknown`, `encrypted_pdf`, ...). Pairs with the `email_watcher.jobs{state="awaiting_user_guidance"}` gauge for current backlog. |
+| `invoice_worker_sample_skipped_total` | Sample/preview invoices detected and skipped before upload, labelled by `vendor`. Non-zero means a download link served a watermarked non-tax document; check whether a follow-up with the real invoice arrived, then re-run the job. |
+| `invoice_worker_accountant_skipped_total` | Accountant emails skipped by the intent gate, labelled by `reason`. Non-zero is expected and benign -- but a spike on `query` with a real invoice missing means a delivery was mis-skipped. |
+| `invoice_worker_failed_total` | Terminal job failures, labelled by `reason` and `workflow_type`, zero-seeded at startup. |
 
-## GDrive watcher metrics (OTLP push from `gdrive-watcher`, meter: `gdrive-watcher`)
+**`invoice_worker_failed_total` has a coverage subtlety worth knowing.** Two of its reasons
+-- `invalid_input` and `schema_validation_failed` -- are raised by guards that fire **before**
+the email-carrying span exists, so the trace never captures them. For those two the counter
+plus the per-incident `job.failed` Loki line (both emitted from `failJob`) are the only
+signal. The rest span intake errors, dispatcher-level failures (`worker_exception`), wedged
+jobs exhausting retries (`stale_timeout`) and jobs auto-failed after 72 h awaiting guidance
+(`timed_out`).
+
+**Code:** [`claude-code/channels/invoice/intake-steps/observability.ts`](../claude-code/channels/invoice/intake-steps/observability.ts)
+defines the meter and counters; `failJob` in [`shared/workflow/jobs.ts`](../shared/workflow/jobs.ts)
+emits both the counter and the `job.failed` line.
+
+## GDrive poller metrics (OTLP push from `gdrive-poller`, meter: `gdrive-poller`)
 
 | Metric | Type | Source |
 |--------|------|--------|
 | `gdrive_watcher.files` | Observable gauge | `SELECT COUNT(*) FROM gdrive_files` |
 | `gdrive_watcher.last_poll_seconds_ago` | Observable gauge | `(Date.now() - lastSuccessfulPollAt) / 1000` |
 
-**Code:** [`gdrive-watcher.ts:registerMetrics()`](../claude-code/channels/gdrive-watcher.ts).
+**Code:** [`pollers/gdrive-poller/src/main.ts`](../pollers/gdrive-poller/src/main.ts).
 
 ## UC-1A.6: Claude Telemetry
 
@@ -166,3 +195,17 @@ Datasource provisioning: [`observability/provisioning/`](../observability/provis
 | [`observability/prometheus-config.yml`](../observability/prometheus-config.yml) | Local dev: scrape config for Prometheus |
 | [`observability/loki-config.yml`](../observability/loki-config.yml) | Local dev: Loki storage config |
 | your shared Alloy or OTLP config | Production: telemetry receiver and scrape configuration |
+
+## Events (Loki, via OTel logs)
+
+| Event | Key attributes |
+|-------|---------------|
+| `claude_code.api_request` | model, cost_usd, duration_ms, input/output/cache tokens |
+| `claude_code.api_error` | model, error, status_code, attempt |
+| `claude_code.tool_result` | tool_name, success, duration_ms, mcp_server_scope |
+| `claude_code.tool_decision` | tool_name, decision, source |
+| `claude_code.user_prompt` | prompt length |
+| `guidance.requested` | `job_id`, `reason` -- the worker parked a job in `awaiting_user_guidance` |
+| `guidance.received` | `job_id`, `action` -- the user called `provide_guidance` |
+| `guidance.applied` | `job_id`, `action` -- the worker consumed the guidance on resume |
+| `job.failed` | `job_id`, `reason` (the `failJob` code). Emitted on **every** terminal failure, including the two pre-span guards that never produce a trace, so this is the per-incident companion to `invoice_worker_failed_total` and what drives the "Recent Failures" table. Line format: `job.failed job_id=<id> reason=<code>`. |

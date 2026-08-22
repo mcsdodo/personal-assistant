@@ -79,3 +79,78 @@ If a fresh container shows HTTP MCPs as `✘ failed` after startup, in priority 
 - [anthropics/claude-code#34008](https://github.com/anthropics/claude-code/issues/34008) — root upstream bug
 - [anthropics/claude-code#27142](https://github.com/anthropics/claude-code/issues/27142) — MCP session ID caching
 - [anthropics/claude-code#1026](https://github.com/anthropics/claude-code/issues/1026) — request for `claude mcp reconnect` CLI
+
+## Reference: auth, settings and flags
+
+### Authentication
+
+- **Claude**: `docker exec -it personal-assistant-claude claude auth login` (one-time)
+- **Gmail**: trigger `start_google_auth` from the Claude session; the `gmail-mcp-auth`
+  sidecar passes the callback through and protects `/mcp*` with a bearer token
+- **Outlook**: restart the container and read the device code from
+  `docker logs personal-assistant-outlook-mcp 2>&1 | grep -A3 "OUTLOOK AUTH"`
+- **Telegram**: DM the bot; `access.json` in the volume handles pairing
+- Tokens persist in `/mnt/shared_configs/<stack>/` or your configured persistent volume
+- After auth, restart Claude to reconnect the MCPs:
+  `docker restart personal-assistant-claude`
+
+### Settings
+
+`claude-code/.claude/settings.json` is committed with `permissions.allow` and
+`permissions.deny`. The permission model is `--permission-mode dontAsk`, which **auto-denies
+any tool not in the allowlist**.
+
+- Always available: `Read`, `Glob`, `Grep`, `Agent`, `ToolSearch`
+- Allowed via settings: MCP tools (wildcards for our servers, individual for gmail),
+  `Bash(sleep *)`, `Edit`/`Write` for the memory dir only
+- Denied: gmail write/browse tools, and all file-manipulating Bash commands (`curl`, `rm`,
+  `mkdir`, `cp`, `find`, `base64`, `qpdf`, `echo`, `cat`, `env`, `node`) -- file operations
+  go through the `file-ops` MCP instead
+
+Design rationale: [README.md#permission-model](../README.md#permission-model).
+
+### Flags
+
+```bash
+claude \
+  --permission-mode dontAsk \                            # auto-deny tools not in allowlist
+  --dangerously-load-development-channels server:name \  # load custom channel from .mcp.json
+  --mcp-config /workspace/.mcp.json                      # explicit MCP config path
+```
+
+- `--dangerously-load-development-channels` has an unskippable TUI prompt; the entrypoint
+  polls for it and sends Enter (this replaced an older blind `sleep 5`)
+- `--channels plugin:name@marketplace` loads approved channel plugins without a prompt
+- `--mcp-config` is needed because `-p` mode does not auto-discover the workspace `.mcp.json`
+- `claude remote-control` is a subcommand and does **not** accept `--channels`
+
+#### `--remote-control` is removed from both assistant entrypoints, deliberately
+
+This is a **correction, not stale flag documentation** -- do not "tidy" it away, because
+deleting it invites a re-add.
+
+On current clients the flag registered a **new Remote Control session on the account on every
+container start**, with nothing reusing or retiring the previous one. `--name` does not
+prevent that (it is a display name, not a dedupe key). Channels are **verified to work
+without the flag** -- voice answered `/v1/assist` end-to-end with it absent. The earlier
+belief that it was required for channels came from a confounded outage (an expired OAuth
+token) and is wrong.
+
+If it is ever re-added, note the signature changed: current clients take the name directly
+(`--remote-control [name]`), so copying the old line would produce sessions auto-named by
+container id.
+
+### MCP config format
+
+```json
+{
+  "mcpServers": {
+    "channel-name": { "command": "bun", "args": ["run", "/path/to/channel.ts"] },
+    "tool-server":  { "type": "http", "url": "http://service:8000/mcp" }
+  }
+}
+```
+
+Use `"type": "http"` for Streamable HTTP -- **not** `"type": "url"`. Channel servers use
+`command`/`args` (stdio subprocess). HTTP servers need DNS rebinding protection disabled, or
+a Host header rewrite, to work under Docker networking.

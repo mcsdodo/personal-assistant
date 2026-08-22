@@ -160,3 +160,54 @@ Email-poller (`pollers/email-poller/src/main.ts`) and gdrive-poller (`pollers/gd
 - [uc2-invoice-matching.md](uc2-invoice-matching.md)
 - [infrastructure.md](infrastructure.md)
 - [CLAUDE.md](../CLAUDE.md)
+
+## Source Code Guide
+
+Navigational only -- the file tree is the inventory. What follows is the handful of things
+that are **not** derivable by reading a filename.
+
+### `shared/` is the single source of truth
+
+Code needed by both `claude-code/channels/` and `pollers/lib/` lives in
+[`shared/`](../shared/): `workflow-schemas.ts`, `owner-config.ts`, and
+`workflow/{schema,events,downloads,jobs}.ts`. The old channel-side and poller-side paths are
+now one- or two-line barrels re-exporting from it, and a ~600-line hand-synced poller copy of
+the schemas is gone. Rules and the build constraint: [`shared/CLAUDE.md`](../shared/CLAUDE.md).
+
+`claude-code/channels/tracing.ts` is the **one remaining locked twin** -- it imports
+`@opentelemetry/*` so it cannot live in dependency-free `shared/`.
+`pollers/lib/tracing-twin.test.ts` asserts byte-identity and fails the pollers suite if the
+two drift.
+
+### `paperless-adapter.ts` -- one boundary, two transports
+
+Every operation that touches Paperless goes through it, regardless of transport: MCP for
+`list_correspondents` / `create_correspondent` / `list_tags` / `create_tag` /
+`list_document_types`, direct HTTP for storage paths, dedup search, multipart upload, task
+polling, document PATCH and custom-field PATCH. Callers see one interface and never the split.
+
+**All `list_*` MCP calls go through a private `listAllPages` helper** that walks the `next`
+link until exhausted (page_size 100, max 50 pages). **Before** it existed the adapter only
+ever saw page 1 of Paperless's paginated responses -- which **silently corrupted 17
+production documents with `correspondent: null`**, because the fuzzy matcher could not see any
+correspondent past entry 25. `createCorrespondent` / `createTag` also runtime-validate the
+parsed response shape rather than trusting an `as` assertion, so an unexpected MCP response
+throws instead of quietly producing `{id: undefined}`.
+
+### The intake pipeline
+
+`intake-worker.ts` is a small public barrel. The executors are `invoice-intake.ts`
+(`executeInvoiceIntake`) and `scan-intake.ts` (`executeScanIntake`), with shared leaf modules
+in `intake-steps/` (`types.ts`, `config.ts`, `observability.ts`, `guidance.ts`). The pipeline
+validates input, requests email classification, downloads, records the file for cleanup,
+requests document classification, merges and resolves the month tag, resolves correspondent /
+dedup / tags / doc type / storage path, uploads or PATCHes, sets custom fields, notifies.
+
+Two behaviours worth knowing before changing it:
+
+- **Step-level resume.** `getCompletedSteps` lets a retry skip work already done.
+- **Force reprocess and multi-stage refresh.** With `force: true` a dedup hit does not
+  short-circuit -- the worker PATCHes the existing Paperless document in place, preserving
+  doc id, PDF and OCR. The email path additionally passes a refresh-decision context, so when
+  dedup hits *and* the new email is strictly newer than the existing doc's source email it
+  refreshes automatically with no operator interaction. The scan path is unchanged.
