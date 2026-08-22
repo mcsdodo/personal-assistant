@@ -270,7 +270,7 @@ After restart, `docker exec personal-assistant-claude tmux send-keys -t claude /
 | `claude-code/channels/invoice/postprocess-service.ts` | resolveCorrespondent, resolveTagIds, resolveDocumentTypeId, resolveStoragePathId, uploadToPaperless, setDocumentCustomFields, patchExistingDocument, moveGdriveFile, buildScanTitle |
 | `claude-code/channels/fuzzy-match.ts` | Jaro-Winkler fuzzy correspondent matching |
 | `claude-code/agents/` | Haiku subagents (email-classifier, document-classifier — classifier returns `owner` field for personal/business tag routing) |
-| `checker-mcp/server.py` | FastMCP wrapping the engine (4 tools), imports from `engine.*` |
+| `checker-mcp/server.py` | FastMCP wrapping the engine, imports from `engine.*` |
 | `checker-mcp/webapp.py` | Flask web UI (matching view + P&L view), imports from `engine.*` |
 | `checker-mcp/entrypoint.sh` | Two-process entrypoint (MCP background + Flask PID 1) |
 | `checker-mcp/match_invoices.py` | CLI entry point + shared configuration constants (~258 lines after Phase 5 split) |
@@ -308,11 +308,11 @@ Flask app on `:5000`. Matching view (terminal-style, status codes: ok/missing/ma
 
 ### checker-mcp/server.py (~207 lines)
 
-FastMCP wrapping `match_invoices.py`. 4 tools via HTTP. Lazy-init `PaperlessClient` singleton + field ID resolution. Host header rewrite for DNS rebinding protection (Docker networking).
+FastMCP wrapping `match_invoices.py`, served over HTTP -- the tool list is in `server.py`, and an MCP client enumerates it anyway. Lazy-init `PaperlessClient` singleton + field ID resolution. Host header rewrite for DNS rebinding protection (Docker networking).
 
 ### outlook-mcp/server.py (~310 lines)
 
-MSAL device code auth with singleton caching (`_msal_lock`). `get_access_token()` does silent acquisition then falls back to device code flow. Background auth thread (daemon) doesn't block server startup. 4 tools: `list_emails`, `get_email`, `get_attachments`, `download_attachment`.
+MSAL device code auth with singleton caching (`_msal_lock`). `get_access_token()` does silent acquisition then falls back to device code flow. Background auth thread (daemon) doesn't block server startup. Tools: `list_emails`, `get_email`, `get_attachments`, `download_attachment`.
 
 ### pollers/email-poller/src/main.ts
 
@@ -674,7 +674,9 @@ python -m pytest tests/ -v -m gmail --timeout=300
 
 ### Unit & Integration Tests
 
-704 tests across 34 test files (533 in `claude-code/channels`, 171 in `pollers`) covering all channels, workers, and DB modules. Run with Bun:
+Covers all channels, workers and DB modules -- `claude-code/channels` and `pollers`. The
+runner prints a fresh count on every run, so there is no count recorded here.
+
 ```bash
 cd claude-code/channels
 bun test
@@ -709,7 +711,7 @@ bun test
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on push to main when relevant paths change:
 - **channels (Bun)** — separate `test-channels` ([claude-code/channels/](claude-code/channels/)) and `test-pollers` ([pollers/](pollers/)) jobs, each running `bun test`
-- **checker-mcp (Python)** — runs `pytest` (bare discovery across [checker-mcp/test_parsing.py](checker-mcp/test_parsing.py), [checker-mcp/test_matching.py](checker-mcp/test_matching.py), [checker-mcp/test_collection.py](checker-mcp/test_collection.py), [checker-mcp/test_cache.py](checker-mcp/test_cache.py), [checker-mcp/test_result_format.py](checker-mcp/test_result_format.py) — 173 tests)
+- **checker-mcp (Python)** — runs `pytest` (bare discovery across [checker-mcp/test_parsing.py](checker-mcp/test_parsing.py), [checker-mcp/test_matching.py](checker-mcp/test_matching.py), [checker-mcp/test_collection.py](checker-mcp/test_collection.py), [checker-mcp/test_cache.py](checker-mcp/test_cache.py), [checker-mcp/test_result_format.py](checker-mcp/test_result_format.py))
 
 ### What's Mocked vs Real
 
