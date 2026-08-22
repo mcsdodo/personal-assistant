@@ -19,3 +19,15 @@ Rules for writing bun unit tests in this folder (`*.test.ts`). Integration-style
 - **When adding any new timestamp column comparison in production SQL**, write a regression test using an ISO-format fixture, and verify the test fails without the comparison (watch it go RED) before trusting it.
 
 See `workflow-core.test.ts` (stale job reclamation block, `minutesAgoIso` helper) for the reference pattern.
+
+## Rule: bun runs these files, and bun does not typecheck
+
+**CI is `bun test` and nothing else** -- no `tsc`, no typecheck job. Bun strips types rather than checking them, so a **missing or misspelt import does not fail the build: it ships green and throws at runtime**, in a container, on the first request that reaches the broken path. This bites hardest after a refactor that moves or renames a module -- every test can pass while a production-only path references a symbol that no longer resolves.
+
+So after any refactor here, and before deploying one, run the check CI does not:
+
+```bash
+bunx tsc --noEmit
+```
+
+Read it for **TS2304** (`Cannot find name`) and **TS2307** (`Cannot find module`) -- those two correspond to this failure mode; other diagnostics in a bun codebase are frequently noise. The same applies to the voice-assistant channels, which are built the same way.
