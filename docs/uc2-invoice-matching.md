@@ -77,7 +77,7 @@ The operator sets a shared string custom field `tx_group` on every document of o
 
 **Operator-owned.** The intake pipeline never writes `tx_group`; field registration ([`paperless-fields.ts`](../claude-code/channels/paperless-fields.ts)) only guarantees the field exists so the operator can set it in the Paperless UI. The feature is inert when the field is unset (`tx_group_field_id is None`) - output is identical to pre-feature.
 
-**Code:** [`resolve_bundle_primaries`](../checker-mcp/engine/collection.py) in `engine/collection.py`, called from `collect_month` before the movement-matching loop. Design: [_tasks/106-invoice-bundle-grouping](../../../../_tasks/106-invoice-bundle-grouping/).
+**Code:** [`resolve_bundle_primaries`](../checker-mcp/engine/collection.py) in `engine/collection.py`, called from `collect_month` before the movement-matching loop. Design: [_tasks/106-invoice-bundle-grouping](../../../../_tasks/_done/106-invoice-bundle-grouping/).
 
 ## Lazy Client
 
