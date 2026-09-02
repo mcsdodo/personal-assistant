@@ -191,7 +191,7 @@ class TestCollectMonthPending:
         inv["created"] = "2026-01-20T00:00:00+01:00"
         client = _mock_client({TAG_IDS["2026-01"]: [inv]})
         result = _collect(client, "2026-01")
-        assert result["rows"][0]["date"] == "2026-01-15"
+        assert result["rows"][0]["date"] == "15.01.2026"
 
     def test_pending_date_falls_back_to_created(self):
         """Without receipt_datetime, the row date comes from `created`."""
@@ -199,7 +199,7 @@ class TestCollectMonthPending:
         inv["created"] = "2026-01-20T00:00:00+01:00"
         client = _mock_client({TAG_IDS["2026-01"]: [inv]})
         result = _collect(client, "2026-01")
-        assert result["rows"][0]["date"] == "2026-01-20"
+        assert result["rows"][0]["date"] == "20.01.2026"
 
     def test_pending_rows_sorted_oldest_first(self):
         """Pending rows order ascending by date; blank dates sort last."""
@@ -213,7 +213,7 @@ class TestCollectMonthPending:
         client = _mock_client({TAG_IDS["2026-01"]: [inv_a, inv_b, inv_c]})
         result = _collect(client, "2026-01")
         assert [r["doc_id"] for r in result["rows"]] == [2, 1, 3]
-        assert [r["date"] for r in result["rows"]] == ["2026-01-05", "2026-01-20", ""]
+        assert [r["date"] for r in result["rows"]] == ["05.01.2026", "20.01.2026", ""]
 
 
 class TestCollectMonthCancelledMovements:
@@ -337,7 +337,7 @@ class TestCollectMonthUnmatchedInvoices:
         )
         result = _collect(client, "2026-01")
         info_rows = [r for r in result["rows"] if r["status"] == "info"]
-        assert info_rows[0]["date"] == "2026-01-12"
+        assert info_rows[0]["date"] == "12.01.2026"
 
     def test_unmatched_only_for_current_month_tag(self):
         """Invoices from window months don't show as unmatched for current month."""
@@ -987,7 +987,7 @@ class TestFilterResolvedUnmatched:
                 "label": "NEXT STATEMENT",
                 "detail": "not in this statement",
                 "amount": "50.00 ",
-                "date": "2026-01-12",
+                "date": "12.01.2026",
             },
         ]
         feb_rows = [
@@ -1002,7 +1002,7 @@ class TestFilterResolvedUnmatched:
         ]
         results = self._make_results(jan_rows, feb_rows)
         filter_resolved_unmatched(results)
-        assert results[0]["rows"][0]["date"] == "2026-01-12"
+        assert results[0]["rows"][0]["date"] == "12.01.2026"
 
     def test_no_next_statement_keeps_info(self):
         """No Feb statement → Jan's NEXT STATEMENT kept as-is."""

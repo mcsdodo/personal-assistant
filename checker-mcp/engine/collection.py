@@ -43,6 +43,16 @@ def _invoice_order_date(inv: dict, receipt_datetime_field_id: int | None) -> str
     return str(created)[:10] if created else ""
 
 
+def _display_date(iso_date: str) -> str:
+    """Render a YYYY-MM-DD ordering date as DD.MM.YYYY, matching the statement
+    rows' date column. `_order_date` stays ISO internally because the pending-row
+    sort (and resolve_bundle_primaries' max()) relies on ISO lexicographic order."""
+    if not iso_date:
+        return iso_date
+    year, month, day = iso_date.split("-")
+    return f"{day}.{month}.{year}"
+
+
 def resolve_bundle_primaries(invoice_docs, tx_group_field_id, receipt_datetime_field_id):
     """Collapse tx_group bundles to one primary each.
 
@@ -212,7 +222,7 @@ def collect_month(
             amt = inv["_amounts"][0] if inv.get("_amounts") else 0.0
             result["rows"].append(
                 {
-                    "date": inv["_order_date"],
+                    "date": _display_date(inv["_order_date"]),
                     "desc": "no statement".ljust(40),
                     "amount": f"{amt:>10.2f} ",
                     "status": "pending",
@@ -416,7 +426,9 @@ def collect_month(
         else:
             result["rows"].append(
                 {
-                    "date": _invoice_order_date(inv, receipt_datetime_field_id),
+                    "date": _display_date(
+                        _invoice_order_date(inv, receipt_datetime_field_id)
+                    ),
                     "desc": "not in this statement".ljust(40),
                     "amount": f"{amt:>10.2f} ",
                     "status": "info",

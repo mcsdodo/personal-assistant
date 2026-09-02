@@ -7,7 +7,7 @@ This project was developed as part of a private monorepo. This changelog was gen
 ## 2026-09-02
 
 ### Fixed
-- checker-mcp: unmatched invoice rows (NEXT STATEMENT / NOT IN STATEMENTS) now show a date instead of blank
+- checker-mcp: unmatched invoice rows now show a date, DD.MM.YYYY like the rest of the page
 
 ## 2026-08-13
 
