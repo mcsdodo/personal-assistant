@@ -4,6 +4,11 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-09-02
+
+### Fixed
+- checker-mcp: unmatched invoice rows (NEXT STATEMENT / NOT IN STATEMENTS) now show a date instead of blank
+
 ## 2026-08-13
 
 ### Removed

@@ -416,7 +416,7 @@ def collect_month(
         else:
             result["rows"].append(
                 {
-                    "date": "",
+                    "date": _invoice_order_date(inv, receipt_datetime_field_id),
                     "desc": "not in this statement".ljust(40),
                     "amount": f"{amt:>10.2f} ",
                     "status": "info",

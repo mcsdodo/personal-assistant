@@ -314,6 +314,31 @@ class TestCollectMonthUnmatchedInvoices:
         assert len(info_rows) == 1
         assert info_rows[0]["doc_id"] == 2
 
+    def test_unmatched_invoice_date_from_receipt_datetime(self):
+        """NEXT STATEMENT row date comes from the receipt_datetime custom field."""
+        stmt = _make_statement(
+            900,
+            "2026-01",
+            _stmt(
+                ("08.01.2026", "Purchase", -50.00),
+            ),
+        )
+        inv_matched = _make_invoice(1, "inv_matched", "m.pdf", "2026-01", 50.00)
+        inv_extra = _make_invoice(2, "inv_extra", "e.pdf", "2026-01", 999.00)
+        inv_extra["custom_fields"].append(
+            {"field": RECEIPT_DATETIME_FIELD_ID, "value": "2026-01-12"}
+        )
+        client = _mock_client(
+            {
+                TAG_IDS["2025-12"]: [],
+                TAG_IDS["2026-01"]: [stmt, inv_matched, inv_extra],
+                TAG_IDS["2026-02"]: [],
+            }
+        )
+        result = _collect(client, "2026-01")
+        info_rows = [r for r in result["rows"] if r["status"] == "info"]
+        assert info_rows[0]["date"] == "2026-01-12"
+
     def test_unmatched_only_for_current_month_tag(self):
         """Invoices from window months don't show as unmatched for current month."""
         stmt = _make_statement(
@@ -952,6 +977,32 @@ class TestFilterResolvedUnmatched:
         filter_resolved_unmatched(results)
         assert results[0]["rows"][0]["status"] == "unaccounted"
         assert results[0]["rows"][0]["label"] == "NOT IN STATEMENTS"
+
+    def test_escalation_preserves_date(self):
+        """NOT IN STATEMENTS keeps the date collect_month set on the row."""
+        jan_rows = [
+            {
+                "status": "info",
+                "doc_id": 1,
+                "label": "NEXT STATEMENT",
+                "detail": "not in this statement",
+                "amount": "50.00 ",
+                "date": "2026-01-12",
+            },
+        ]
+        feb_rows = [
+            {
+                "status": "ok",
+                "doc_id": 99,
+                "label": "OK",
+                "detail": "other",
+                "amount": "30.00-",
+                "date": "08.02.2026",
+            },
+        ]
+        results = self._make_results(jan_rows, feb_rows)
+        filter_resolved_unmatched(results)
+        assert results[0]["rows"][0]["date"] == "2026-01-12"
 
     def test_no_next_statement_keeps_info(self):
         """No Feb statement → Jan's NEXT STATEMENT kept as-is."""
