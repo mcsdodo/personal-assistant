@@ -109,6 +109,38 @@ any tool not in the allowlist**.
 
 Design rationale: [README.md#permission-model](../README.md#permission-model).
 
+### A subagent's `tools:` frontmatter decides whether MCP tools are deferred
+
+With this many MCP servers connected, tools are **deferred**: a subagent starts with ~83-106
+tool *names* in a `deferred_tools_delta` and must spend a `ToolSearch` turn to load a schema
+before it can call anything. **Naming a tool in a subagent's `tools:` frontmatter suppresses
+that entirely for that subagent** -- no `deferred_tools_delta` is emitted at all, the tool
+ships in the up-front list, and `ToolSearch` never enters its path.
+
+This interacts with `maxTurns` in a way that fails silently. A subagent budgeted
+`maxTurns: 2` for "turn 1 fetch, turn 2 answer" needs **three** turns once its tool is
+deferred, and gets cut off mid-work: the caller receives the model's opening preamble
+("I'll fetch the email...") instead of a result, with no error anywhere.
+
+That is exactly what happened to [`email-classifier.md`](../claude-code/agents/email-classifier.md),
+which was written when its Gmail tool was directly callable. It returned a usable
+classification in **1 of 21 runs** over seven weeks -- and that one succeeded only because
+the caller had pre-pasted the email body, so it made no tool call at all. Its sibling
+[`document-classifier.md`](../claude-code/agents/document-classifier.md) was unaffected at
+45/45 for the same reason the fix works: it declares `tools: "Read"`.
+
+So, for any subagent that must call a tool:
+
+- **Name every tool it needs in `tools:`.** Name *all* of them -- `tools:` is an allowlist,
+  so listing only the Gmail fetch tool would silently strip the Outlook one and break
+  `email_source: "outlook"`. The comma-separated form is one string:
+  `tools: "mcp__gmail__get_gmail_message_content, mcp__outlook__get_email"`.
+- **Budget `maxTurns` above the bare minimum**, so a transient tool error still leaves a turn
+  to answer in.
+- Keep the prompt's own turn-count wording in step with the frontmatter. The old prompt
+  asserted "you have exactly 2 turns: turn 1 is the fetch" -- which had become false, and
+  told the model its `ToolSearch` result was a failed turn 1 to retry.
+
 ### Flags
 
 ```bash

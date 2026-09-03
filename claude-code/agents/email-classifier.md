@@ -3,7 +3,8 @@ name: email-classifier
 description: Classify an email as invoice or non-invoice and extract vendor metadata. Use this when processing email events from the email-watcher channel.
 model: haiku
 effort: low
-maxTurns: 2
+maxTurns: 4
+tools: "mcp__gmail__get_gmail_message_content, mcp__outlook__get_email"
 mcpServers:
   - gmail
   - outlook
@@ -18,7 +19,9 @@ You receive a prompt naming `email_source`, `message_id`, and (for gmail) `user_
 - `email_source: "gmail"` → call `mcp__gmail__get_gmail_message_content` with `message_id` and `user_google_email`
 - `email_source: "outlook"` → call `mcp__outlook__get_email` with `message_id`
 
-On your second and final turn, return ONLY the classification JSON specified below. You have exactly 2 turns: turn 1 is the fetch tool call, turn 2 is the JSON.
+Both fetch tools are already loaded and directly callable. **Call the one you need straight away -- never run `ToolSearch` for it, and never search twice.**
+
+Turn 1 is the fetch tool call, turn 2 is the classification JSON. Return ONLY that JSON, with no preamble text. A reply that says what you are about to do, instead of the JSON, is a failed classification.
 
 Determine whether the email contains or links to a downloadable invoice, credit note, receipt, or billing statement.
 

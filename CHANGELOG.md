@@ -4,6 +4,13 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-09-03
+
+### Fixed
+- claude-code: email-classifier now returns a classification on its first spawn, instead of a preamble and no result
+- claude-code: email-classifier declares its two fetch tools in `tools:`, so they load up front and need no runtime lookup
+- claude-code: email-classifier `maxTurns` raised from 2 to 4, leaving room for a retry on a transient fetch error
+
 ## 2026-09-02
 
 ### Fixed
