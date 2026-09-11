@@ -268,6 +268,34 @@ export const OWNERS = ["business", "personal"] as const;
  */
 export const DOC_OWNERS = ["business", "personal", "unknown"] as const;
 
+export const INVOICE_DIRECTIONS = ["incoming", "outgoing"] as const;
+
+/**
+ * Validate `invoice_direction`: one of INVOICE_DIRECTIONS, or null.
+ *
+ * Deliberately tolerant of missing/null. The worker re-validates stored
+ * `input_json` and `step_completed` payloads on every run, and every payload
+ * written before this field existed has no direction at all — making it
+ * required would fail replay of the entire job history.
+ */
+function invoiceDirectionOrNull(
+  name: string,
+  obj: Record<string, unknown>,
+  field: string,
+): "incoming" | "outgoing" | null {
+  const v = obj[field];
+  if (v === undefined || v === null || v === "") return null;
+  if (typeof v !== "string" || !INVOICE_DIRECTIONS.includes(v as "incoming" | "outgoing")) {
+    throw new WorkflowSchemaError(
+      name,
+      field,
+      `one of ${JSON.stringify(INVOICE_DIRECTIONS)}, or null`,
+      v,
+    );
+  }
+  return v as "incoming" | "outgoing";
+}
+
 export interface EmailClassificationResultSchema {
   should_file: boolean;
   confidence: "high" | "medium" | "low";
@@ -382,6 +410,20 @@ export function validateEmailClassificationResult(input: unknown): EmailClassifi
 
 export interface DocumentClassificationResultSchema {
   doc_type: string;
+  /**
+   * Which way the invoice points, and therefore what `vendor` means.
+   *
+   * - `"incoming"` — a supplier billed us. `vendor` is the seller (the letterhead).
+   * - `"outgoing"` — we billed a customer. `vendor` is the BUYER, never our own company.
+   * - `null` / missing — `doc_type` is not an invoice or credit note, so direction does not
+   *   apply. Also missing on replay of payloads stored before this field existed, which is why
+   *   it is optional here: the worker re-validates historical `input_json` on every run.
+   *
+   * Without this field `vendor` was undefined for outgoing invoices, and the classifier filed
+   * one against our own company — which put its own name in the Paperless title and dropped the
+   * month out of P&L accrual income.
+   */
+  invoice_direction?: "incoming" | "outgoing" | null;
   vendor: string;
   total_amount: number | "unknown" | null;
   currency: string | null;
@@ -596,6 +638,11 @@ export function validateDocumentClassificationResult(
   const owner_match_evidence = validateOwnerMatchEvidence(obj, owner, opts.ownerEvidenceOptional ?? false);
   const result: DocumentClassificationResultSchema = {
     doc_type: stringOrUnknown("DocumentClassificationResult", obj, "doc_type") as string,
+    invoice_direction: invoiceDirectionOrNull(
+      "DocumentClassificationResult",
+      obj,
+      "invoice_direction",
+    ),
     vendor: reqString("DocumentClassificationResult", obj, "vendor"),
     total_amount: numberOrUnknown("DocumentClassificationResult", obj, "total_amount"),
     currency: nullableString("DocumentClassificationResult", obj, "currency"),

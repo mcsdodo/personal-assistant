@@ -428,6 +428,7 @@ export async function executeScanIntake(
           orderId: classification.order_id,
           litres: classification.litres,
           receiptDatetime: classification.receipt_datetime,
+          invoiceDirection: classification.invoice_direction,
         }, adapter, registry, logger);
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
@@ -454,6 +455,7 @@ export async function executeScanIntake(
           uploadResult.task_uuid, classification.total_amount, classification.order_id,
           classification.litres,
           classification.receipt_datetime,
+          classification.invoice_direction,
           adapter, registry, logger,
         );
         addJobEvent(db, job.id, "step_completed", { step: "set_custom_fields", ...cfResult });

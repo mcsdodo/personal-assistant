@@ -602,6 +602,7 @@ export async function executeInvoiceIntake(
           orderId: merged.order_id,
           litres: merged.litres,
           receiptDatetime: merged.receipt_datetime,
+          invoiceDirection: merged.invoice_direction,
         }, adapter, registry, logger);
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
@@ -642,6 +643,7 @@ export async function executeInvoiceIntake(
           merged.order_id,
           merged.litres,
           merged.receipt_datetime,
+          merged.invoice_direction,
           adapter,
           registry,
           logger,

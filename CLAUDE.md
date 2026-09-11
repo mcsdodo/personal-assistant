@@ -78,6 +78,33 @@ The executor runs in its own `pa-worker` container: `workflow-mcp` writes a
 inside `claude-code` drains those breadcrumbs into channel notifications. Cost is one poll
 tick before Claude sees the request.
 
+## Invoice direction decides what `vendor` means
+
+The document-classifier returns `invoice_direction` -- `"incoming"`, `"outgoing"`, or `null` for a
+document that is not an invoice or credit note. **Answer it before `vendor`, because it decides
+which company on the page the vendor is:**
+
+| direction | `vendor` is | printed |
+|---|---|---|
+| `incoming` | the seller | the letterhead |
+| `outgoing` | the **buyer** | the buyer block, never the letterhead |
+
+On an outgoing invoice `vendor` is **never** `${BUSINESS_COMPANY_NAME}`. We are the issuer, so our
+own name is in the letterhead -- but the counterparty is the customer we billed. `vendor` drives
+the Paperless correspondent **and the document title**, and the P&L accrual-income test reads the
+title, so naming ourselves there files the invoice against us and drops the month out of income.
+
+**This was undefined before, not merely mis-answered.** The contract had no direction field, so
+`vendor` had no meaning for outgoing invoices at all, and the rule "look for the name near
+IČO/DIČ" actively pointed at the letterhead -- which on an invoice we issue is us. The classifier
+reached the right conclusion about direction and wrote it into `notes`, where nothing read it.
+
+`owner` short-circuits on `"outgoing"` for the same reason: our identifiers sit on the **seller**
+side there, so the buyer-side proof rule would force either `"personal"` or an invented
+`owner_match_evidence`. It produced an invented one.
+
+[checker-mcp/CLAUDE.md](checker-mcp/CLAUDE.md) owns how the checker consumes this.
+
 ## Business / personal owner model
 
 The document-classifier returns an internal `owner` role -- `business`, `personal` or

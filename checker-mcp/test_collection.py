@@ -21,6 +21,7 @@ from engine.collection import (
 from engine.matching import MONTH_WINDOW, month_offset
 
 from conftest import (
+    INVOICE_DIRECTION_FIELD_ID,
     INVOICE_TYPE_ID,
     RECEIPT_DATETIME_FIELD_ID,
     TAG_IDS,
@@ -1750,6 +1751,81 @@ class TestCollectPLIncomePrefixesParam:
         pl = _collect_pl(client, 2026, income_prefixes=("sygic",))
         assert pl["income"] == 0.0
         assert len(pl["income_items"]) == 0
+
+
+class TestInvoiceDirectionAccrualIncome:
+    """`invoice_direction` is the primary accrual-income test; the title prefix
+    is only the fallback for documents uploaded before the field existed.
+
+    The prefix test alone identified income by vendor NAME, so the first invoice
+    issued to a customer outside INCOME_PREFIXES silently left income entirely.
+    """
+
+    @staticmethod
+    def _with_direction(inv, direction):
+        inv["custom_fields"] = list(inv["custom_fields"]) + [
+            {"field": INVOICE_DIRECTION_FIELD_ID, "value": direction}
+        ]
+        return inv
+
+    def _client(self, inv):
+        return _mock_client_for_pl({TAG_IDS["2026-04"]: [], TAG_IDS["2026-05"]: [inv]})
+
+    def test_outgoing_is_income_even_when_title_matches_no_prefix(self):
+        """The regression this field exists for: a brand-new customer.
+
+        Title starts with nothing in income_prefixes, so the legacy test would
+        drop it. The explicit direction counts it.
+        """
+        inv = self._with_direction(
+            _make_invoice(80, "Brand New Client s.r.o. - INV-2026-009", "new.pdf", "2026-05", 1230.00),
+            "outgoing",
+        )
+        pl = _collect_pl(self._client(inv), 2026, income_prefixes=("contoso",))
+        assert pl["income"] == round(1230.00 / 1.23, 2)
+        assert len(pl["income_items"]) == 1
+        assert pl["income_items"][0]["doc_id"] == 80
+
+    def test_outgoing_is_income_with_no_prefixes_configured_at_all(self):
+        """Direction needs no per-customer configuration to work."""
+        inv = self._with_direction(
+            _make_invoice(81, "Another Client - INV-2026-010", "c.pdf", "2026-05", 2460.00),
+            "outgoing",
+        )
+        pl = _collect_pl(self._client(inv), 2026, income_prefixes=())
+        assert pl["income"] == round(2460.00 / 1.23, 2)
+
+    def test_incoming_is_never_income_even_when_title_matches_a_prefix(self):
+        """A supplier bill must not be booked as income just because its title
+        happens to start with a configured prefix."""
+        inv = self._with_direction(
+            _make_invoice(82, "Contoso a. s. - SUPPLIER-1", "s.pdf", "2026-05", 500.00),
+            "incoming",
+        )
+        pl = _collect_pl(self._client(inv), 2026, income_prefixes=("contoso",))
+        assert pl["income"] == 0.0
+        assert len(pl["income_items"]) == 0
+
+    def test_missing_direction_falls_back_to_the_prefix_test(self):
+        """Documents predating the field keep their old behaviour -- a missing
+        direction means unknown, never "incoming"."""
+        inv = _make_invoice(83, "Contoso a. s. - INV-2026-011", "s.pdf", "2026-05", 1230.00)
+        pl = _collect_pl(self._client(inv), 2026, income_prefixes=("contoso",))
+        assert pl["income"] == round(1230.00 / 1.23, 2)
+
+    def test_missing_direction_and_non_matching_prefix_still_excluded(self):
+        inv = _make_invoice(84, "Alza.cz - FV999", "a.pdf", "2026-05", 200.00)
+        pl = _collect_pl(self._client(inv), 2026, income_prefixes=("contoso",))
+        assert pl["income"] == 0.0
+
+    def test_unreadable_direction_value_is_treated_as_missing(self):
+        """A junk value must not be read as a direction. It falls back."""
+        inv = self._with_direction(
+            _make_invoice(85, "Contoso a. s. - INV-2026-012", "s.pdf", "2026-05", 1230.00),
+            "sale",
+        )
+        pl = _collect_pl(self._client(inv), 2026, income_prefixes=("contoso",))
+        assert pl["income"] == round(1230.00 / 1.23, 2)
 
 
 class TestTxGroupBundling:

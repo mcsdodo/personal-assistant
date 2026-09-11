@@ -215,6 +215,7 @@ export async function setDocumentCustomFields(
   orderId: string | null | undefined,
   litres: number | null | undefined,
   receiptDatetime: string | null | undefined,
+  invoiceDirection: "incoming" | "outgoing" | null | undefined,
   adapter: PaperlessAdapter,
   registry: PaperlessFieldRegistry,
   logger: PostprocessLogger,
@@ -224,6 +225,7 @@ export async function setDocumentCustomFields(
     "fields.order_id": orderId ?? "",
     "fields.litres": String(litres ?? ""),
     "fields.receipt_datetime": receiptDatetime ?? "",
+    "fields.invoice_direction": invoiceDirection ?? "",
     "fields.task_uuid": taskUuid ?? "",
   }, async (span) => {
     if (!taskUuid) {
@@ -257,6 +259,9 @@ export async function setDocumentCustomFields(
       if (receiptDatetime) {
         customFields.push({ field: registry.getFieldId("receipt_datetime"), value: receiptDatetime });
       }
+      if (invoiceDirection) {
+        customFields.push({ field: registry.getFieldId("invoice_direction"), value: invoiceDirection });
+      }
       if (customFields.length === 0) return { doc_id: docId, error: "no fields to set" };
 
       const result = await adapter.setCustomFields(docId, customFields, logger);
@@ -284,6 +289,7 @@ export interface PatchParams {
   orderId?: string | null;
   litres?: number | null;
   receiptDatetime?: string | null;
+  invoiceDirection?: "incoming" | "outgoing" | null;
 }
 
 /**
@@ -311,6 +317,9 @@ export async function patchExistingDocument(
   }
   if (params.receiptDatetime) {
     customFields.push({ field: registry.getFieldId("receipt_datetime"), value: params.receiptDatetime });
+  }
+  if (params.invoiceDirection) {
+    customFields.push({ field: registry.getFieldId("invoice_direction"), value: params.invoiceDirection });
   }
   return adapter.patchDocument(
     params.documentId,

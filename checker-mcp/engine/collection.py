@@ -43,6 +43,23 @@ def _invoice_order_date(inv: dict, receipt_datetime_field_id: int | None) -> str
     return str(created)[:10] if created else ""
 
 
+def _invoice_direction(inv: dict | None, invoice_direction_field_id: int | None) -> str | None:
+    """Read the `invoice_direction` custom field: "incoming", "outgoing" or None.
+
+    None means the document carries no direction -- either it predates the field,
+    or it is not an invoice. Callers must treat None as "unknown" and fall back
+    to their previous signal, never as "incoming".
+    """
+    if inv is None or invoice_direction_field_id is None:
+        return None
+    for cf in inv.get("custom_fields", []):
+        if cf.get("field") == invoice_direction_field_id and cf.get("value"):
+            value = str(cf["value"]).strip().lower()
+            if value in ("incoming", "outgoing"):
+                return value
+    return None
+
+
 def _display_date(iso_date: str) -> str:
     """Render a YYYY-MM-DD ordering date as DD.MM.YYYY, matching the statement
     rows' date column. `_order_date` stays ISO internally because the pending-row
@@ -516,16 +533,25 @@ def collect_pl(
     income_prefixes: tuple[str, ...] = (),
     tx_group_field_id: int | None = None,
     receipt_datetime_field_id: int | None = None,
+    invoice_direction_field_id: int | None = None,
 ) -> dict:
     """Collect P&L data for a given year.
 
     Returns dict with income, expenses (by category), excluded totals.
     Uses accrual basis: invoices attributed by their month tag, not payment date.
 
+    invoice_direction_field_id: the `invoice_direction` custom field. An unmatched
+    invoice marked "outgoing" is accrual income whoever the customer is. This is
+    the primary test, and it needs no per-customer configuration.
+
     income_prefixes: lowercased title prefixes whose unmatched Invoice-type docs
-    are counted as accrual income even before a statement confirms payment.
-    Empty (the default) disables the accrual fallback. Must be pre-lowercased —
-    the comparison is against an already-lowercased document title.
+    are counted as accrual income even before a statement confirms payment. This
+    is now only the FALLBACK, for documents that carry no direction because they
+    predate the field. Empty (the default) disables that fallback. Must be
+    pre-lowercased -- the comparison is against an already-lowercased title.
+
+    The prefix test alone was a latent bug: it identifies income by vendor name,
+    so the first invoice issued to a new customer would silently leave income.
     """
     # Include next year's first months to catch Dec invoices paid in Jan/Feb
     months = [f"{year:04d}-{m:02d}" for m in range(1, 13)]
@@ -710,9 +736,21 @@ def collect_pl(
                     if doc_inv["_amounts"][0] * paired["_amounts"][0] < 0:
                         continue
 
-            title = row.get("detail", "").strip().lower()
-            if not any(title.startswith(p) for p in income_prefixes):
+            # Primary test: the classifier's explicit direction. An invoice we
+            # issued is accrual income regardless of which customer it names.
+            # Fallback: the legacy title-prefix test, for documents uploaded
+            # before `invoice_direction` existed. A missing direction must never
+            # be read as "incoming" -- it means unknown.
+            direction = _invoice_direction(
+                next((d for d in all_invoices if d["id"] == doc_id), None),
+                invoice_direction_field_id,
+            )
+            if direction == "incoming":
                 continue
+            if direction is None:
+                title = row.get("detail", "").strip().lower()
+                if not any(title.startswith(p) for p in income_prefixes):
+                    continue
 
             raw = row["amount"].strip()
             sign = -1 if raw.endswith("-") else 1

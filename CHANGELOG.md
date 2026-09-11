@@ -4,6 +4,18 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-09-11
+
+### Added
+- claude-code: document-classifier returns a new `invoice_direction` field - `incoming` (a supplier billed us) or `outgoing` (we billed a customer), and `null` for documents that are neither an invoice nor a credit note
+- claude-code: `invoice_direction` is written to Paperless as a custom field, created automatically on startup like the other custom fields
+
+### Fixed
+- claude-code: the document-classifier had no rule for an invoice the company **issues**, so `vendor` was undefined for outgoing invoices and the classifier could name the company itself as the vendor. `vendor` is now defined per direction: the seller on an incoming invoice, the buyer on an outgoing one, and never the company's own name on an invoice. `vendor` drives both the Paperless correspondent and the document title, so this filed an issued invoice against the issuer
+- checker-mcp: accrual income for an unpaid invoice is now decided by `invoice_direction` rather than by matching the document title against a configured list of vendor name prefixes. The prefix list identified income by **name**, so an invoice to a customer absent from that list was left out of income entirely. The prefix test remains as a fallback for documents uploaded before the new field existed; a missing direction means unknown and never "incoming"
+- claude-code: `owner` now short-circuits to `business` on an outgoing invoice. The proof rule required a business identifier on the **buyer** side, but on an invoice we issue our identifiers are on the seller side - which forced the classifier either to answer `personal` or to invent an `owner_match_evidence` string. It invented one
+- claude-code: the document-classifier is told the document outranks any vendor hint passed in from the covering email. A plausible but wrong hint was being echoed instead of read off the PDF
+
 ## 2026-09-03
 
 ### Fixed

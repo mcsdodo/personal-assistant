@@ -33,6 +33,7 @@ TOTAL_AMOUNT_FIELD_ID = 50
 TOTAL_AMOUNT_ALT_FIELD_ID = 51
 RECEIPT_DATETIME_FIELD_ID = 52
 TX_GROUP_FIELD_ID = 53
+INVOICE_DIRECTION_FIELD_ID = 54
 
 
 def _make_statement(doc_id, month_tag, content):
@@ -249,6 +250,7 @@ def _collect_pl(
     client, year, alt_field_id=TOTAL_AMOUNT_ALT_FIELD_ID, income_prefixes=("techlab",),
     tx_group_field_id=TX_GROUP_FIELD_ID,
     receipt_datetime_field_id=RECEIPT_DATETIME_FIELD_ID,
+    invoice_direction_field_id=INVOICE_DIRECTION_FIELD_ID,
 ):
     """Shorthand for collect_pl with test defaults.
 
@@ -267,6 +269,7 @@ def _collect_pl(
         income_prefixes=income_prefixes,
         tx_group_field_id=tx_group_field_id,
         receipt_datetime_field_id=receipt_datetime_field_id,
+        invoice_direction_field_id=invoice_direction_field_id,
     )
 
 

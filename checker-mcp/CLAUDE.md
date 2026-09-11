@@ -39,6 +39,26 @@ free.
 statement, return in the next -- are **not** detected here. The older amount-only
 post-matching detector still covers those, but only when both legs come out `MISSING`.
 
+## Accrual income is decided by direction, not by vendor name
+
+An **unmatched** invoice (no bank movement yet) enters P&L income through the accrual fallback in
+`collect_pl`. The test is the `invoice_direction` custom field: `"outgoing"` means we issued it,
+so it is income whoever the customer is. `"incoming"` is a supplier bill and never income.
+
+`INCOME_PREFIXES` (`PL_INCOME_PREFIXES`) is now **only the fallback**, for documents uploaded
+before the field existed. A **missing** direction means *unknown* and falls through to the prefix
+test -- it must never be read as `"incoming"`, or every historical invoice silently leaves income.
+
+**Why this changed.** The prefix test identified income by the vendor's **name**, so income was
+silently correct only for customers someone had remembered to configure. It had already produced
+one wrong month: an invoice the company issued was filed against the company's own name, its
+title therefore matched no prefix, and the month reported no income at all until the document was
+repaired by hand. The same test would have dropped the first invoice to any new customer.
+
+A **matched** invoice is unaffected: `collect_pl` counts a bank credit as income with no title or
+direction test at all, which is why that earlier gap healed itself once the payment arrived and
+why it only ever affected unpaid invoices.
+
 ## Ordering a bundle
 
 `_invoice_order_date` in [engine/collection.py](engine/collection.py) prefers the

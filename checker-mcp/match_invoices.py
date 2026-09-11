@@ -43,6 +43,10 @@ TOTAL_AMOUNT_FIELD_NAME = "total_amount"  # Paperless custom field name
 TOTAL_AMOUNT_ALT_FIELD_NAME = "total_amount_alt"  # alt amount for split payments
 FILENAME_NOTE_FIELD_NAME = "filename_note"  # optional label appended to filename in ZIP exports
 RECEIPT_DATETIME_FIELD_NAME = "receipt_datetime"  # receipt date, used to order pending rows
+# "incoming" (a supplier billed us) or "outgoing" (we billed a customer). An
+# unmatched outgoing invoice is accrual income whoever the customer is, which is
+# what INCOME_PREFIXES below could not express.
+INVOICE_DIRECTION_FIELD_NAME = "invoice_direction"
 TX_GROUP_FIELD_NAME = "tx_group"  # groups proforma+payment+final into one bundle
 
 

@@ -38,6 +38,12 @@ export interface EmailClassification {
  * downstream code can read them without Record<string, unknown> casts.
  */
 export interface DocumentClassificationFields {
+  /**
+   * Which way the invoice points. Decides what `vendor` means: on `"outgoing"` the vendor is
+   * the buyer we billed, never our own company. Null for non-invoice documents, and missing on
+   * payloads stored before the field existed.
+   */
+  invoice_direction?: "incoming" | "outgoing" | null;
   /** Issue date as printed on the document ("YYYY-MM-DD" or "unknown"). */
   doc_date?: string | null;
   /** Slovak "deň dodania" — legal tax point per § 19 Zákon 222/2004. */

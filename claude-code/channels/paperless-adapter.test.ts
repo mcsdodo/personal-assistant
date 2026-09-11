@@ -549,6 +549,7 @@ describe("setDocumentCustomFields (postprocess-service)", () => {
       "FA12345",                   // order_id
       45.30,                       // litres
       "2026-04-25T14:23:00",       // receipt_datetime
+      null,                        // invoice_direction — a fuel receipt has no direction
       testAdapter,
       reg,
       { log: () => {} },
@@ -598,6 +599,7 @@ describe("setDocumentCustomFields (postprocess-service)", () => {
       "INV-001", // order_id
       null,      // litres — not a fuel doc
       null,      // receipt_datetime — not a fuel doc
+      null,      // invoice_direction
       testAdapter,
       reg,
       { log: () => {} },
@@ -615,6 +617,50 @@ describe("setDocumentCustomFields (postprocess-service)", () => {
     // litres and receipt_datetime must NOT be in the PATCH body
     expect(cf.find((e) => e.field === 7)).toBeUndefined();
     expect(cf.find((e) => e.field === 8)).toBeUndefined();
+  });
+
+  test("PATCHes invoice_direction for an outgoing sales invoice", async () => {
+    const taskUuid = "task-outgoing-1";
+    const docId = 501;
+
+    const reg = await primeFieldRegistry({
+      total_amount: 1,
+      order_id: 4,
+      litres: 7,
+      receipt_datetime: 8,
+      invoice_direction: 9,
+    });
+    const testAdapter = new PaperlessAdapter({
+      paperlessUrl: "https://paperless.test",
+      paperlessToken: "tok",
+      paperlessMcpUrl: "http://paperless-mcp:3000/mcp",
+      fieldRegistry: reg,
+    });
+
+    mockFetch(
+      () => jsonResponse([{ status: "SUCCESS", result: `Success. New document id ${docId} created` }]),
+      () => jsonResponse({ id: docId, custom_fields: [] }),
+      () => jsonResponse({ id: docId, custom_fields: [{ field: 9, value: "outgoing" }] }),
+    );
+
+    const result = await setDocumentCustomFields(
+      taskUuid,
+      5000.0,                  // total_amount
+      "INV-2026-0008",         // order_id
+      null,                    // litres
+      "2026-08-31T00:00:00",   // receipt_datetime
+      "outgoing",              // invoice_direction
+      testAdapter,
+      reg,
+      { log: () => {} },
+    );
+
+    expect(result.error).toBeUndefined();
+    const patchCall = fetchCallLog.find((c) => c.init?.method === "PATCH");
+    const cf: Array<{ field: number; value: unknown }> = JSON.parse(
+      patchCall!.init!.body as string,
+    ).custom_fields;
+    expect(cf).toContainEqual({ field: 9, value: "outgoing" });
   });
 });
 

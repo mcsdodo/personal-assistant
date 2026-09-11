@@ -369,6 +369,41 @@ describe("validateDocumentClassificationResult", () => {
     expect(out.accounting_period).toBe("2026-04");
   });
 
+  test("accepts invoice_direction incoming and outgoing", () => {
+    for (const dir of ["incoming", "outgoing"] as const) {
+      const out = validateDocumentClassificationResult({
+        ...VALID_DOC_CLASS,
+        invoice_direction: dir,
+      });
+      expect(out.invoice_direction).toBe(dir);
+    }
+  });
+
+  test("invoice_direction absent or null becomes null, never throws", () => {
+    // Load-bearing for replay: every payload stored before the field existed
+    // has no direction, and the worker re-validates stored payloads each run.
+    const { invoice_direction: _omit, ...withoutField } = {
+      ...VALID_DOC_CLASS,
+      invoice_direction: "incoming",
+    };
+    expect(validateDocumentClassificationResult(withoutField).invoice_direction).toBeNull();
+    expect(
+      validateDocumentClassificationResult({ ...VALID_DOC_CLASS, invoice_direction: null })
+        .invoice_direction,
+    ).toBeNull();
+  });
+
+  test("rejects an invoice_direction outside the enum", () => {
+    expectSchemaError(
+      () =>
+        validateDocumentClassificationResult({
+          ...VALID_DOC_CLASS,
+          invoice_direction: "sale",
+        }),
+      { field: "invoice_direction" },
+    );
+  });
+
   test("accepts null total_amount and null dates", () => {
     const out = validateDocumentClassificationResult({
       ...VALID_DOC_CLASS,

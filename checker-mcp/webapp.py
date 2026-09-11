@@ -23,6 +23,7 @@ from match_invoices import (
     ACCOUNTING_TAG_NAME,
     ACCOUNT_STATEMENT_TAG_NAME,
     FILENAME_NOTE_FIELD_NAME,
+    INVOICE_DIRECTION_FIELD_NAME,
     INVOICE_TYPE_NAME,
     PAPERLESS_URL,
     RECEIPT_DATETIME_FIELD_NAME,
@@ -444,6 +445,7 @@ def profit_loss():
     ta_alt_field = client.get_custom_field_id(TOTAL_AMOUNT_ALT_FIELD_NAME)
     tx_group_field_id = client.get_custom_field_id(TX_GROUP_FIELD_NAME)
     rd_field = client.get_custom_field_id(RECEIPT_DATETIME_FIELD_NAME)
+    dir_field = client.get_custom_field_id(INVOICE_DIRECTION_FIELD_NAME)
 
     # Find years with statement data
     tag_map = client.get_all_tags()
@@ -469,6 +471,7 @@ def profit_loss():
         income_prefixes=INCOME_PREFIXES,
         tx_group_field_id=tx_group_field_id,
         receipt_datetime_field_id=rd_field,
+        invoice_direction_field_id=dir_field,
     )
     return render_pl(pl, available_years, hourly_rates=_load_rates())
 

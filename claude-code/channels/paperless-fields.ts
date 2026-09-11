@@ -11,6 +11,7 @@ const FIELD_DEFS: Record<string, { data_type: string }> = {
   litres: { data_type: "float" },
   receipt_datetime: { data_type: "string" },
   tx_group: { data_type: "string" },
+  invoice_direction: { data_type: "string" },
 };
 
 interface CustomFieldResponse {

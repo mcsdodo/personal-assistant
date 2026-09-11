@@ -16,6 +16,7 @@ from match_invoices import (
     INCOME_PREFIXES,
     ACCOUNTING_TAG_NAME,
     ACCOUNT_STATEMENT_TAG_NAME,
+    INVOICE_DIRECTION_FIELD_NAME,
     INVOICE_TYPE_NAME,
     RECEIPT_DATETIME_FIELD_NAME,
     TOTAL_AMOUNT_ALT_FIELD_NAME,
@@ -49,6 +50,9 @@ class _ClientHolder:
         self.tx_group_field_id = self.client.get_custom_field_id(TX_GROUP_FIELD_NAME)
         self.receipt_datetime_field_id = self.client.get_custom_field_id(
             RECEIPT_DATETIME_FIELD_NAME
+        )
+        self.invoice_direction_field_id = self.client.get_custom_field_id(
+            INVOICE_DIRECTION_FIELD_NAME
         )
 
     @classmethod
@@ -153,6 +157,7 @@ def get_pl_summary(year: int) -> dict:
         income_prefixes=INCOME_PREFIXES,
         tx_group_field_id=h.tx_group_field_id,
         receipt_datetime_field_id=h.receipt_datetime_field_id,
+        invoice_direction_field_id=h.invoice_direction_field_id,
     )
 
 
