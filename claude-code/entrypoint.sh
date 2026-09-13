@@ -44,10 +44,12 @@ BUNEOF
 fi
 
 # The stack env always passes these five, empty when the stack runs on
-# Anthropic. An empty ANTHROPIC_BASE_URL is not the same as an unset one:
-# Claude Code would try to talk to nowhere. Unset the empty ones, so "all
-# five empty" in the stack env means "straight to Anthropic on the OAuth
-# token".
+# Anthropic. Measured 2026-09-13 in a throwaway container: an empty
+# ANTHROPIC_BASE_URL behaves like an unset one -- Claude Code still reaches
+# the real Anthropic API, it does not "talk to nowhere". We still unset all
+# five explicitly below, so "all five empty" in the stack env reads
+# unambiguously as "not set" instead of relying on unverified empty-string
+# handling for the other four.
 for v in ANTHROPIC_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_BASE_URL \
          ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_MAX_CONTEXT_TOKENS; do
   if [ -z "$(printenv "$v" 2>/dev/null)" ]; then
@@ -209,6 +211,11 @@ declare -A MISSING_COUNT
 while tmux has-session -t claude 2>/dev/null; do
   pane_text=$(tmux capture-pane -t claude -p -S -15 2>/dev/null || true)
 
+  # This matches only the Anthropic subscription rate-limit TUI prompt. When
+  # the session runs through a gateway, the same limit arrives as an API
+  # error, not this prompt, so the check below never fires and a stalled
+  # pipeline can still report healthy. No detector for that case exists yet
+  # -- deferred by design, not an oversight.
   if echo "$pane_text" | grep -q "Stop and wait for limit to reset"; then
     echo "[watchdog] Rate limit prompt detected — selecting 'wait for reset'"
     tmux send-keys -t claude Enter

@@ -19,6 +19,7 @@ Operators attach via `docker exec -it personal-assistant-claude tmux attach -t c
 
 | # | Phase | Success condition | Timeout / behaviour |
 |---|---|---|---|
+| 0 | **LLM routing setup** | Always runs | Unsets any of the five `ANTHROPIC_*` / `CLAUDE_CODE_MAX_CONTEXT_TOKENS` routing variables that arrived empty, before `claude` starts in tmux. See [LLM routing](#llm-routing) below. |
 | 1 | **Startup wait** | Pane contains `Listening for channel messages` | 60s. On timeout, log warning and continue. |
 | 2 | **Dismiss extra prompts** | No more `new MCP server` / `trust` / `continue` prompts in pane | 10s sliding window. Sends Enter on detection. |
 | 3 | **Verify stdio channels** | All 5 channel processes (`bun run *.ts`) visible in `pgrep` | Up to 60s of retries. On failure, **kills tmux to trigger container restart** — this is task 41 self-healing. |
@@ -175,7 +176,10 @@ container id.
 ### LLM routing
 
 Five environment variables on the `claude-code` service control which LLM backend the session
-uses. The entrypoint reads all five; leave a variable unset (or empty) to skip it.
+uses. The entrypoint reads all five; leave a variable unset (or empty) to skip it. Roll back
+by emptying all five together. Emptying only some, for example just `ANTHROPIC_BASE_URL`,
+leaves the session pointed at Anthropic with a gateway model id, and every call 4xxs while
+the container still reports healthy.
 
 | Variable | What it sets | Empty behaviour |
 |---|---|---|
@@ -186,12 +190,21 @@ uses. The entrypoint reads all five; leave a variable unset (or empty) to skip i
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | The context-window size Claude Code plans against | Unset; Claude Code uses its own default for the model name |
 
 `ANTHROPIC_CUSTOM_HEADERS` is the one variable of the five quoted in
-[`docker-compose.yml`](../docker-compose.yml). A header string can contain a colon, and an
-unquoted colon breaks YAML parsing.
+[`docker-compose.yml`](../docker-compose.yml). Compose parses the YAML before it interpolates
+`${ANTHROPIC_CUSTOM_HEADERS}`, so the header value itself never appears in the YAML that gets
+parsed -- an unquoted colon in the placeholder line would not break anything, and
+[`GDRIVE_MCP_URL`](../docker-compose.yml) already ships unquoted with a colon in its value.
+The quoting here is defensive: the value carries a colon and a space, and a literal value
+inlined in the YAML, instead of passed through a variable reference, would parse as a map,
+not a string.
 
 **All five empty is the default.** [`claude-code/entrypoint.sh`](../claude-code/entrypoint.sh)
 unsets each variable that arrives empty, so Claude Code talks straight to Anthropic with the
 OAuth token in the mounted config, on `sonnet`, exactly as before these variables existed.
+Measured 2026-09-13: this unset step is not strictly required for `ANTHROPIC_BASE_URL` --
+Claude Code treats an empty value the same as an absent one and still reaches Anthropic
+directly. The entrypoint unsets all five anyway, so the safe direction never depends on
+unverified empty-string handling for the other four variables.
 
 **Set together, the five variables point the session and its subagents at an
 OpenAI-compatible gateway.** `ANTHROPIC_BASE_URL` and `ANTHROPIC_CUSTOM_HEADERS` redirect and
