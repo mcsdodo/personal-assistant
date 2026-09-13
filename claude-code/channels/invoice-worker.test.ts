@@ -1874,6 +1874,79 @@ describe("invoice-worker force-refresh (email pipeline)", () => {
   });
 });
 
+describe("invoice-worker force-refresh: a non-monetary document has no dedup key", () => {
+  // Nulling `order_id` on a non-monetary document takes away the only thing the
+  // email path's dedup matches on, and force-refresh is built on top of dedup.
+  // Without a second route to the prior doc id, `force: true` on such a document
+  // uploads a new one instead of PATCHing the existing one -- and the operator's
+  // documented repair path for a mis-filed document is exactly `force: true`.
+  //
+  // The prior upload's `paperless_doc_id` is recorded against the job's
+  // `source_ref`, which is deterministic, so that is the route used.
+  test("force=true PATCHes the prior doc via source_ref, not a second upload", async () => {
+    const filePath = join(tmpDir, "terms_force.pdf");
+    writeFileSync(filePath, Buffer.from("fake terms pdf"));
+    const input = makeInput({ file_path: filePath, force: true });
+
+    // A prior completed job for the SAME source_ref that uploaded doc 997.
+    const prior = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify(makeInput()),
+      sourceRef: `${input.email_source}:${input.message_id}`,
+      idempotencyKey: `${input.email_source}:${input.message_id}-prior`,
+    });
+    db.prepare("UPDATE jobs SET state = 'completed', paperless_doc_id = 997 WHERE id = ?").run(prior.id);
+
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({
+        confidence: "high",
+        vendor: "SomeShop.sk",
+        order_id: "10000001",
+        total_amount: 88.4,
+        received_at: "2026-07-23T19:29:49Z",
+      }),
+      defaultDocClassification({
+        vendor: "Terms Publisher s. r. o.",
+        doc_type: "document",
+        total_amount: null,
+        order_id: null,
+        doc_date: "2026-06-17",
+      }),
+    );
+
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Terms Publisher s. r. o." }])),
+      // 2. list_tags -- no dedup HTTP call: there is no order_id to search by,
+      //    and the source_ref shortcut needs no request.
+      () => jsonResponse(rpcResponse([
+        { id: 3, name: "techlab" },
+        { id: 11, name: "accounting" },
+        { id: 7, name: "2026-07" },
+      ])),
+      // 3. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "document" }])),
+      // 4. resolveStoragePath
+      storagePathsMockHandler(),
+      // 5. PATCH the prior doc. A POST upload here means the regression is live.
+      (url, init) => {
+        expect(url).toContain("/api/documents/997/");
+        expect(init?.method).toBe("PATCH");
+        return jsonResponse({ id: 997 });
+      },
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("refreshed");
+    expect(output.paperless_document_id).toBe(997);
+  });
+});
+
 describe("invoice-worker force-refresh (scan pipeline)", () => {
   test("force=true + exact duplicate → PATCH existing scan doc", async () => {
     const filePath = join(tmpDir, "force_scan.pdf");

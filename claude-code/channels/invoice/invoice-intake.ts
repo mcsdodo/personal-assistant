@@ -23,6 +23,7 @@ import {
   completeJob,
   getJobEvents,
   getLatestReceivedAtForDoc,
+  getPaperlessDocIdForSource,
   parseJobJson,
   recordDownloadedFile,
   requestJobApproval,
@@ -594,11 +595,42 @@ export async function executeInvoiceIntake(
       // the same PATCH path automatically when a newer email for the same
       // order arrives (multi-stage vendors like Alza).
       addJobEvent(db, job.id, "step_started", { step: "deduplicate" });
-      const dedupeResult = await checkDuplicateImpl(merged, correspondent, adapter, registry, logger, {
-        newReceivedAt: input.received_at ?? null,
-        lookupExistingReceivedAt: async (docId) => getLatestReceivedAtForDoc(db, docId),
-      });
       let forceTargetDocId: number | undefined;
+
+      // Force-reprocess short-circuit, ported from the scan path.
+      //
+      // `checkDuplicateImpl` matches on `order_id` + correspondent, and returns
+      // "no duplicate" when there is no order_id at all. So force-reprocess --
+      // which reaches the PATCH path only through a dedup hit -- silently turned
+      // into a fresh upload for any document without one. That already affected
+      // payslips; enforcing the non-monetary invariant above extends it to every
+      // `document` and `account_statement`, and a mis-filed document is exactly
+      // what an operator force-reprocesses. Paperless then drops the re-uploaded
+      // PDF as identical content, so the job reports success and nothing changes.
+      //
+      // `source_ref` -> `paperless_doc_id` is deterministic and needs no
+      // classifier agreement, so use it first and skip the search entirely.
+      if (input.force && job.source_ref) {
+        const priorDocId = getPaperlessDocIdForSource(db, job.source_ref);
+        if (priorDocId) {
+          forceTargetDocId = priorDocId;
+          logger.log(`force=true: using prior paperless_doc_id=${priorDocId} from source_ref (skipping classifier dedup)`);
+          span.setAttribute("invoice.force_refresh", true);
+          span.setAttribute("invoice.force_target_doc_id", priorDocId);
+          addJobEvent(db, job.id, "step_completed", {
+            step: "deduplicate",
+            outcome: "force_prior_source",
+            existing_id: priorDocId,
+          });
+        }
+      }
+
+      const dedupeResult = forceTargetDocId
+        ? null
+        : await checkDuplicateImpl(merged, correspondent, adapter, registry, logger, {
+            newReceivedAt: input.received_at ?? null,
+            lookupExistingReceivedAt: async (docId) => getLatestReceivedAtForDoc(db, docId),
+          });
       if (dedupeResult) {
         addJobEvent(db, job.id, "step_completed", {
           step: "deduplicate",
@@ -634,7 +666,7 @@ export async function executeInvoiceIntake(
           span.setStatus({ code: SpanStatusCode.OK });
           return;
         }
-      } else {
+      } else if (!forceTargetDocId) {
         addJobEvent(db, job.id, "step_completed", {
           step: "deduplicate",
           outcome: "no_duplicate",
