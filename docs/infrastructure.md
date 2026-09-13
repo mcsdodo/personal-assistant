@@ -198,8 +198,8 @@ The `mcp-client.ts` HTTP client wraps all tool calls with retry logic for transi
 ## Model Strategy
 
 - **Main session:** orchestration, Telegram conversation, complex decisions. Model is
-  configurable, not fixed — see [claude-code-runtime.md](./claude-code-runtime.md#llm-routing)
+  configurable, not fixed -- see [claude-code-runtime.md](./claude-code-runtime.md#llm-routing)
 - **Subagents:** fast, cheap classification and processing. Model is configurable, not fixed
-  — see [claude-code-runtime.md](./claude-code-runtime.md#llm-routing)
+  -- see [claude-code-runtime.md](./claude-code-runtime.md#llm-routing)
   - `email-classifier.md` — classifies email intent, vendor, download strategy
   - `document-classifier.md` — classifies documents from both email and GDrive paths (extracts vendor, amount, doc_type from PDF via vision)
