@@ -1291,7 +1291,7 @@ describe("invoice-worker upload path: litres + receipt_datetime custom fields", 
   });
 });
 
-// ── Task 173: the non-monetary invariant on the email path ──────────────
+// ── The non-monetary invariant on the email path ──────────────
 
 describe("invoice-worker non-monetary document: the email's guesses do not survive", () => {
   /** Registry with all 4 custom fields, so field 4 (order_id) is settable. */
