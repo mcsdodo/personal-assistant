@@ -233,7 +233,7 @@ afterEach(() => {
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
-describe("invoice-worker approval gates (removed)", () => {
+describe("invoice-worker gates: which are gone, and which consume the classifier", () => {
   test("unknown vendor proceeds without pausing", async () => {
     const input = makeInput();
     const job = createRunningJob(
@@ -263,9 +263,67 @@ describe("invoice-worker approval gates (removed)", () => {
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
 
-  test("low confidence proceeds without pausing", async () => {
+  // This test used to assert `completed`, encoding the decision that the
+  // low-confidence gate was removed. It is inverted on purpose: the gate that
+  // was removed re-triaged what the classifier had already decided, while this
+  // one CONSUMES the action the classifier's own rules ask for. Anything short
+  // of high confidence paired with `download_and_upload` is a pairing
+  // email-classifier.md forbids, and it is how a terms-and-conditions PDF was
+  // filed as a purchase.
+  test("non-high confidence with download_and_upload pauses for the user", async () => {
     const input = makeInput();
     const job = createRunningJob(input, defaultEmailClassification({ confidence: "low" }));
+
+    // No fetch handlers: the gate must fire BEFORE the attachment download, so
+    // any HTTP call at all is a failure of the gate.
+    mockFetch();
+
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+
+    expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
+    const stepNames = getJobEvents(db, job.id)
+      .map((e) => JSON.parse(e.payload_json ?? "{}").step);
+    expect(stepNames).not.toContain("download");
+    expect(stepNames).not.toContain("upload");
+  });
+
+  test("action notify_user pauses even at high confidence", async () => {
+    // The hole this closes: the worker handled `action: "ignore"` and nothing
+    // else, so `notify_user` fell straight through to download and upload.
+    const input = makeInput();
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({ confidence: "high", action: "notify_user" }),
+    );
+
+    mockFetch();
+
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+
+    expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
+    const request = getJobEvents(db, job.id).find((e) => e.event_type === "guidance_request");
+    expect(request).toBeDefined();
+    const payload = JSON.parse(request!.payload_json!);
+    expect(payload.reason).toBe("email_action_notify_user");
+    expect(payload.suggested_actions).toContain("retry");
+    // The operator gets told, rather than the job going quiet.
+    expect(notifyCalls.length).toBeGreaterThan(0);
+  });
+
+  test("the action gate pauses once, not on every tick", async () => {
+    // Anti-loop. A gate with no "already asked" test re-parks forever: `retry`
+    // re-queues, the worker re-runs from the top, the same gate fires again.
+    const input = makeInput();
+    const job = createRunningJob(input, defaultEmailClassification({ confidence: "medium" }));
+
+    mockFetch();
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+    expect(getJob(db, job.id)!.state).toBe("awaiting_user_guidance");
+
+    // Operator answers "retry": provide_guidance writes guidance_applied and
+    // flips the job back to queued.
+    addJobEvent(db, job.id, "guidance_applied", { action: "retry" });
+    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job.id);
 
     mockFetch(
       () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 100 }])),
@@ -282,7 +340,7 @@ describe("invoice-worker approval gates (removed)", () => {
       ...customFieldsMockHandlers(),
     );
 
-    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+    await executeInvoiceIntake(db, getJob(db, job.id)!, logger, registry, createPaperlessAdapter(registry), notify);
 
     expect(getJob(db, job.id)!.state).toBe("completed");
   });
@@ -1230,6 +1288,118 @@ describe("invoice-worker upload path: litres + receipt_datetime custom fields", 
     expect(cf.find((f) => f.field === 2)).toBeUndefined();
     // total_amount must be set
     expect(cf).toContainEqual({ field: 1, value: 12.50 });
+  });
+});
+
+// ── Task 173: the non-monetary invariant on the email path ──────────────
+
+describe("invoice-worker non-monetary document: the email's guesses do not survive", () => {
+  /** Registry with all 4 custom fields, so field 4 (order_id) is settable. */
+  let fullRegistry: PaperlessFieldRegistry;
+
+  beforeEach(async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        count: 4,
+        next: null,
+        results: [
+          { id: 1, name: "total_amount", data_type: "float" },
+          { id: 2, name: "litres", data_type: "float" },
+          { id: 3, name: "receipt_datetime", data_type: "string" },
+          { id: 4, name: "order_id", data_type: "string" },
+        ],
+      }),
+    })) as any;
+    fullRegistry = new PaperlessFieldRegistry("https://test", "tok");
+    await fullRegistry.init();
+    globalThis.fetch = origFetch;
+  });
+
+  // The order-acknowledgement replay, end to end. The email classifier
+  // guessed an amount and an order number from the covering e-mail. The
+  // document classifier read the PDF, called it a `document`, and returned
+  // null for both -- which the merge treated as "no opinion". Confidence is
+  // `high` here so the action gate does not fire first; the point of this
+  // test is what reaches Paperless.
+  test("neither the amount nor the order number reaches the custom fields", async () => {
+    const filePath = join(tmpDir, "terms.pdf");
+    writeFileSync(filePath, Buffer.from("fake terms and conditions pdf"));
+    const input = makeInput({ file_path: filePath });
+    const job = createRunningJob(
+      input,
+      defaultEmailClassification({
+        confidence: "high",
+        vendor: "SomeShop.sk",
+        order_id: "10000001",
+        total_amount: 88.4,
+        subject: "Prijatá objednávka číslo 10000001 | SomeShop.sk",
+        received_at: "2026-07-23T19:29:49Z",
+      }),
+      defaultDocClassification({
+        vendor: "Terms Publisher s. r. o.",
+        doc_type: "document",
+        total_amount: null,
+        order_id: null,
+        doc_date: "2026-06-17",
+      }),
+    );
+
+    let patchBody: Record<string, unknown> | null = null;
+
+    mockFetch(
+      // 1. list_correspondents -- the doc classifier's vendor wins the merge
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Terms Publisher s. r. o." }])),
+      // 2. list_tags -- techlab + accounting + the ARRIVAL month all exist.
+      //    No dedup call in between: the invariant nulled order_id, and dedup
+      //    has nothing to look up without one.
+      () => jsonResponse(rpcResponse([
+        { id: 3, name: "techlab" },
+        { id: 11, name: "accounting" },
+        { id: 7, name: "2026-07" },
+      ])),
+      // 3. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "document" }])),
+      // 4. resolveStoragePath
+      storagePathsMockHandler(),
+      // 5. post_document upload
+      () => new Response('"task-uuid-terms"', { status: 200 }),
+      // 6. task poll -> SUCCESS
+      () => jsonResponse([{ status: "SUCCESS", result: "Success. New document id 997 created" }]),
+      // 7. PATCH custom fields -- capture the body
+      (url, init) => {
+        patchBody = JSON.parse(init?.body as string);
+        return jsonResponse({ id: 997, custom_fields: [] });
+      },
+      // 8. verify GET
+      () => jsonResponse({ id: 997, custom_fields: [] }),
+    );
+
+    await executeInvoiceIntake(db, job, logger, fullRegistry, createPaperlessAdapter(fullRegistry), notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("uploaded");
+    expect(output.total_amount).toBeNull();
+
+    // Custom fields: no amount (field 1), no order number (field 4).
+    const cf = ((patchBody as any)?.custom_fields ?? []) as Array<{ field: number; value: unknown }>;
+    expect(cf.map((f) => f.field)).not.toContain(1);
+    expect(cf.map((f) => f.field)).not.toContain(4);
+
+    // Month tag: the arrival month, not the month printed on the terms.
+    expect(output.tags).toContain("2026-07");
+    expect(output.tags).not.toContain("2026-06");
+
+    // `generateTitle` prefers order_id, so with it gone the title comes from
+    // the subject instead of reading as "<vendor> - <order number>". The order
+    // number can still appear inside the subject text; what must not happen is
+    // the document being titled AS that order.
+    expect(output.title).not.toBe("Terms Publisher s. r. o. - 10000001");
+    expect(output.title).toContain("Prijatá objednávka");
   });
 });
 
@@ -2688,7 +2858,7 @@ describe("scan-worker upload path: litres + receipt_datetime custom fields", () 
       storagePathsMockHandler(),
       // 5. post_document upload
       () => new Response('"task-uuid-fuel-scan"', { status: 200 }),
-      // 6. task poll → SUCCESS
+      // 6. task poll -> SUCCESS
       () => jsonResponse([{ status: "SUCCESS", result: "Success. New document id 999 created" }]),
       // 7. PATCH custom fields — capture body for assertion
       (url, init) => {

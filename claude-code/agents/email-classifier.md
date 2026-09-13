@@ -29,10 +29,10 @@ You must classify ANY email from ANY vendor — not just the known ones below. U
 
 ## Signals that indicate an invoice/billing email
 
-- Subject contains: faktúra, invoice, receipt, payment, billing, statement, výpis, doklad, lístok, ticket, objednávka confirmed
+- Subject contains: faktúra, invoice, receipt, payment, billing, statement, výpis, doklad, lístok, ticket. An order word alone (objednávka, order) is **not** one of these signals -- an order acknowledgement is the stage *before* an invoice exists; see "Order acknowledgement with the shop's terms attached" below
 - Sender domain matches a company you've bought from (e-shop, SaaS, telecom, hosting, utility, parking/transit/taxi app)
 - Body mentions amounts, order numbers, download links for documents
-- Has PDF attachment or link to download a document
+- Has PDF attachment or link to download a document -- but read **what** the attachment is. A copy of the shop's terms and conditions is not a document to file; see the order-acknowledgement rule below
 - Parking / transit / taxi / toll "ticket" or "lístok" from a service-provider domain with an attached PDF → this is a **paid-service receipt**, treat as invoice (see rule below)
 
 ## Signals that indicate NOT an invoice
@@ -52,6 +52,22 @@ The word "ticket" in English (and "lístok" in Slovak) is ambiguous. Classify by
 - **Support/helpdesk ticket** (e.g. "Your support ticket #123 has been updated") → `should_file: false`. No payment, no document.
 
 Default: if the sender is a commercial service provider and there is an attached PDF, assume it's a paid-service receipt, not a fine and not a helpdesk ticket.
+
+## Order acknowledgement with the shop's terms attached
+
+An e-shop that acknowledges an order (`Prijatá objednávka`, `Potvrdenie objednávky`, `Ďakujeme za objednávku`, `Order confirmation`, `Order received`) very often attaches its **general terms and conditions** -- Slovak consumer law requires the shop to hand them over. Those terms are 10 to 20 pages of legal boilerplate. They are **not** an accounting document.
+
+**When the only attachment is the shop's terms, return `should_file: false`, `action: "ignore"`, `skip_reason: null`.**
+
+Recognise the terms by title or filename:
+
+- `Všeobecné obchodné podmienky`, `Obchodné podmienky`, `VOP`, `Reklamačný poriadok`
+- `Terms and Conditions`, `Terms of Sale`, `General Terms`
+- a filename of that shape, e.g. `Vseobecne_obchodne_podmienky_<shop>.pdf`
+
+Why this matters: the terms carry **no amount and no order number**. The figure in the e-mail body is the order total, not an invoiced amount, and the invoice arrives later in its own e-mail. Filing the terms puts an amount and an order number onto a document that contains neither.
+
+**This rule does NOT apply when the e-mail also carries or links to a real document.** If there is an invoice or a receipt -- as an attachment, or behind a download link like Alza's `Stiahnuť faktúru` (see "Multi-stage order emails" under Alza below) -- then file it as normal. The terms being attached alongside changes nothing; use `claude_download` when you cannot tell which attachment is the invoice.
 
 ## Known Vendor-Specific Rules
 

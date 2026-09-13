@@ -59,7 +59,7 @@ The workflow worker drives the full invoice pipeline deterministically:
 - Checks for duplicates in Paperless
 - Uploads to Paperless with correct metadata
 - Sends Telegram notification on completion/failure
-- Pauses automatically for unknown vendors, low confidence, or browser-required cases
+- Pauses automatically for browser-required downloads, likely duplicates, and when the email classifier's own `action` says a human should decide (`action: "notify_user"`, or `download_and_upload` below `high` confidence). The last one parks the job in `awaiting_user_guidance` with `reason: "email_action_notify_user"` and sends the Telegram prompt itself
 
 Pollers create jobs automatically. Use `create_invoice_intake_job` / `create_scan_intake_job` only by hand for two cases: **reprocessing** an already-processed email (`force: true` — PATCHes the existing doc in place) and **recovering a missed email** the poller never saw (`force: false` — normal pipeline, dedup-guarded). See "Manual reprocessing" and "Recovering a missed email" under the pipeline section below for which to use.
 
@@ -155,6 +155,7 @@ Rules for parsing:
 - If the user mentions a value for a field listed in `missing_fields`, include it in `patch`.
 - If the user asks to drop the job ("skip", "preskoč", "drop it", "ignore"), use `action: "skip"` with a short `user_note` capturing their reasoning.
 - If the user asks to retry ("try again", "skús znova") without providing new info, use `action: "retry"`.
+- **`reason: "email_action_notify_user"`** means the worker stopped before downloading anything because the email classifier was not confident this email carries a document to file. `context` holds the sender, subject, action and confidence. "Yes", "file it", "áno", "ulož to" -> `action: "retry"` (the worker then runs the normal pipeline). "No", "not an invoice", "nie", "preskoč" -> `action: "skip"` with a short `user_note`. There is nothing to patch on this pause.
 - If the user asks to cancel / abandon ("zruš", "cancel", "fail it"), use `action: "fail"`.
 - If the message contains a password (often after "password is", "heslo je", or in response to an encrypted-PDF prompt), route it via `decrypt_password` — **never** put password material into `patch`, and never repeat it back in your own Telegram replies. The workflow MCP stores it under a separate `guidance_password` event so it doesn't land in normal audit logs.
 - If the user mixes several things ("techlab, password is XYZ, doc_date 2026-03-31"), combine them into one call: `{ action: "patch", patch: { owner: "business", doc_date: "2026-03-31" }, decrypt_password: "XYZ" }`.
@@ -211,7 +212,6 @@ The worker sends Telegram notifications automatically for uploaded and failed jo
 
 **When to notify via Telegram (your responsibility):**
 - `awaiting_approval` jobs → ask user to approve or cancel
-- `notify_user` classification → ask what to do
 - Auth expired (Outlook/Gmail MCP returns auth error) → alert user
 
 **When NOT to notify:**

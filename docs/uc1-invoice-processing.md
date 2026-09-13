@@ -282,8 +282,9 @@ Missing fields show `?` placeholder; missing `month_tag` shows `no-period` (tell
 
 Claude still handles notifications that require user interaction:
 - `awaiting_approval` jobs → ask user via Telegram, wait for response
-- `notify_user` classification → ask user what to do
 - Auth expired → alert user to re-authenticate
+
+A `notify_user` classification is **no longer** Claude's job to notice. The worker pauses the job itself and sends the Telegram prompt -- see UC-1.6. Nothing consumed `notify_user` while this line said Claude did.
 
 **Poller notifications:** The email-poller and gdrive-poller services do not send channel notifications at all — they run in their own containers and create workflow jobs directly in `workflow.db`. Claude receives channel events only from `workflow-mcp` (classification requests, approval prompts). The previous `first_start` / `catchup_required` channel events were removed; first-run seeding is now handled by `INITIAL_LOOKBACK` and over-cap windows by the fail-loud `email_watcher.catchup_overflow` counter.
 
@@ -294,13 +295,17 @@ Claude still handles notifications that require user interaction:
 
 The invoice-worker pauses automatically for edge cases and waits for human approval via Telegram.
 
-**Approval triggers (post-Task 16 simplification):**
+**Pause triggers:**
 1. Dedup: amount mismatch on matching order_id (`duplicate_likely`)
+2. Download strategy `browser_required` or `manual_review` -- a human has to fetch the file
+3. The email classifier's own `action` says a human should decide -- see below
 
-Gates for unknown vendor, low confidence, browser_required, and requires_review were removed — triage now happens in Claude before job creation, using the document-classifier's higher-quality PDF analysis.
+Gates for **unknown vendor** and **`requires_review`** were removed, and stay removed. Triage happens in Claude before job creation, using the document-classifier's higher-quality PDF analysis, and `requires_review` is a hint rather than an action. (An earlier version of this line also claimed the `browser_required` gate was removed. It was not -- it is trigger 2 above.)
+
+**Reading the classifier's `action` is not a revival of those gates.** The removed gates re-triaged a decision the classifier had already made. This one consumes the decision it returned. The worker used to handle `action: "ignore"` and nothing else, so `notify_user` fell straight through to download and upload, and a `download_and_upload` paired with anything below `high` confidence -- a pairing [`email-classifier.md`](../claude-code/agents/email-classifier.md) Action Rules forbid -- was acted on as if it were certain. That is how a shop's 15-page terms-and-conditions PDF, attached to an order acknowledgement, was filed as a purchase. Both now pause for guidance with `reason: "email_action_notify_user"` before anything is downloaded.
 
 **Code:**
-- [`invoice-worker.ts:234-244`](../claude-code/channels/invoice-worker.ts#L234) — `duplicate_likely` approval gate
+- [`invoice-intake.ts`](../claude-code/channels/invoice/invoice-intake.ts) -- `duplicate_likely` approval gate, the `browser_required` / `manual_review` gate, and the `email_action_notify_user` guidance pause
 
 **Workflow tools for approval:**
 - [`workflow-mcp.ts:188-199`](../claude-code/channels/workflow-mcp.ts#L188) — `approve_job` tool definition

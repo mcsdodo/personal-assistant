@@ -4,6 +4,17 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-09-13
+
+### Added
+- claude-code: the invoice worker now reads the email-classifier's `action`. A classification of `notify_user`, or `download_and_upload` paired with anything below `high` confidence, pauses the job for user guidance and sends a Telegram prompt. The pause happens before the attachment is downloaded, asks once rather than on every tick, and times out to a failed job rather than sitting silent
+- claude-code: email-classifier has a rule for an order acknowledgement whose only attachment is the shop's general terms and conditions. Slovak consumer law makes shops attach their terms to an order confirmation, and those terms are not an accounting document. An acknowledgement that carries or links to a real invoice or receipt still files as before
+
+### Fixed
+- claude-code: the amount and order number guessed from a covering email can no longer be written onto a document that contains neither. The document classifier is the only step that reads the PDF and returns `null` for both on a non-monetary document, but the merge read that `null` as "no opinion" and kept the email's guesses. Both are now forced to `null` when the classified type is `document` or `account_statement`. A receipt keeps an order number taken from its email - that is its deduplication key
+- claude-code: the accounting month of a `document` is no longer taken from the issue date printed on it. A non-monetary document has no purchase date, so the month now falls through to the email's arrival date (or, for a scan, the scan month). Bank statements are unchanged: a statement's issue date does relate to the period it covers
+- docs: the pause-trigger list said the `browser_required` gate had been removed. It had not - it is still in the code and still fires. The list also credited the assistant session with handling a `notify_user` classification, which nothing did
+
 ## 2026-09-11
 
 ### Added

@@ -78,6 +78,12 @@ export interface MonthTagInputs {
   receivedAt?: string | null;
   /** GDrive scan creation date as YYYY-MM — only used for the scan pipeline as final fallback. */
   scanFallback?: string | null;
+  /**
+   * Classified document type, when known. Gates priority 4 (`docDate`) -- see
+   * {@link resolveMonthTag}. Omitting it keeps the older unconditional chain,
+   * which is why every existing caller shape still resolves the same way.
+   */
+  docType?: string | null;
 }
 
 // ── mergeClassifications ────────────────────────────────────────────────
@@ -221,17 +227,39 @@ function extractMonthFromSubject(subject: string | null | undefined): string | n
  * 1. `accountingPeriod` — LLM's reasoned decision (highest authority)
  * 2. `supplyDate` — Slovak "deň dodania", legal tax point
  * 3. `servicePeriodStart` — start of subscription period
- * 4. `docDate` — issue date printed on the document
+ * 4. `docDate` -- issue date printed on the document, **skipped when `docType`
+ *    is `"document"`**
  * 5. `subject` regex — hardened, last-resort scan
  * 6. `receivedAt` — email arrival timestamp
  * 7. `scanFallback` — GDrive scan creation date (scan pipeline only)
+ *
+ * **Why priority 4 is conditional.** A month tag in this system is an
+ * accounting-period *selector*, not a label: the invoice checker reads a month
+ * as `tags__id__all=<accounting>,<month>` (checker-mcp/webapp.py), and
+ * `buildTagNames` pushes `accounting` for every business-owned document
+ * whatever its `doc_type`. A `doc_type: "document"` is non-monetary by
+ * definition, so its printed issue date is not a purchase date and must not
+ * become an accounting month. The case that forced this: an e-shop's terms and
+ * conditions, published 2026-06-17 and e-mailed 2026-07-23 -- `docDate` filed it
+ * under `2026-06`. With the gate the chain reaches `receivedAt` and answers `2026-07`
+ * -- the month the document arrived, which is the honest answer and needs no
+ * human. Returning `null` instead would trip `missingMonthTagCounter` and nag
+ * the operator to hand-tag a document that never had a period.
+ *
+ * **`account_statement` is excluded on purpose.** A statement's issue date IS
+ * about the money period; rule 5 of the document-classifier prompt only prefers
+ * the month the statement *covers* over the month it was issued, and when the
+ * classifier answers `accounting_period` that wins at priority 1 anyway. Gating
+ * `docDate` there would drop statements to the subject regex with no defect
+ * behind it.
  */
 export function resolveMonthTag(inputs: MonthTagInputs): string | null {
+  const docDate = inputs.docType === "document" ? null : inputs.docDate;
   return (
     validMonthTag(inputs.accountingPeriod) ??
     monthFromDate(inputs.supplyDate) ??
     monthFromDate(inputs.servicePeriodStart) ??
-    monthFromDate(inputs.docDate) ??
+    monthFromDate(docDate) ??
     extractMonthFromSubject(inputs.subject) ??
     monthFromDate(inputs.receivedAt) ??
     validMonthTag(inputs.scanFallback) ??
@@ -312,7 +340,7 @@ export function buildScanTagNames(
  * Forces `doc_type` to `"document"` and nulls `total_amount` / `order_id` to
  * maintain the non-monetary invariants. No-op for `accounting`.
  *
- * Pure / immutable — does not mutate the input.
+ * Pure / immutable -- does not mutate the input.
  */
 export function applyScanFolderOverrides<T extends {
   doc_type: string | null;
@@ -323,6 +351,67 @@ export function applyScanFolderOverrides<T extends {
     return { ...classification, doc_type: "document", total_amount: null, order_id: null };
   }
   return classification;
+}
+
+/**
+ * Doc types that carry no money: no amount, and no order number.
+ *
+ * This is the set the document-classifier prompt names for `total_amount`
+ * ("If `doc_type` is `"document"` or `"account_statement"`: always return
+ * `null` -- no exceptions"). It is deliberately NARROWER than the prompt's
+ * `order_id` rule, which also lists `"receipt"` and `"payslip"` -- see
+ * {@link enforceNonMonetaryInvariants}.
+ */
+function isNonMonetaryDocType(docType: string | null | undefined): boolean {
+  return docType === "document" || docType === "account_statement";
+}
+
+/**
+ * Null out `total_amount` and `order_id` when the document carries no money.
+ *
+ * The document-classifier is the only step that reads the PDF, and its prompt
+ * forbids it from echoing a hint it cannot confirm on the page. It obeyed that
+ * on a 15-page terms-and-conditions PDF and returned
+ * `doc_type: "document"` with `total_amount: null` and `order_id: null`. The
+ * values still reached Paperless, because {@link mergeClassifications} reads a
+ * `null` from the doc classifier as "no opinion" rather than "not on the page"
+ * and so kept the covering email's guesses. This function is where "not on the
+ * page" becomes enforceable.
+ *
+ * `mergeClassifications` is deliberately NOT changed: its "non-null doc value
+ * wins" contract is generic and the scan path depends on it.
+ *
+ * **Why the set is narrower than the prompt's `order_id` rule.** The two rules
+ * answer different questions. The prompt's rule is about *this document's own
+ * number* -- a POS receipt has no document number, so the classifier must not
+ * invent one. This function is about *money*. An `order_id` that came from the
+ * covering email is still the key the dedup step matches on (`order_id` +
+ * correspondent) and the identifier {@link generateTitle} prefers, and three
+ * historical `receipt` jobs relied on exactly that. Nulling it there would cost
+ * a dedup key and a title for no gain, so `receipt` and `payslip` keep theirs.
+ *
+ * The email path calls this after the merge and after any guidance patch, so
+ * the invariant holds on the object that actually reaches the upload. The scan
+ * path needs no call: {@link applyScanFolderOverrides} already covers it.
+ *
+ * **Known side effect: no order_id means no dedup key.** The dedup step matches
+ * on `order_id` + correspondent and returns "no duplicate" when there is no
+ * order_id, so a non-monetary document is no longer deduplicated by the order
+ * number its covering email happened to mention. That is the honest outcome --
+ * the number was never on the page -- but it means a re-sent statement or
+ * document email can upload a second copy. Low risk in practice: the pollers
+ * are idempotent per message id, and an explicit force-reprocess PATCHes in
+ * place rather than uploading.
+ *
+ * Pure / immutable -- does not mutate the input.
+ */
+export function enforceNonMonetaryInvariants<T extends {
+  doc_type: string | null;
+  total_amount?: number | null;
+  order_id?: string | null;
+}>(classification: T): T {
+  if (!isNonMonetaryDocType(classification.doc_type)) return classification;
+  return { ...classification, total_amount: null, order_id: null };
 }
 
 // ── generateTitle ───────────────────────────────────────────────────────

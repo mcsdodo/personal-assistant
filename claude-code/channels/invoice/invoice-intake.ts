@@ -53,6 +53,7 @@ import { formatNotification, type NotifyFn } from "../telegram-notify";
 import {
   buildSuggestedActions,
   buildTagNames,
+  enforceNonMonetaryInvariants,
   requireBusinessLabel,
   generateTitle,
   getCompletedSteps,
@@ -104,6 +105,13 @@ import {
 // (Before this refactor, intake-worker carried a lazy module-level singleton
 // rebuilt-on-registry-change to bridge the registry-per-call API to a stateless
 // adapter — that singleton and ~9 one-liner wrappers around it are gone now.)
+
+/**
+ * Reason code for the guidance pause that consumes the email classifier's
+ * `action`. Kept as a constant because the gate both
+ * writes it and reads it back to decide whether it has already asked.
+ */
+const EMAIL_ACTION_GUIDANCE_REASON = "email_action_notify_user";
 
 // ── Main executor ──────────────────────────────────────────────────────
 
@@ -241,6 +249,82 @@ export async function executeInvoiceIntake(
         span.setAttribute("invoice.outcome", "ignored");
         span.setStatus({ code: SpanStatusCode.OK });
         return;
+      }
+
+      // Step 0b: Consume the email classifier's ACTION.
+      //
+      // Two things were broken here and this fixes both.
+      //
+      // First, the classifier can return `confidence: "medium"` together with
+      // `action: "download_and_upload"` -- a pairing its own Action Rules forbid
+      // ("Medium confidence (any vendor) -> notify_user"). Second, and worse:
+      // had it returned the correct `notify_user`, the worker would have
+      // uploaded anyway. The gate above handles `action: "ignore"` and nothing
+      // else, so `notify_user` fell straight through to download and upload.
+      // That is how a shop's terms and conditions, attached to an order
+      // acknowledgement, got filed as a purchase with the amount from the
+      // covering e-mail.
+      //
+      // This is NOT a revival of the triage gates the docs record as removed.
+      // Those re-decided what the classifier had already decided; this one
+      // consumes the decision it returned. The unknown-vendor and
+      // `requires_review` gates stay removed on purpose -- `requires_review` is
+      // a hint, not an action, and most medium-confidence uploads that carried
+      // it were real invoices.
+      //
+      // Pause via `pauseAndNotify`, never `requestJobApproval`: approval sends
+      // no notification, is not swept for a reminder, and re-parks the job on
+      // approve. Guidance notifies on Telegram, reminds at 24h and auto-fails
+      // at 72h -- and "not filed" is the right outcome for a prompt nobody
+      // answers.
+      //
+      // Parking BEFORE the download is deliberate: `sweepOrphanedDownloads`
+      // omits `awaiting_user_guidance` from its active-states list, so a
+      // guidance-paused job that already has a file on disk can have that file
+      // deleted as an orphan. No download yet means nothing to lose.
+      const needsUserDecision =
+        classification.action === "notify_user" ||
+        (classification.action === "download_and_upload" && classification.confidence !== "high");
+      if (needsUserDecision) {
+        // Pause once, never twice. A gate with no "already answered" test is
+        // a dead end: `retry` re-queues the job, the worker runs from the top,
+        // the same gate parks it again, forever. Testing for our own earlier
+        // `guidance_request` cannot loop, and needs no interaction with the
+        // guidance_applied / guidance_applied_consumed bookkeeping that the
+        // post-classification resume path owns.
+        const alreadyAsked = events.some(
+          (e) =>
+            e.event_type === "guidance_request" &&
+            (e.payload_json ?? "").includes(`"${EMAIL_ACTION_GUIDANCE_REASON}"`),
+        );
+        if (alreadyAsked) {
+          logger.log(
+            `Job ${job.id}: ${EMAIL_ACTION_GUIDANCE_REASON} already asked -- continuing with action=${classification.action}`,
+          );
+        } else {
+          await pauseAndNotify(db, job.id, {
+            step: "post_email_classification",
+            reason: EMAIL_ACTION_GUIDANCE_REASON,
+            missing_fields: [],
+            suggested_actions: ["retry", "skip", "fail"],
+            context: {
+              action: classification.action,
+              confidence: classification.confidence,
+              strategy_confidence: classification.strategy_confidence,
+              download_strategy: classification.download_strategy,
+              vendor: classification.vendor,
+              sender: classification.sender,
+              subject: classification.subject,
+            },
+          }, notify, logger);
+          logger.log(
+            `Job ${job.id} paused (${EMAIL_ACTION_GUIDANCE_REASON}: action=${classification.action} confidence=${classification.confidence})`,
+          );
+          outcome = "awaiting_user_guidance";
+          span.setAttribute("invoice.outcome", "awaiting_user_guidance");
+          span.setStatus({ code: SpanStatusCode.OK });
+          return;
+        }
       }
 
       // Step 1: Download file and persist to disk
@@ -426,7 +510,15 @@ export async function executeInvoiceIntake(
         );
       }
 
-      const merged = mergedClassification;
+      // The document classifier is the only step that
+      // reads the PDF, and it returns null for `total_amount` / `order_id` on a
+      // non-monetary document. The merge above treats that null as "no opinion"
+      // and keeps the covering email's guesses, which is how a 15-page terms-
+      // and-conditions PDF ended up in Paperless with an amount and an order
+      // number that appear nowhere on it. Enforce the invariant here, AFTER the
+      // guidance patch, so it holds on the object that reaches month-tag
+      // resolution, the title, dedup, the upload and the custom fields.
+      const merged = enforceNonMonetaryInvariants(mergedClassification);
       logger.log(`Merged doc classification (owner=${merged.owner})`);
 
       // Trigger A: classifier returned `"unknown"` for at least one required
@@ -475,6 +567,7 @@ export async function executeInvoiceIntake(
         docDate: merged.doc_date,
         subject: classification.subject,
         receivedAt: classification.received_at,
+        docType: merged.doc_type,
       });
       if (!monthTag) {
         missingMonthTagCounter.add(1, { workflow_type: "invoice_intake" });

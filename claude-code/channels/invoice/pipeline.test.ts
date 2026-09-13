@@ -4,6 +4,7 @@ import {
   buildSuggestedActions,
   buildScanTagNames,
   buildTagNames,
+  enforceNonMonetaryInvariants,
   generateTitle,
   mergeClassifications,
   parseServicePeriodStart,
@@ -318,6 +319,87 @@ describe("resolveMonthTag", () => {
       }),
     ).toBe("2026-04");
   });
+
+  // ── Priority 4 is gated on a non-monetary document ──
+  //
+  // Regression for a 15-page terms-and-conditions PDF that was filed as a
+  // purchase. The document classifier read it correctly -- `doc_type:
+  // "document"`, no amount, no order number -- and answered `doc_date` with the
+  // day the shop published the terms. The chain fell to priority 4 and tagged a
+  // July e-mail with the June accounting month.
+  test("doc_type document: docDate does NOT become the accounting month", () => {
+    expect(
+      resolveMonthTag({
+        accountingPeriod: null,
+        supplyDate: null,
+        servicePeriodStart: null,
+        docDate: "2026-06-17",
+        subject: "Prijatá objednávka číslo 10000001 | SomeShop.sk",
+        receivedAt: "Thu, 23 Jul 2026 19:29:49 +0200",
+        docType: "document",
+      }),
+    ).toBe("2026-07");
+  });
+
+  test("doc_type document: an explicit accounting_period still wins", () => {
+    // The gate is on priority 4 only. If the classifier reasoned its way to a
+    // period, that is still the highest authority.
+    expect(
+      resolveMonthTag({
+        accountingPeriod: "2026-05",
+        docDate: "2026-06-17",
+        docType: "document",
+      }),
+    ).toBe("2026-05");
+  });
+
+  test("doc_type document: supply_date and service_period still win", () => {
+    expect(
+      resolveMonthTag({ supplyDate: "2026-05-30", docDate: "2026-06-17", docType: "document" }),
+    ).toBe("2026-05");
+    expect(
+      resolveMonthTag({
+        servicePeriodStart: "2026-05-01",
+        docDate: "2026-06-17",
+        docType: "document",
+      }),
+    ).toBe("2026-05");
+  });
+
+  test("doc_type account_statement: docDate is NOT gated", () => {
+    // Deliberate exclusion. A statement's issue date IS about the money period;
+    // the classifier prompt only prefers the month the statement covers, and
+    // that arrives as accounting_period at priority 1. Gating here would drop
+    // statements to the subject regex for no defect.
+    expect(
+      resolveMonthTag({
+        docDate: "2026-03-31",
+        receivedAt: "2026-04-01T08:00:00Z",
+        docType: "account_statement",
+      }),
+    ).toBe("2026-03");
+  });
+
+  test("every other doc_type, and an absent docType, still resolve from docDate", () => {
+    expect(resolveMonthTag({ docDate: "2026-06-17", docType: "invoice" })).toBe("2026-06");
+    expect(resolveMonthTag({ docDate: "2026-06-17", docType: "receipt" })).toBe("2026-06");
+    expect(resolveMonthTag({ docDate: "2026-06-17", docType: "payslip" })).toBe("2026-06");
+    expect(resolveMonthTag({ docDate: "2026-06-17", docType: null })).toBe("2026-06");
+    expect(resolveMonthTag({ docDate: "2026-06-17" })).toBe("2026-06");
+  });
+
+  test("scan path: a documents-bucket drop falls through to the scan month", () => {
+    // `applyScanFolderOverrides` forces `doc_type: "document"` for the
+    // `documents` bucket, so the gate reaches the scan pipeline too. Asserted
+    // rather than assumed -- this is a deliberate change to scan behaviour.
+    expect(
+      resolveMonthTag({
+        docDate: "2019-03-14",
+        scanFallback: "2026-09",
+        docType: "document",
+      }),
+    ).toBe("2026-09");
+  });
 });
 
 // ── resolveOwner ─────────────────────────────────────────────────────────
@@ -553,6 +635,104 @@ describe("applyScanFolderOverrides", () => {
     const original = { ...base };
     applyScanFolderOverrides(base, "documents");
     expect(base).toEqual(original);
+  });
+});
+
+// ── enforceNonMonetaryInvariants ────────────────────────────────────────
+
+describe("enforceNonMonetaryInvariants", () => {
+  const base = {
+    doc_type: "invoice",
+    vendor: "SomeShop.sk",
+    total_amount: 88.4,
+    currency: "EUR",
+    is_fuel: false,
+    owner: "personal",
+    order_id: "10000001",
+    subtitle: null,
+  };
+
+  test("doc_type document nulls total_amount and order_id", () => {
+    const result = enforceNonMonetaryInvariants({ ...base, doc_type: "document" });
+    expect(result.total_amount).toBeNull();
+    expect(result.order_id).toBeNull();
+  });
+
+  test("doc_type account_statement nulls total_amount and order_id", () => {
+    const result = enforceNonMonetaryInvariants({ ...base, doc_type: "account_statement" });
+    expect(result.total_amount).toBeNull();
+    expect(result.order_id).toBeNull();
+  });
+
+  test("doc_type document preserves everything else", () => {
+    const result = enforceNonMonetaryInvariants({ ...base, doc_type: "document" });
+    expect(result.vendor).toBe("SomeShop.sk");
+    expect(result.owner).toBe("personal");
+    expect(result.currency).toBe("EUR");
+    expect(result.is_fuel).toBe(false);
+  });
+
+  test("invoice, credit_note and payslip are untouched", () => {
+    for (const docType of ["invoice", "credit_note", "payslip", "unknown", null]) {
+      const input = { ...base, doc_type: docType };
+      expect(enforceNonMonetaryInvariants(input)).toEqual(input);
+    }
+  });
+
+  // Deliberately narrower than the document-classifier prompt, which also
+  // lists `receipt` and `payslip` under its `order_id` null rule. That rule is
+  // about the document's OWN number; this function is about money. An order id
+  // carried over from the covering e-mail is still the dedup key (order_id +
+  // correspondent) and the identifier the title prefers, and historical receipt
+  // jobs relied on exactly that. Do not "fix" this to match the prompt.
+  test("doc_type receipt KEEPS its order_id -- this is not an oversight", () => {
+    const result = enforceNonMonetaryInvariants({ ...base, doc_type: "receipt" });
+    expect(result.order_id).toBe("10000001");
+    expect(result.total_amount).toBe(88.4);
+  });
+
+  test("returns a new object, does not mutate input", () => {
+    const input = { ...base, doc_type: "document" };
+    const snapshot = { ...input };
+    enforceNonMonetaryInvariants(input);
+    expect(input).toEqual(snapshot);
+  });
+
+  // The order-acknowledgement replay: the e-mail classifier guessed an amount
+  // and an order number off the covering e-mail, the document classifier read
+  // the PDF and returned null for both, and the merge kept the guesses because
+  // a null reads as "no opinion". Both must be null by the time the custom
+  // fields are set.
+  test("merge then enforce: the email's amount and order number do not survive", () => {
+    const email: EmailClassification = {
+      vendor: "SomeShop.sk",
+      total_amount: 88.4,
+      owner: null,
+      doc_type: "invoice",
+      confidence: "medium",
+      is_fuel: false,
+      order_id: "10000001",
+      subtitle: null,
+      currency: "EUR",
+    };
+    const doc: Partial<EmailClassification> = {
+      vendor: "Terms Publisher s. r. o.",
+      total_amount: null,
+      order_id: null,
+      doc_type: "document",
+      owner: "personal",
+      confidence: "high",
+    };
+
+    const merged = mergeClassifications(email, doc);
+    // The merge alone is not enough -- this is the defect.
+    expect(merged.total_amount).toBe(88.4);
+    expect(merged.order_id).toBe("10000001");
+
+    const enforced = enforceNonMonetaryInvariants(merged);
+    expect(enforced.total_amount).toBeNull();
+    expect(enforced.order_id).toBeNull();
+    expect(enforced.vendor).toBe("Terms Publisher s. r. o.");
   });
 });
 
