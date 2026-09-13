@@ -46,6 +46,15 @@ services:
       # Disable claude.ai-managed MCP servers (Gmail, Calendar) — they require
       # OAuth which fails in headless containers and pollutes the /mcp UI.
       - ENABLE_CLAUDEAI_MCP_SERVERS=false
+      # LLM routing. All five empty = Claude Code talks straight to Anthropic
+      # with the OAuth token in the mounted claude-config. Set together, they
+      # point the session and its subagents at an OpenAI-compatible gateway.
+      # The entrypoint unsets the empty ones. See docs/claude-code-runtime.md.
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}
+      - ANTHROPIC_DEFAULT_HAIKU_MODEL=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
+      - "ANTHROPIC_CUSTOM_HEADERS=${ANTHROPIC_CUSTOM_HEADERS:-}"
+      - CLAUDE_CODE_MAX_CONTEXT_TOKENS=${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}
       # OpenTelemetry — Claude Code native telemetry
       - CLAUDE_CODE_ENABLE_TELEMETRY=1
       - OTEL_METRICS_EXPORTER=otlp
