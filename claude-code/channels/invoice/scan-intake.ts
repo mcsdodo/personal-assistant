@@ -307,22 +307,22 @@ export async function executeScanIntake(
       if (classification.accounting_period_reasoning) {
         logger.log(`accounting_period: ${classification.accounting_period} — ${classification.accounting_period_reasoning}`);
       }
-      // `docType` gates priority 4 (`docDate`) for a non-monetary document --
-      // It matters here too: `applyScanFolderOverrides`
-      // above forces `doc_type: "document"` for everything dropped in the
-      // `documents` bucket, so such a scan now falls through to `scanFallback`
-      // (the GDrive month) instead of its printed issue date. That is
-      // deliberate, and one rule on both paths: a file the CLASSIFIER calls
-      // `document` can still land in the `accounting` bucket, where
-      // `buildScanTagNames` gives it the `accounting` tag and the invoice
-      // checker then reads its month tag as an accounting period.
+      // `docType` is deliberately NOT passed, so priority 4 (`docDate`) stays
+      // live on this path -- see the rule immediately above, which this would
+      // otherwise contradict.
+      //
+      // The scan path's non-monetary documents ARE accounting records. Every
+      // `doc_type: "document"` scan on record is a cestovny prikaz (travel
+      // order) or a dochadzka (attendance sheet), and each belongs to the month
+      // printed on it, not to the month it reached the scanner. Gating `docDate`
+      // here would drop those to `scanFallback`, which IS the scan date, and
+      // file a March attendance sheet scanned in September under September.
       const resolvedMonthTag = resolveMonthTag({
         accountingPeriod: classification.accounting_period,
         supplyDate: classification.supply_date,
         servicePeriodStart: parseServicePeriodStart(classification.service_period),
         docDate: classification.doc_date,
         scanFallback: month_tag,
-        docType: classification.doc_type,
       });
       if (!resolvedMonthTag) {
         missingMonthTagCounter.add(1, { workflow_type: "scan_intake" });

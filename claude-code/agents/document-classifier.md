@@ -288,7 +288,26 @@ Return `null` if no explicit period range is shown (one-off purchases, retail, f
 
 6. **Credit note** (`doc_type: "credit_note"`) → use the credit note's own `supply_date` if present, else `doc_date`. Do NOT use the original invoice's date.
 
-7. **Conflict, missing dates, or unreadable** → return `null`. The worker will fall back to other signals (subject regex, email arrival date, scan date) and alert the user if even those fail. Better to admit uncertainty than fabricate.
+7. **Non-monetary document that covers a period** (`doc_type: "document"`) -> use the month of the
+   period the document reports on, NOT the date it was issued, signed or printed. These are
+   accounting records even though they carry no amount, and the period is what the bookkeeper files
+   them under. Read it off the header or the date range:
+   - *dochádzka* / attendance / worklog, e.g. `Dochádzka marec 2026` -> `2026-03`.
+   - *cestovný príkaz* / travel order / business trip log -> the month of the **trip**, e.g. a trip
+     on 24.-25.03.2026 -> `2026-03`, even when the form is dated 31.03.2026 or 01.04.2026.
+   - a monthly statement-style report, e.g. `Virtuálna batéria 03/2026` -> `2026-03`, even when the
+     document is issued the following month.
+   **Answer this field for these documents; do not fall through to rule 8.** The worker's fallback
+   chain has no way to tell a covered period from a print date, so if you return `null` here the
+   document can be filed under the wrong month.
+
+8. **Non-monetary document with no period at all** (`doc_type: "document"`) -> return `null`, and
+   `accounting_period_reasoning: null` with it. Terms and conditions, a shop's
+   `obchodné podmienky`, a contract, a bank notice about an account limit: these report on no
+   period. The date printed on them is a publication or signature date, and it is **not** an
+   accounting month.
+
+9. **Conflict, missing dates, or unreadable** → return `null`. The worker will fall back to other signals (subject regex, email arrival date, scan date) and alert the user if even those fail. Better to admit uncertainty than fabricate.
 
 Format: `"YYYY-MM"`. Year must be plausible (2000–current+1), month must be 01–12.
 
@@ -300,5 +319,7 @@ Examples:
 - `"Anthropic subscription, service period Apr 6 – May 6, 2026; period start in April → 2026-04 (rule 2)."`
 - `"Orange invoice issued Apr 5 for service delivered Mar 1–31; supply_date in March → 2026-03 (rule 3 / rule 5)."`
 - `"Tatra Banka výpis 03/2026 issued Apr 1; statement covers March → 2026-03 (rule 5)."`
+- `"Dochádzka marec 2026, form dated Mar 31; the attendance period is March -> 2026-03 (rule 7)."`
+- `"Cestovný príkaz for a trip on 24.-25.03.2026, form dated Apr 1; the trip is in March -> 2026-03 (rule 7)."`
 
 If `accounting_period` is `null`, set `accounting_period_reasoning` to `null` as well.

@@ -388,17 +388,20 @@ describe("resolveMonthTag", () => {
     expect(resolveMonthTag({ docDate: "2026-06-17" })).toBe("2026-06");
   });
 
-  test("scan path: a documents-bucket drop falls through to the scan month", () => {
-    // `applyScanFolderOverrides` forces `doc_type: "document"` for the
-    // `documents` bucket, so the gate reaches the scan pipeline too. Asserted
-    // rather than assumed -- this is a deliberate change to scan behaviour.
+  test("scan path: a documents-bucket drop keeps its PRINTED date, not the scan month", () => {
+    // The scan path deliberately does NOT pass `docType`, so `docDate` stays
+    // live there. Its non-monetary documents are accounting records -- a
+    // dochadzka (attendance sheet) or a cestovny prikaz (travel order) belongs
+    // to the month printed on it, and `scanFallback` is the month it reached the
+    // scanner. An attendance sheet for March scanned in September is 2026-03.
     expect(
       resolveMonthTag({
-        docDate: "2019-03-14",
+        docDate: "2026-03-31",
         scanFallback: "2026-09",
-        docType: "document",
       }),
-    ).toBe("2026-09");
+    ).toBe("2026-03");
+    // Only the scan date is left when the document prints no date at all.
+    expect(resolveMonthTag({ scanFallback: "2026-09" })).toBe("2026-09");
   });
 });
 
