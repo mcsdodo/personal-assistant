@@ -9,7 +9,7 @@ This file holds what you need **before** choosing an approach. Detail lives besi
 | [docs/USE_CASES.md](docs/USE_CASES.md) | what this project delivers -- the single source of truth |
 | [docs/architecture.md](docs/architecture.md) | services, the source-code guide, the intake pipeline |
 | [docs/infrastructure.md](docs/infrastructure.md) | health checks, restart resilience, persistence, version pinning |
-| [docs/claude-code-runtime.md](docs/claude-code-runtime.md) | auth, settings, flags, MCP config format |
+| [docs/claude-code-runtime.md](docs/claude-code-runtime.md) | auth, settings, flags, LLM routing, MCP config format |
 | [docs/observability.md](docs/observability.md), [docs/uc1a-observability.md](docs/uc1a-observability.md) | metrics, events, traces |
 | [pollers/CLAUDE.md](pollers/CLAUDE.md) | email + gdrive pollers, cursor safety, the loud guards |
 | [checker-mcp/CLAUDE.md](checker-mcp/CLAUDE.md) | invoice matching engine and its layering |
@@ -58,7 +58,7 @@ claude-code container (node:20-slim, user: node)
 ├── telegram channel (official plugin, two-way)
 ├── file-ops tool server (stdio; scoped download/delete/decrypt/base64/env)
 ├── workflow-mcp channel+tools (stdio; durable job queue + 2s classification push loop)
-└── subagents: email-classifier, document-classifier (haiku)
+└── subagents: email-classifier, document-classifier (haiku by default, configurable -- see docs/claude-code-runtime.md)
 
 email-poller / gdrive-poller (bun)   -> write workflow.db directly, /health :9465 / :9466
 pa-worker (bun)                      -> workerTick, sweepStaleGuidance, notifyTelegram, /health :8003

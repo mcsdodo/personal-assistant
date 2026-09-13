@@ -7,6 +7,7 @@ This project was developed as part of a private monorepo. This changelog was gen
 ## 2026-09-13
 
 ### Added
+- claude-code: the LLM backend is now configurable through five environment variables, all optional. Left unset, the assistant talks to Anthropic exactly as before. Set together, they point the session and both classifier subagents at an OpenAI-compatible gateway instead, with a matching context-window size so the session compacts at the right point. Full list and behaviour: [docs/claude-code-runtime.md](docs/claude-code-runtime.md#llm-routing)
 - claude-code: the invoice worker now reads the email-classifier's `action`. A classification of `notify_user`, or `download_and_upload` paired with anything below `high` confidence, pauses the job for user guidance and sends a Telegram prompt. The pause happens before the attachment is downloaded, asks once rather than on every tick, and times out to a failed job rather than sitting silent
 - claude-code: email-classifier has a rule for an order acknowledgement whose only attachment is the shop's general terms and conditions. Slovak consumer law makes shops attach their terms to an order confirmation, and those terms are not an accounting document. An acknowledgement that carries or links to a real invoice or receipt still files as before
 

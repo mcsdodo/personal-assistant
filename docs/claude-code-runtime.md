@@ -172,6 +172,47 @@ If it is ever re-added, note the signature changed: current clients take the nam
 (`--remote-control [name]`), so copying the old line would produce sessions auto-named by
 container id.
 
+### LLM routing
+
+Five environment variables on the `claude-code` service control which LLM backend the session
+uses. The entrypoint reads all five; leave a variable unset (or empty) to skip it.
+
+| Variable | What it sets | Empty behaviour |
+|---|---|---|
+| `ANTHROPIC_MODEL` | The session model. The entrypoint also passes it to `claude --model`, because the flag outranks the variable | Falls back to `sonnet` |
+| `ANTHROPIC_DEFAULT_HAIKU_MODEL` | What the `haiku` alias resolves to | Unset; `haiku` resolves as normal |
+| `ANTHROPIC_BASE_URL` | The API endpoint Claude Code talks to | Unset; Claude Code talks to Anthropic directly |
+| `ANTHROPIC_CUSTOM_HEADERS` | Extra HTTP headers sent with each request, for a gateway that needs one | Unset; no extra headers sent |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | The context-window size Claude Code plans against | Unset; Claude Code uses its own default for the model name |
+
+`ANTHROPIC_CUSTOM_HEADERS` is the one variable of the five quoted in
+[`docker-compose.yml`](../docker-compose.yml). A header string can contain a colon, and an
+unquoted colon breaks YAML parsing.
+
+**All five empty is the default.** [`claude-code/entrypoint.sh`](../claude-code/entrypoint.sh)
+unsets each variable that arrives empty, so Claude Code talks straight to Anthropic with the
+OAuth token in the mounted config, on `sonnet`, exactly as before these variables existed.
+
+**Set together, the five variables point the session and its subagents at an
+OpenAI-compatible gateway.** `ANTHROPIC_BASE_URL` and `ANTHROPIC_CUSTOM_HEADERS` redirect and
+authenticate the connection; `ANTHROPIC_MODEL` picks the model for the main session.
+
+`ANTHROPIC_DEFAULT_HAIKU_MODEL` moves **both** classifier subagents, plus Claude Code's own
+background calls, in one step. [`email-classifier.md`](../claude-code/agents/email-classifier.md)
+and [`document-classifier.md`](../claude-code/agents/document-classifier.md) both declare
+`model: haiku` in their frontmatter, and the `haiku` alias is exactly what this variable
+remaps. There is no way to move only one of the two subagents with these variables -- that
+would need a literal model id written into one agent's frontmatter instead of `haiku`.
+
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` matters on a gateway model because Claude Code does not
+recognise a gateway model name. It assumes a 200k-token window for any model it does not
+recognise, and auto-compacts the conversation against that assumed number. Set this variable
+to the gateway model's real context size, or Claude Code compacts too early or too late.
+
+`CLAUDE_CODE_SUBAGENT_MODEL` is deliberately not used here. Before Claude Code 2.1.251, it
+overrode a subagent's `model:` frontmatter. From 2.1.251 on, it does not. Its meaning flips on
+a version bump, so a fixed model id or `ANTHROPIC_DEFAULT_HAIKU_MODEL` is the stable choice.
+
 ### MCP config format
 
 ```json
