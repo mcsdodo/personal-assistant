@@ -43,10 +43,11 @@ BUNEOF
 )" 2>&1 || echo "WARNING: mcpOAuth cleanup failed, proceeding anyway"
 fi
 
-# Komodo always passes these five, empty when the stack runs on Anthropic. An
-# empty ANTHROPIC_BASE_URL is not the same as an unset one: Claude Code would
-# try to talk to nowhere. Unset the empty ones, so "all five empty" in the
-# stack env means "straight to Anthropic on the OAuth token".
+# The stack env always passes these five, empty when the stack runs on
+# Anthropic. An empty ANTHROPIC_BASE_URL is not the same as an unset one:
+# Claude Code would try to talk to nowhere. Unset the empty ones, so "all
+# five empty" in the stack env means "straight to Anthropic on the OAuth
+# token".
 for v in ANTHROPIC_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_BASE_URL \
          ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_MAX_CONTEXT_TOKENS; do
   if [ -z "$(printenv "$v" 2>/dev/null)" ]; then
