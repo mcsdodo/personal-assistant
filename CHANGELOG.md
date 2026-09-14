@@ -4,6 +4,12 @@ All notable changes to this project, generated from 186 commits (2026-03-25 to 2
 
 This project was developed as part of a private monorepo. This changelog was generated from the original commit history when the project was extracted for open-source release.
 
+## 2026-09-14
+
+### Fixed
+- claude-code: whether the email classifier recognises a vendor no longer decides whether an invoice is filed. The action rules asked for a "known vendor", and that phrase resolved against nothing: the classifier reads one email and holds no record of what was filed before, so the only list was a handful of names written into its own prompt. A recurring invoice that had filed itself three times stopped and asked for confirmation on its fourth arrival. An invoice now files on the evidence in the email -- a document is there and can be fetched -- whatever the sender. The classifier still asks when confidence is below high, or when it cannot tell which attachment is the document, and the worker still stops for a download that needs a human
+- docs: the vendor table in the classifier prompt says what it is for. It records per-email quirks, such as which subject line carries the final invoice and which "ticket" is a receipt. A vendor's absence from it means nothing
+
 ## 2026-09-13
 
 ### Added

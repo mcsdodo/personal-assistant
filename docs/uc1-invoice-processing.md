@@ -302,6 +302,17 @@ The invoice-worker pauses automatically for edge cases and waits for human appro
 
 Gates for **unknown vendor** and **`requires_review`** were removed, and stay removed. Triage happens in Claude before job creation, using the document-classifier's higher-quality PDF analysis, and `requires_review` is a hint rather than an action. (An earlier version of this line also claimed the `browser_required` gate was removed. It was not -- it is trigger 2 above.)
 
+**The unknown-vendor gate did come back, in the prompt, and is now gone again.** The worker
+lost it, but [`email-classifier.md`](../claude-code/agents/email-classifier.md) Action Rules
+kept deciding on it: "Unknown vendor + high confidence -> notify_user". "Known vendor"
+resolved against nothing -- the subagent holds only the mail fetch tools, and the only list
+was seven names written into the prompt. So the worker consumed a decision that was itself
+vendor triage. It stayed invisible because the rule almost never fired (9 of 2549
+classifications since March 2026) and, before this gate, `notify_user` proceeded anyway. It
+surfaced when a recurring invoice that had filed itself three times stopped and asked. The
+Action Rules no longer mention the vendor, and the vendor table keeps only per-email quirks.
+The gate below is unaffected.
+
 **Reading the classifier's `action` is not a revival of those gates.** The removed gates re-triaged a decision the classifier had already made. This one consumes the decision it returned. The worker used to handle `action: "ignore"` and nothing else, so `notify_user` fell straight through to download and upload, and a `download_and_upload` paired with anything below `high` confidence -- a pairing [`email-classifier.md`](../claude-code/agents/email-classifier.md) Action Rules forbid -- was acted on as if it were certain. That is how a shop's 15-page terms-and-conditions PDF, attached to an order acknowledgement, was filed as a purchase. Both now pause for guidance with `reason: "email_action_notify_user"` before anything is downloaded.
 
 **Code:**

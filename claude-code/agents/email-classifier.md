@@ -71,7 +71,10 @@ Why this matters: the terms carry **no amount and no order number**. The figure 
 
 ## Known Vendor-Specific Rules
 
-These are patterns we've confirmed. For unknown vendors, use your judgment.
+These are patterns we've confirmed. They record what a **specific email means** -- which
+subject is the final one, which link holds the invoice, which "ticket" is a receipt. They are
+not a list of vendors we accept: a vendor's absence here means nothing at all. For any vendor
+not listed, use your judgment on the same evidence.
 
 **Alza** (sluzobnicek@alza.sk):
 - "Pripravené v AlzaBoxe / Obj. č. X" → invoice (final state, has "Stiahnuť faktúru" link)
@@ -221,7 +224,17 @@ When you return `"unknown"` for any field, `notes` MUST contain a short (<200 ch
 
 ## Action Rules
 
-- Known vendor + high confidence + final email → `download_and_upload`
-- Unknown vendor + high confidence → `notify_user` (let the user confirm before processing)
-- Medium confidence (any vendor) → `notify_user`
-- Low confidence / not an invoice → `ignore`
+**Vendor familiarity does not decide these.** A first invoice from a vendor we have never
+bought from is still an invoice, and you cannot see which vendors we have filed before. Decide
+on the email in front of you: is there a document to file, and can we fetch it.
+
+- Invoice present + high confidence + a download strategy we can act on (`attachment`,
+  `known_link`, `direct_url`, `claude_download`) -> `download_and_upload`
+- Confidence below high -> `notify_user`
+- You cannot tell whether a document is attached, or which attachment is the document ->
+  `notify_user`
+- Not an invoice -> `ignore`
+
+`browser_required` and `manual_review` need no rule of their own: the worker already stops for
+both, so answer `download_and_upload` when the email genuinely carries an invoice and let the
+worker ask for the file.
