@@ -42,6 +42,7 @@ import {
 import { parkForClassification } from "./classification-state";
 import {
   patchExistingDocument,
+  isMissingDocumentError,
   resolveCorrespondent as resolveCorrespondentImpl,
   resolveDocumentTypeId,
   resolveStoragePathId,
@@ -713,22 +714,43 @@ export async function executeInvoiceIntake(
       let finalDocId: number | undefined;
       let finalOutcome: "uploaded" | "refreshed";
 
+      // A force-refresh target can be stale: `jobs.paperless_doc_id` records what
+      // a previous job uploaded and is never cleared when the operator deletes
+      // that document, so the PATCH can hit a document that is gone. A 404 means
+      // there is nothing to refresh, so the refresh degrades to a fresh upload.
+      // Anything else is a real failure and still fails the job -- uploading a
+      // second copy over a document that still exists would duplicate it.
+      let missingTargetDocId: number | undefined;
+      let patchResult: { document_id: number; title: string } | undefined;
       if (forceTargetDocId) {
         // Force-refresh path: PATCH the existing doc with fresh metadata.
         // Single request handles title/correspondent/document_type/tags/storage_path/custom_fields.
-        const patchResult = await patchExistingDocument({
-          documentId: forceTargetDocId,
-          title,
-          correspondentId: correspondent.id,
-          tagIds,
-          documentTypeId,
-          storagePathId,
-          totalAmount: merged.total_amount,
-          orderId: merged.order_id,
-          litres: merged.litres,
-          receiptDatetime: merged.receipt_datetime,
-          invoiceDirection: merged.invoice_direction,
-        }, adapter, registry, logger);
+        try {
+          patchResult = await patchExistingDocument({
+            documentId: forceTargetDocId,
+            title,
+            correspondentId: correspondent.id,
+            tagIds,
+            documentTypeId,
+            storagePathId,
+            totalAmount: merged.total_amount,
+            orderId: merged.order_id,
+            litres: merged.litres,
+            receiptDatetime: merged.receipt_datetime,
+            invoiceDirection: merged.invoice_direction,
+          }, adapter, registry, logger);
+        } catch (err) {
+          if (!isMissingDocumentError(err)) throw err;
+          missingTargetDocId = forceTargetDocId;
+          forceTargetDocId = undefined;
+          logger.log(
+            `force-refresh target doc #${missingTargetDocId} is gone from Paperless (404) -- uploading a new document instead`,
+          );
+          span.setAttribute("invoice.force_target_missing", missingTargetDocId);
+        }
+      }
+
+      if (patchResult) {
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
           mode: "patch",
@@ -752,6 +774,10 @@ export async function executeInvoiceIntake(
           step: "upload",
           mode: "post",
           ...uploadResult,
+          // Present only when this POST is the fallback for a deleted refresh
+          // target. An operator who asked for a refresh and got a new document
+          // needs the reason in the job's own events.
+          ...(missingTargetDocId ? { force_target_missing: missingTargetDocId } : {}),
         });
 
         // Step 7: Resolve doc_id via waitForConsumption and set custom fields

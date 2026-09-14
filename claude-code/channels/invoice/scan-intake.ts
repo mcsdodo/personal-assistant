@@ -34,6 +34,7 @@ import {
   buildScanTitle,
   moveGdriveFile as moveGdriveFileImpl,
   patchExistingDocument,
+  isMissingDocumentError,
   resolveCorrespondent as resolveCorrespondentImpl,
   resolveDocumentTypeId,
   resolveStoragePathId,
@@ -426,20 +427,40 @@ export async function executeScanIntake(
       let finalDocId: number | undefined;
       let finalOutcome: "uploaded" | "refreshed";
 
+      // Same staleness as the email path: `jobs.paperless_doc_id` records what a
+      // previous scan uploaded and is never cleared when the operator deletes
+      // that document, so a 404 here means there is nothing to refresh and the
+      // refresh degrades to a fresh upload. Any other failure still fails the
+      // job -- a second copy over a document that still exists is a duplicate.
+      let missingTargetDocId: number | undefined;
+      let patchResult: { document_id: number; title: string } | undefined;
       if (forceTargetDocId) {
-        const patchResult = await patchExistingDocument({
-          documentId: forceTargetDocId,
-          title,
-          correspondentId: correspondent.id,
-          tagIds,
-          documentTypeId,
-          storagePathId,
-          totalAmount: classification.total_amount,
-          orderId: classification.order_id,
-          litres: classification.litres,
-          receiptDatetime: classification.receipt_datetime,
-          invoiceDirection: classification.invoice_direction,
-        }, adapter, registry, logger);
+        try {
+          patchResult = await patchExistingDocument({
+            documentId: forceTargetDocId,
+            title,
+            correspondentId: correspondent.id,
+            tagIds,
+            documentTypeId,
+            storagePathId,
+            totalAmount: classification.total_amount,
+            orderId: classification.order_id,
+            litres: classification.litres,
+            receiptDatetime: classification.receipt_datetime,
+            invoiceDirection: classification.invoice_direction,
+          }, adapter, registry, logger);
+        } catch (err) {
+          if (!isMissingDocumentError(err)) throw err;
+          missingTargetDocId = forceTargetDocId;
+          forceTargetDocId = undefined;
+          logger.log(
+            `force-refresh target doc #${missingTargetDocId} is gone from Paperless (404) -- uploading a new document instead`,
+          );
+          span.setAttribute("invoice.force_target_missing", missingTargetDocId);
+        }
+      }
+
+      if (patchResult) {
         addJobEvent(db, job.id, "step_completed", {
           step: "upload",
           mode: "patch",
@@ -454,7 +475,12 @@ export async function executeScanIntake(
           correspondentId: correspondent.id, tagIds, documentTypeId, storagePathId,
           totalAmount: classification.total_amount, orderId: classification.order_id,
         }, adapter, logger);
-        addJobEvent(db, job.id, "step_completed", { step: "upload", mode: "post", ...uploadResult });
+        addJobEvent(db, job.id, "step_completed", {
+          step: "upload",
+          mode: "post",
+          ...uploadResult,
+          ...(missingTargetDocId ? { force_target_missing: missingTargetDocId } : {}),
+        });
 
         // Step 8: Resolve doc_id via waitForConsumption and set custom fields
         // (post path only — patch path already set them in the single PATCH).

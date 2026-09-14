@@ -457,7 +457,14 @@ export class PaperlessAdapter {
 
       if (!response.ok) {
         const errText = await response.text();
-        throw new Error(`Paperless PATCH failed (${response.status}): ${errText.slice(0, 200)}`);
+        // Carry the HTTP status on the error. A 404 here means the document is
+        // gone -- the operator deleted it -- and that is the one failure a
+        // caller can recover from, by uploading a new document instead. Without
+        // the status the caller would have to match on the message text.
+        throw Object.assign(
+          new Error(`Paperless PATCH failed (${response.status}): ${errText.slice(0, 200)}`),
+          { status: response.status },
+        );
       }
       span.setAttribute("patch.success", true);
       return { document_id: documentId, title: fields.title };

@@ -1947,6 +1947,184 @@ describe("invoice-worker force-refresh: a non-monetary document has no dedup key
   });
 });
 
+describe("invoice-worker force-refresh: the prior document was deleted", () => {
+  // `jobs.paperless_doc_id` is a record of what WAS uploaded, not proof that it
+  // still exists. Deleting a document in Paperless does not clear it, so a
+  // force-reprocess aimed the PATCH at a document that was gone, took a 404, and
+  // burned every retry on a request no retry can satisfy -- and because the
+  // pointer never clears, every later force-reprocess of the same email failed
+  // the same way. A missing target means "refresh in place" has nothing to
+  // refresh, so it must degrade to a fresh upload.
+  test("PATCH 404 falls back to a normal upload instead of failing", async () => {
+    const input = makeInput({ force: true });
+
+    // A prior completed job that uploaded doc 997 -- since deleted in Paperless.
+    const prior = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify(makeInput()),
+      sourceRef: `${input.email_source}:${input.message_id}`,
+      idempotencyKey: `${input.email_source}:${input.message_id}-prior`,
+    });
+    db.prepare("UPDATE jobs SET state = 'completed', paperless_doc_id = 997 WHERE id = ?").run(prior.id);
+
+    const job = createRunningJob(input);
+
+    let patchAttempts = 0;
+    let postAttempts = 0;
+    mockFetch(
+      // 1. list attachments
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 512 }])),
+      // 2. download attachment
+      () => jsonResponse(rpcResponse({ name: "inv.pdf", content_type: "application/pdf", size: 512, content_base64: "AA" })),
+      // 3. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 4. list_tags -- no dedup HTTP call, the source_ref shortcut needs none
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      // 5. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      // 6. resolveStoragePath
+      storagePathsMockHandler(),
+      // 7. PATCH doc 997 -- the operator deleted it
+      (url, init) => {
+        expect(url).toContain("/api/documents/997/");
+        expect(init?.method).toBe("PATCH");
+        patchAttempts += 1;
+        return new Response('{"detail":"No Document matches the given query."}', { status: 404 });
+      },
+      // 8. post_document -- the fallback
+      () => {
+        postAttempts += 1;
+        return new Response('"task-uuid"', { status: 200 });
+      },
+      ...customFieldsMockHandlers(),
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("uploaded");
+    expect(patchAttempts).toBe(1);
+    expect(postAttempts).toBe(1);
+
+    // The fallback must be visible in the job's events, not silent: an operator
+    // who asked for a refresh and got a new document needs to see why.
+    const stepNames = getJobEvents(db, job.id).map((e) => JSON.parse(e.payload_json ?? "{}").step);
+    expect(stepNames).toContain("upload");
+    const uploadDone = getJobEvents(db, job.id)
+      .filter((e) => e.event_type === "step_completed")
+      .map((e) => JSON.parse(e.payload_json ?? "{}"))
+      .find((p) => p.step === "upload");
+    expect(uploadDone?.mode).toBe("post");
+    expect(uploadDone?.force_target_missing).toBe(997);
+  });
+
+  test("a PATCH failure that is not a 404 still fails the job", async () => {
+    const input = makeInput({ force: true });
+    const prior = createJob(db, {
+      workflowType: "invoice_intake",
+      inputJson: JSON.stringify(makeInput()),
+      sourceRef: `${input.email_source}:${input.message_id}`,
+      idempotencyKey: `${input.email_source}:${input.message_id}-prior-500`,
+    });
+    db.prepare("UPDATE jobs SET state = 'completed', paperless_doc_id = 998 WHERE id = ?").run(prior.id);
+
+    const job = createRunningJob(input);
+
+    let postAttempts = 0;
+    mockFetch(
+      () => jsonResponse(rpcResponse([{ id: "att-1", name: "inv.pdf", content_type: "application/pdf", size: 512 }])),
+      () => jsonResponse(rpcResponse({ name: "inv.pdf", content_type: "application/pdf", size: 512, content_base64: "AA" })),
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      () => jsonResponse(rpcResponse([{ id: 5, name: "invoice" }])),
+      storagePathsMockHandler(),
+      // Paperless is unwell, not missing the document. Uploading a second copy
+      // here would duplicate a document that still exists.
+      () => new Response("upstream exploded", { status: 500 }),
+      () => {
+        postAttempts += 1;
+        return new Response('"task-uuid"', { status: 200 });
+      },
+    );
+
+    await executeInvoiceIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).not.toBe("completed");
+    expect(postAttempts).toBe(0);
+  });
+});
+
+describe("invoice-worker force-refresh (scan pipeline): the prior document was deleted", () => {
+  // The scan path carries the same stale pointer as the email path, so it gets
+  // the same fallback: a 404 on the refresh target means upload a new document.
+  test("PATCH 404 falls back to a normal upload instead of failing", async () => {
+    const filePath = join(tmpDir, "deleted_target_scan.pdf");
+    writeFileSync(filePath, Buffer.from("fake-pdf"));
+
+    const priorJob = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: JSON.stringify({ source: "gdrive", file_id: "gdrive-deleted", watch_folder: "techlab/accounting", month_tag: "2026-05" }),
+      sourceRef: "gdrive:gdrive-deleted",
+      idempotencyKey: "gdrive:gdrive-deleted",
+    });
+    completeJob(db, priorJob.id, { outcome: "uploaded", paperless_document_id: 465 });
+
+    const input = makeScanInput({ file_path: filePath, force: true, file_id: "gdrive-deleted", watch_folder: "techlab/accounting" });
+    const newJob = createJob(db, {
+      workflowType: "scan_intake",
+      inputJson: JSON.stringify(input),
+      sourceRef: "gdrive:gdrive-deleted",
+      idempotencyKey: "gdrive:gdrive-deleted:force-deleted-target",
+    });
+    db.prepare("UPDATE jobs SET state = 'running', started_at = ? WHERE id = ?").run(
+      new Date().toISOString(),
+      newJob.id,
+    );
+    addJobEvent(db, newJob.id, "step_completed", {
+      step: "classify_document",
+      result: defaultScanClassification(),
+    });
+    const job = getJob(db, newJob.id)!;
+
+    let postAttempts = 0;
+    mockFetch(
+      // 1. list_correspondents
+      () => jsonResponse(rpcResponse([{ id: 10, name: "Alza" }])),
+      // 2. list_tags
+      () => jsonResponse(rpcResponse([{ id: 3, name: "techlab" }, { id: 11, name: "accounting" }, { id: 7, name: "2026-03" }])),
+      // 3. list_document_types
+      () => jsonResponse(rpcResponse([{ id: 5, name: "Invoice" }])),
+      // 4. resolveStoragePath
+      storagePathsMockHandler(),
+      // 5. PATCH doc 465 -- deleted in Paperless
+      (url, init) => {
+        expect(url).toContain("/api/documents/465/");
+        expect(init?.method).toBe("PATCH");
+        return new Response('{"detail":"No Document matches the given query."}', { status: 404 });
+      },
+      // 6. post_document -- the fallback
+      () => {
+        postAttempts += 1;
+        return new Response('"task-uuid"', { status: 200 });
+      },
+      ...customFieldsMockHandlers(),
+      // moveGdriveFile to processed/
+      ...moveGdriveMockHandlers(),
+    );
+
+    await executeScanIntake(db, job, logger, registry, createPaperlessAdapter(registry), notify);
+
+    const updated = getJob(db, job.id)!;
+    expect(updated.state).toBe("completed");
+    const output = JSON.parse(updated.output_json!);
+    expect(output.outcome).toBe("uploaded");
+    expect(postAttempts).toBe(1);
+  });
+});
+
 describe("invoice-worker force-refresh (scan pipeline)", () => {
   test("force=true + exact duplicate → PATCH existing scan doc", async () => {
     const filePath = join(tmpDir, "force_scan.pdf");

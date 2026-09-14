@@ -335,6 +335,19 @@ export async function patchExistingDocument(
   );
 }
 
+/**
+ * Does this error mean the document we tried to PATCH no longer exists?
+ *
+ * `jobs.paperless_doc_id` records what a job uploaded; it is never cleared when
+ * the operator deletes that document in Paperless. So the force-refresh target
+ * can point at nothing, and the PATCH comes back 404. That is not a transient
+ * failure -- no retry brings the document back -- so the caller uploads a fresh
+ * document instead of failing the job.
+ */
+export function isMissingDocumentError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { status?: unknown }).status === 404;
+}
+
 // ── GDrive post-move ─────────────────────────────────────────────────
 
 /**
